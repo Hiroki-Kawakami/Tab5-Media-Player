@@ -1,14 +1,5 @@
 #pragma once
-#include <math.h>
-
-// ESP-IDF
-#include "platform/BridgeImpl.h"
-
-// Graphics
-#include "graphics/BridgeImpl.h"
-
-// M5Stack Tab5
-#include "board/BridgeImpl.h"
+#include "M5Stack-Swift-BSP/BridgingHeader.h" // BSP
 
 // AVI Player
 #include "avi_player.h"

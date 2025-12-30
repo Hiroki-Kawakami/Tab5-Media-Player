@@ -56,7 +56,6 @@ class FileManagerView {
         } else {
             StorageSelectView.loadScreen()
         }
-        checkMemory()
     }
 
     func update() {
@@ -112,21 +111,12 @@ class FileManagerView {
         if item.isDirectory {
             FileManagerView.open(path: item.path)
         } else {
-            print("TODO: Play \(item.path)")
+            do {
+                let player = try VideoPlayerView()
+                player.play(path: item.path)
+            } catch {
+                // todo: show error message
+            }
         }
-        checkMemory()
-    }
-
-    private func checkMemory() {
-        // var mon = lv_mem_monitor_t()
-        // lv_mem_monitor(&mon)
-
-        // print("LVGL Memory:\n");
-        // print("  Total: \(mon.total_size) bytes");
-        // print("  Used: \(mon.used_cnt) bytes (\(mon.used_pct)%)");
-        // print("  Free: \(mon.free_cnt) bytes");
-        // print("  Free biggest: \(mon.free_biggest_size) bytes");
-        // print("  Fragmentation: \(mon.frag_pct)%");
-        // print("  Max used: \(mon.max_used) bytes");
     }
 }

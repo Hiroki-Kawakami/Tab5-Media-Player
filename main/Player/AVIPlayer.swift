@@ -49,8 +49,12 @@ class AVIPlayer {
 
     private func audioCallback(data: UnsafeMutablePointer<frame_data_t>) {
         guard let callback = audioDataCallback else { return }
-        let buffer = UnsafeMutableBufferPointer<UInt8>(start: data.pointee.data, count: data.pointee.data_bytes)
-        decoder.decode(buffer: buffer, callback: callback)
+        if data.pointee.audio_info.format == FORMAT_MP3 {
+            let buffer = UnsafeMutableBufferPointer<UInt8>(start: data.pointee.data, count: data.pointee.data_bytes)
+            decoder.decode(buffer: buffer, callback: callback)
+        } else {
+            callback(UnsafeMutableRawBufferPointer(start: data.pointee.data, count: data.pointee.data_bytes))
+        }
     }
 
     func onVideoData(_ callback: ((UnsafeMutableBufferPointer<UInt8>, Size) -> Void)?) {

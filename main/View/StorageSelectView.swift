@@ -9,14 +9,18 @@ class StorageSelectView {
     var needUpdate = false
     lazy var updateCallback = FFI.Wrapper { self.update() }
     let mountSdcard: (String, Int32) throws(IDF.Error) -> ()
+    let mountUsbDrive: (String, Int32) throws(IDF.Error) -> ()
     var sdcardAvailable = false
+    var usbDriveAvailable = false
 
     static func create(
-        mountSdcard: @escaping (String, Int32) throws(IDF.Error) -> ()
+        mountSdcard: @escaping (String, Int32) throws(IDF.Error) -> (),
+        mountUsbDrive: @escaping (String, Int32) throws(IDF.Error) -> (),
     ) {
         shared = StorageSelectView(
             screen: .active,
-            mountSdcard: mountSdcard
+            mountSdcard: mountSdcard,
+            mountUsbDrive: mountUsbDrive
         )
         shared.update()
     }
@@ -26,10 +30,12 @@ class StorageSelectView {
 
     private init(
         screen: LVGL.Screen,
-        mountSdcard: @escaping (String, Int32) throws(IDF.Error) -> ()
+        mountSdcard: @escaping (String, Int32) throws(IDF.Error) -> (),
+        mountUsbDrive: @escaping (String, Int32) throws(IDF.Error) -> ()
     ) {
         self.screen = screen
         self.mountSdcard = mountSdcard
+        self.mountUsbDrive = mountUsbDrive
 
         // Create Navigation Bar
         let navigationBar = LVGL.Object(parent: screen)
@@ -68,6 +74,7 @@ class StorageSelectView {
 
     func update() {
         checkSdcard()
+        checkUsbDrive()
         if needUpdate { updateList() }
     }
 
@@ -97,6 +104,9 @@ class StorageSelectView {
         if sdcardAvailable {
             items.append(ListItem(path: "/sdcard") { self.onSelect(path: $0) })
         }
+        if usbDriveAvailable {
+            items.append(ListItem(path: "/usb") { self.onSelect(path: $0) })
+        }
 
         for item in items {
             let button = LVGL.Button(parent: list)
@@ -125,6 +135,15 @@ class StorageSelectView {
             do {
                 try mountSdcard("/sdcard", 25)
                 sdcardAvailable = true
+                needUpdate = true
+            } catch {}
+        }
+    }
+    func checkUsbDrive() {
+        if !usbDriveAvailable {
+            do {
+                try mountUsbDrive("/usb", 25)
+                usbDriveAvailable = true
                 needUpdate = true
             } catch {}
         }

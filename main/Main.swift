@@ -12,9 +12,16 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
     let tab5 = try M5StackTab5.begin(
         pixelFormat: PixelFormat.self,
         frameBufferNum: 3,
+        usbHost: true,
     )
     try LVGL.begin()
     let displayMux = try DisplayMultiplexer<PixelFormat>(tab5: tab5)
+
+    let usbHost = USBHost()
+    let mscDriver = USBHost.MSC()
+    try usbHost.install()
+    try mscDriver.install(taskStackSize: 4096, taskPriority: 5, xCoreID: 0, createBackgroundTask: true)
+    Task.delay(1000)
 
     VideoPlayerView.config = (
         setPlayerDisplay: { displayMux.mode = $0 ? .player : .fileManager },
@@ -32,7 +39,8 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
     )
     LVGL.asyncCall {
         StorageSelectView.create(
-            mountSdcard: { path, maxFiles throws(IDF.Error) in try tab5.sdcard.mount(path: path, maxFiles: maxFiles) }
+            mountSdcard: { path, maxFiles throws(IDF.Error) in try tab5.sdcard.mount(path: path, maxFiles: maxFiles) },
+            mountUsbDrive: { path, maxFiles throws(IDF.Error) in try mscDriver.mount(path: path, maxFiles: maxFiles) }
         )
     }
 

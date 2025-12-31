@@ -9,3 +9,6 @@
 // USB Host
 #include "usb/usb_host.h"
 #include "usb/msc_host_vfs.h"
+
+// Storage Benchmark
+#include "storage_benchmark.h"

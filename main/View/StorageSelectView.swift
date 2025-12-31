@@ -70,6 +70,18 @@ class StorageSelectView {
         }, filter: .pressed, userData: updateCallback.passRetained())
         let reloadButtonLabel = LVGL.Label(parent: reloadButton)
         reloadButtonLabel.setText("Reload")
+
+        let benchButton = LVGL.Button(parent: navigationBar)
+        benchButton.setHeight(50)
+        benchButton.align(.rightMid)
+        benchButton.addEventCb({
+            let event = LVGL.Event(e: $0!)
+            FFI.Wrapper<() -> ()>.unretained(event.getUserData())()
+        }, filter: .pressed, userData: openBench.passUnretained())
+        let benchButtonLabel = LVGL.Label(parent: benchButton)
+        benchButtonLabel.setText(LV_SYMBOL_SETTINGS)
+        benchButtonLabel.center()
+        benchButtonLabel.setStyleTextColor(.white)
     }
 
     func update() {
@@ -152,5 +164,10 @@ class StorageSelectView {
     private func onSelect(path: String) {
         FileManagerView.open(path: path)
         FileManagerView.loadScreen()
+    }
+
+    private let openBench = FFI.Wrapper {
+        let benchView = StorageBenchView()
+        benchView.screen.load()
     }
 }

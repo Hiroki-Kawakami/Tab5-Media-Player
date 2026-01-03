@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include "esp_heap_caps.h"
 
 void storage_benchmark(const char *file, int block_size, void (*output)(const char *str, void *user_info), void *user_info) {
     int fd = open(file, O_RDONLY);
@@ -13,7 +14,7 @@ void storage_benchmark(const char *file, int block_size, void (*output)(const ch
     }
 
     // バッファを確保
-    uint8_t *buffer = (uint8_t *)malloc(131072);
+    uint8_t *buffer = (uint8_t *)heap_caps_malloc(131072, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
     if (buffer == NULL) {
         output("Failed to allocate buffer", user_info);
         close(fd);
@@ -69,6 +70,6 @@ void storage_benchmark(const char *file, int block_size, void (*output)(const ch
     output(result, user_info);
 
     // クリーンアップ
-    free(buffer);
+    heap_caps_free(buffer);
     close(fd);
 }

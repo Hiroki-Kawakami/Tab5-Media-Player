@@ -1,10 +1,4 @@
 dependencies:
-  espressif/avi_player:
-    dependencies: []
-    source:
-      path: /Users/hiroki/git/Tab5-Media-Player/components/espressif__avi_player
-      type: local
-    version: 1.0.0
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -12,7 +6,7 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com/
+      registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
   espressif/esp_audio_codec:
@@ -153,8 +147,6 @@ dependencies:
       type: service
     version: 9.4.0
 direct_dependencies:
-- espressif/avi_player
-- espressif/cmake_utilities
 - espressif/esp_audio_codec
 - espressif/esp_codec_dev
 - espressif/esp_lcd_ili9881c
@@ -164,6 +156,6 @@ direct_dependencies:
 - espressif/esp_lvgl_port
 - espressif/usb_host_msc
 - idf
-manifest_hash: 5b3aeeb4240bff8f39ce723fd3b0655970a3a817c27412bd337333b3f4c5487c
+manifest_hash: 2769460fadeb406121f319e4587ba3e50294302c9f591d531f1f3dc80dfa74c7
 target: esp32p4
 version: 2.0.0

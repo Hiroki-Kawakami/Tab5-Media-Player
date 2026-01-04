@@ -12,7 +12,7 @@ class VideoPlayerView {
     let screen = LVGL.Screen()
     let player = AVIPlayer()
 
-    var playButtonLabel: LVGL.Label!
+    var playButtonLabel: LVGL.Image!
     var volumeSlider: LVGL.Slider!
 
     init(file: String) {
@@ -61,13 +61,24 @@ class VideoPlayerView {
         controlView.setStyleRadius(0)
         controlView.removeFlag(.scrollable)
 
-        let playButton = LVGL.Button(parent: controlView)
-        playButton.setSize(width: 70, height: 70)
-        playButton.align(.center)
-        playButton.addEventCallback(filter: .pressed, callback: playButtonPressed)
-        playButtonLabel = LVGL.Label(parent: playButton)
-        playButtonLabel.center()
-        playButtonLabel.setStyleTextColor(.white)
+        let buttonsView = LVGL.Object(parent: controlView)
+        buttonsView.removeStyleAll()
+        buttonsView.setSize(width: 360, height: 80)
+        buttonsView.setFlexFlow(.row)
+        buttonsView.setFlexAlign(mainPlace: .center, crossPlace: .center, trackCrossPlace: .center)
+        buttonsView.setStylePadColumn(5)
+        let addButton = { (size: Int32, icon: UnsafeRawPointer?, callback: FFI.Wrapper<() -> ()>) -> LVGL.Image in
+            let button = LVGL.Button(parent: buttonsView)
+            button.removeStyleAll()
+            button.setSize(width: size, height: size)
+            button.addEventCallback(filter: .clicked, callback: callback)
+            let image = LVGL.Image(parent: button)
+            image.setStyleImageRecolorOpa(.percent(30), selector: .pressed)
+            image.center()
+            if let icon = icon { image.setSrc(icon) }
+            return image
+        }
+        playButtonLabel = addButton(80, nil, playButtonPressed)
         stateChanged(state: player.state)
 
         let volumeRow = LVGL.Object(parent: controlView)
@@ -94,9 +105,9 @@ class VideoPlayerView {
 
     private func stateChanged(state: AVIPlayer.State) {
         switch state {
-        case .play : playButtonLabel.setText("Pause")
-        case .pause: playButtonLabel.setText("Play")
-        case .stop : playButtonLabel.setText("Play")
+        case .play : playButtonLabel.setSrc(R.icon.pause_circle)
+        case .pause: playButtonLabel.setSrc(R.icon.play_circle)
+        case .stop : playButtonLabel.setSrc(R.icon.play_circle)
         default: break
         }
     }

@@ -12,3 +12,6 @@
 
 // Storage Benchmark
 #include "storage_benchmark.h"
+
+// Resources
+#include "resources.h"

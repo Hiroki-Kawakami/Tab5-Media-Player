@@ -3,10 +3,13 @@ fileprivate let Log = Logger(tag: "DisplayMultiplexer")
 enum DisplayMultiplexer {
 
     private static let size = Size(width: 360, height: 640)
-    private(set) static var ppa: IDF.PPAClient!
+    private(set) static var srm: IDF.PPAClient!
+    private(set) static var fill: IDF.PPAClient!
     private(set) static var clear: ((Int) -> ())!
     private(set) static var flush: ((Int) -> ())!
     private(set) static var colorSpace: ColorSpace!
+    private static var srmColorMode: IDF.PPAClient.SRMColorMode { colorSpace == .rgb888 ? .rgb888 : .rgb565 }
+    private static var fillColorMode: IDF.PPAClient.FillColorMode { colorSpace == .rgb888 ? .rgb888 : .rgb565 }
     private(set) static var frameBuffers: [UnsafeMutableRawBufferPointer]!
     private static var getTouchPoint: (() -> Point?)!
     private static var setBrightness: ((Int) -> ())!
@@ -72,7 +75,8 @@ enum DisplayMultiplexer {
         getTouchPoint: @escaping (() -> Point?),
         setBrightness: @escaping ((Int) -> ()),
     ) throws(IDF.Error) {
-        Self.ppa = try IDF.PPAClient(operType: .srm)
+        Self.srm = try IDF.PPAClient(operType: .srm)
+        Self.fill = try IDF.PPAClient(operType: .fill)
         Self.clear = clear
         Self.flush = flush
         Self.colorSpace = colorSpace
@@ -80,6 +84,7 @@ enum DisplayMultiplexer {
         Self.getTouchPoint = getTouchPoint
         Self.setBrightness = setBrightness
         setBrightness(brightness)
+        Self.workFrameBuffer = IDF.JPEG.Decoder.allocateOutputBuffer(size: 1280 * 720 * (colorSpace == .rgb888 ? 3 : 2))
 
         buffer = Memory.allocate(type: lv_color_t.self, capacity: size.area, capability: .spiram)!
         lvglDisplay = LVGL.Display.createDirectBufferDisplay(buffer: buffer.baseAddress, size: size) { display, pixels in
@@ -118,13 +123,12 @@ enum DisplayMultiplexer {
     }
 
     private static func drawFrameBuffer(fbNum: Int = 0, flush: Bool = true) {
-        let colorMode: IDF.PPAClient.SRMColorMode = colorSpace == .rgb888 ? .rgb888 : .rgb565
         for region in mode.config.uiRegions {
             let inputRect = Rect(x: 0, y: region.yOffset, width: size.width, height: region.height)
             let outputRect = Rect(x: 0, y: inputRect.origin.y * 2, width: inputRect.width * 2, height: inputRect.height * 2)
-            try? self.ppa.srm(
+            try? self.srm.srm(
                 input: (buffer: UnsafeRawBufferPointer(buffer), size: size, block: inputRect, colorMode: .rgb565),
-                output: (buffer: frameBuffers[fbNum], size: Size(width: 720, height: 1280), block: outputRect, colorMode: colorMode),
+                output: (buffer: frameBuffers[fbNum], size: Size(width: 720, height: 1280), block: outputRect, colorMode: srmColorMode),
             )
         }
         if flush {
@@ -136,6 +140,69 @@ enum DisplayMultiplexer {
         queue: Queue<UnsafeRawBufferPointer>,
         shouldStop: Bool,
     )?
+
+    enum JpegDecoderMode {
+        case direct
+        case aspectFitRotate(size: Size)
+    }
+    static var workFrameBuffer: UnsafeMutableRawBufferPointer!
+    static var transformImage: ((Int) -> ())?
+    static var clearPadding: ((Int) -> ())?
+    static var jpegDecoderMode: JpegDecoderMode = .direct {
+        didSet {
+            switch jpegDecoderMode {
+            case .aspectFitRotate(let size):
+                let offset: Point
+                if size.width < size.height { // scale only
+                    let scale = min(720 / Float(size.width), 1280 / Float(size.height))
+                    offset = Point(x: Int(720 - Float(size.width) * scale) / 2, y: Int(1280 - Float(size.height) * scale) / 2)
+                    transformImage = {
+                        try? self.srm.srm(
+                            input: (buffer: UnsafeRawBufferPointer(workFrameBuffer), size: size, block: nil, colorMode: srmColorMode),
+                            output: (buffer: frameBuffers[$0], size: Self.size, offset: offset, scale: scale, colorMode: srmColorMode)
+                        )
+                    }
+                } else { // scale & rotate
+                    let scale = min(720 / Float(size.height), 1280 / Float(size.width))
+                    offset = Point(x: Int(720 - Float(size.height) * scale) / 2, y: Int(1280 - Float(size.width) * scale) / 2)
+                    transformImage = {
+                        try? self.srm.srm(
+                            input: (buffer: UnsafeRawBufferPointer(workFrameBuffer), size: size, block: nil, colorMode: srmColorMode),
+                            output: (buffer: frameBuffers[$0], size: Size(width: 720, height: 1280), offset: offset, scale: scale, colorMode: srmColorMode),
+                            rotate: 90
+                        )
+                    }
+                }
+                if offset.x > 0 {
+                    clearPadding = {
+                        try? self.fill.fill(
+                            output: (buffer: frameBuffers[$0], size: Size(width: 720, height: 1280), colorMode: fillColorMode),
+                            rect: Rect(x: 0, y: 0, width: offset.x, height: 1280), color: .black
+                        )
+                        try? self.fill.fill(
+                            output: (buffer: frameBuffers[$0], size: Size(width: 720, height: 1280), colorMode: fillColorMode),
+                            rect: Rect(x: 720 - offset.x, y: 0, width: offset.x, height: 1280), color: .black
+                        )
+                    }
+                } else {
+                    clearPadding = {
+                        try? self.fill.fill(
+                            output: (buffer: frameBuffers[$0], size: Size(width: 720, height: 1280), colorMode: fillColorMode),
+                            rect: Rect(x: 0, y: 0, width: 720, height: offset.y), color: .black
+                        )
+                        try? self.fill.fill(
+                            output: (buffer: frameBuffers[$0], size: Size(width: 720, height: 1280), colorMode: fillColorMode),
+                            rect: Rect(x: 0, y: 1280 - offset.y, width: 720, height: offset.y), color: .black
+                        )
+                    }
+                }
+            default:
+                transformImage = nil
+                clearPadding = nil
+            }
+        }
+    }
+
     static func drawJpeg(data: UnsafeRawBufferPointer) {
         jpegDecoder?.queue.overwrite(data)
     }
@@ -174,17 +241,20 @@ enum DisplayMultiplexer {
                     continue
                 }
             } else {
-                if let recv = queue.receive(timeout: 10) {
-                    jpegData = recv
-                } else if prevControlVisible == true {
+                if prevControlVisible {
                     prevControlVisible = false
-                    if let last = lastJpegBuffer {
+                    for i in 0..<frameBuffers.count { clearPadding?(i) }
+                    if let recv = queue.receive(timeout: 10) {
+                        jpegData = recv
+                    } else if let last = lastJpegBuffer {
                         jpegData = last
                     } else {
                         clear(frameBufferIndex)
                         flush(frameBufferIndex)
                         continue
                     }
+                } else if let recv = queue.receive(timeout: 10) {
+                    jpegData = recv
                 } else {
                     continue
                 }
@@ -193,7 +263,8 @@ enum DisplayMultiplexer {
             let nextFrameBufferIndex = (frameBufferIndex + 1) % frameBuffers.count
             let decodeStart = timer.count
             do {
-                try decoder.decode(inputBuffer: jpegData, outputBuffer: frameBuffers[nextFrameBufferIndex])
+                try decoder.decode(inputBuffer: jpegData, outputBuffer: transformImage != nil ? workFrameBuffer : frameBuffers[nextFrameBufferIndex])
+                transformImage?(nextFrameBufferIndex)
             } catch {
                 continue
             }

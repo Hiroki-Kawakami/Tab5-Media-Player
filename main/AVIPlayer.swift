@@ -60,6 +60,18 @@ final class AVIPlayer {
         guard let info = dmux.open(file: file) else { return false }
         self.info = info
 
+        // setup video scale
+        if info.video.width * info.video.height > 1280 * 720 {
+            Log.error("Video Resolution is too large!")
+            return false
+        }
+        if info.video.width == 720 && info.video.height == 1280 {
+            DisplayMultiplexer.jpegDecoderMode = .direct
+        } else {
+            let size = Size(width: Int(info.video.width), height: Int(info.video.height))
+            DisplayMultiplexer.jpegDecoderMode = .aspectFitRotate(size: size)
+        }
+
         // setup audio codec
         switch info.audio.codec {
         case AVI_DMUX_AUDIO_CODEC_PCM:

@@ -98,6 +98,7 @@ class FileManagerView {
             .map { ListItem(directory: path, name: $0) { self.onSelect(item: $0) } }
 
         for item in items {
+            if !item.isDirectory && !item.name.lowercased().hasSuffix(".avi") { continue }
             let icon = item.isDirectory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_VIDEO
             let button = list.addButton(icon: icon, text: item.name)
             button.addEventCb({

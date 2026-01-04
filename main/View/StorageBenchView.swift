@@ -85,9 +85,7 @@ class StorageBenchView {
 
     private lazy var benchmarkOutput = FFI.Wrapper { (str: UnsafePointer<CChar>) in
         let sstr = String(cString: str)
-        if !sstr.hasPrefix("Progress") {
-            LVGL.asyncCall { self.println(sstr) }
-        }
+        LVGL.asyncCall { self.println(sstr) }
         print(sstr)
     }
 

@@ -9,6 +9,7 @@ enum DisplayMultiplexer {
     private(set) static var colorSpace: ColorSpace!
     private(set) static var frameBuffers: [UnsafeMutableRawBufferPointer]!
     private static var getTouchPoint: (() -> Point?)!
+    private static var setBrightness: ((Int) -> ())!
 
     enum Mode {
         case fileManager
@@ -31,7 +32,7 @@ enum DisplayMultiplexer {
                 )
             case .videoPlayer:
                 Config(
-                    uiRegions: [(yOffset: 0, height: 60), (yOffset: size.height - 150, height: 150)],
+                    uiRegions: [(yOffset: 0, height: 60), (yOffset: size.height - 162, height: 162)],
                     canHideControl: true,
                     autoRefresh: false,
                     jpegDecoder: true,
@@ -69,6 +70,7 @@ enum DisplayMultiplexer {
         colorSpace: ColorSpace,
         frameBuffers: [UnsafeMutableRawBufferPointer],
         getTouchPoint: @escaping (() -> Point?),
+        setBrightness: @escaping ((Int) -> ()),
     ) throws(IDF.Error) {
         Self.ppa = try IDF.PPAClient(operType: .srm)
         Self.clear = clear
@@ -76,6 +78,8 @@ enum DisplayMultiplexer {
         Self.colorSpace = colorSpace
         Self.frameBuffers = frameBuffers
         Self.getTouchPoint = getTouchPoint
+        Self.setBrightness = setBrightness
+        setBrightness(brightness)
 
         buffer = Memory.allocate(type: lv_color_t.self, capacity: size.area, capability: .spiram)!
         lvglDisplay = LVGL.Display.createDirectBufferDisplay(buffer: buffer.baseAddress, size: size) { display, pixels in
@@ -212,6 +216,12 @@ enum DisplayMultiplexer {
                 start = now
                 decodeDurationMax = 0
             }
+        }
+    }
+
+    static var brightness: Int = 50 {
+        didSet {
+            setBrightness(brightness)
         }
     }
 }

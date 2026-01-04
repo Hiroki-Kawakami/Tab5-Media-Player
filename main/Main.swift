@@ -20,7 +20,8 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
         flush: { tab5.display.flush(fbNum: $0) },
         colorSpace: PixelFormat.self == RGB888.self ? .rgb888 : .rgb565,
         frameBuffers: tab5.display.frameBuffers.map { UnsafeMutableRawBufferPointer($0) },
-        getTouchPoint: { (try? tab5.touch.coordinates)?.first }
+        getTouchPoint: { (try? tab5.touch.coordinates)?.first },
+        setBrightness: { tab5.display.brightness = $0 }
     )
     try AudioController.configure(
         open: { try? tab5.audio.open(rate: $0, bps: $1, ch: $2) },
@@ -41,6 +42,4 @@ func main<PixelFormat: Pixel>(pixelFormat: PixelFormat.Type) throws(IDF.Error) {
             mountUsbDrive: { path, maxFiles throws(IDF.Error) in try mscDriver.mount(path: path, maxFiles: maxFiles) }
         )
     }
-
-    tab5.display.brightness = 100
 }

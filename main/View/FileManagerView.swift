@@ -111,12 +111,7 @@ class FileManagerView {
         if item.isDirectory {
             FileManagerView.open(path: item.path)
         } else {
-            do {
-                let player = try VideoPlayerView()
-                player.play(path: item.path)
-            } catch {
-                // todo: show error message
-            }
+            VideoPlayerView.open(file: item.path)
         }
     }
 }

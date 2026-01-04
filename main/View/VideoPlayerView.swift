@@ -2,138 +2,128 @@ fileprivate let Log = Logger(tag: "VideoPlayer")
 
 class VideoPlayerView {
 
-    static var config: (
-        setPlayerDisplay: ((Bool) -> ()),
-        outputFormat: IDF.JPEG.Decoder.OutputFormat,
-        frameBuffers: [UnsafeMutableRawBufferPointer],
-        flush: (Int) -> (),
-        audioSetClock: (UInt32, UInt8, UInt8) -> Void,
-        audioWrite: (UnsafeMutableRawBufferPointer) -> Void
-    )!
-    var queue: Queue<UnsafeRawBufferPointer?>?
-    let gptimer: IDF.GeneralPurposeTimer
-    var esptimer: IDF.ESPTimer?
-    let player: AVIPlayer
-    let jpegBuffer = [UnsafeMutableBufferPointer<UInt8>]((0..<8).map({ _ in
-        Memory.allocate(type: UInt8.self, capacity: 512 * 1024, capability: .spiram)!
-    }))
-    let audioBuffer = Memory.allocate(type: UInt8.self, capacity: 128 * 1024, capability: .spiram)!
-
-    init() throws(IDF.Error) {
-        gptimer = try IDF.GeneralPurposeTimer(resolutionHz: 1000 * 1000)
-        player = try AVIPlayer()
+    static func open(file: String) {
+        let view = VideoPlayerView(file: file)
+        DisplayMultiplexer.push(mode: .videoPlayer(view: view), screen: view.screen)
+        Task(name: "PlayerView", priority: 2) { _ in view.start() }
     }
 
-    deinit {
-        for buffer in jpegBuffer {
-            Memory.free(buffer)
-        }
-        Log.info("VideoPlayerView deinit")
+    let file: String
+    let screen = LVGL.Screen()
+    let player = AVIPlayer()
+
+    var playButtonLabel: LVGL.Label!
+    var volumeSlider: LVGL.Slider!
+
+    init(file: String) {
+        self.file = file
+
+        screen.setStyleBgColor(.black)
+        createNavigationBar()
+        createControlView()
+
+        player.stateChangedCallback = { self.stateChanged(state: $0) }
     }
 
-    struct Events: OptionSet {
-        let rawValue: UInt32
-        static let frameTimeout = Events(rawValue: 1 << 0)
+    func createNavigationBar() {
+        let navigationBar = LVGL.Object(parent: screen)
+        navigationBar.setSize(width: LVGL.percent(100), height: 60)
+        navigationBar.align(.topMid)
+        navigationBar.setStyleBgColor(.black)
+        navigationBar.setStyleBorderWidth(1)
+        navigationBar.setStyleBorderColor(.white)
+        navigationBar.setStyleBorderSide(LV_BORDER_SIDE_BOTTOM)
+        navigationBar.setStyleRadius(0)
+        navigationBar.removeFlag(.scrollable)
+
+        let titleLabel = LVGL.Label(parent: navigationBar)
+        titleLabel.setText(String(file.split(separator: "/").last ?? "Video Player"))
+        titleLabel.center()
+        titleLabel.setStyleTextColor(.white)
+
+        let backButton = LVGL.Button(parent: navigationBar)
+        backButton.setHeight(50)
+        backButton.align(.leftMid)
+        backButton.addEventCallback(filter: .pressed, callback: backButtonAction)
+        let backButtonLabel = LVGL.Label(parent: backButton)
+        backButtonLabel.setText("Back")
+        backButtonLabel.center()
+        backButtonLabel.setStyleTextColor(.white)
+    }
+    func createControlView() {
+        let controlView = LVGL.Object(parent: screen)
+        controlView.setSize(width: LVGL.percent(100), height: 150)
+        controlView.align(.bottomMid)
+        controlView.setStyleBgColor(.black)
+        controlView.setStyleBorderWidth(1)
+        controlView.setStyleBorderColor(.white)
+        controlView.setStyleBorderSide(LV_BORDER_SIDE_TOP)
+        controlView.setStyleRadius(0)
+        controlView.removeFlag(.scrollable)
+
+        let playButton = LVGL.Button(parent: controlView)
+        playButton.setSize(width: 70, height: 70)
+        playButton.align(.center)
+        playButton.addEventCallback(filter: .pressed, callback: playButtonPressed)
+        playButtonLabel = LVGL.Label(parent: playButton)
+        playButtonLabel.center()
+        playButtonLabel.setStyleTextColor(.white)
+        stateChanged(state: player.state)
+
+        let volumeRow = LVGL.Object(parent: controlView)
+        volumeRow.removeStyleAll()
+        volumeRow.setSize(width: LVGL.percent(100), height: 30)
+        volumeRow.align(.bottomMid, yOffset: 10)
+        volumeSlider = LVGL.Slider(parent: volumeRow)
+        volumeSlider.setWidth(270)
+        volumeSlider.align(.center)
+        volumeSlider.setRange(min: 1, max: 100)
+        volumeSlider.setValue(Int32(AudioController.volume), anim: false)
+        volumeSlider.addEventCallback(filter: .valueChanged, callback: volumeSliderValueChanged)
     }
 
-    func play(path: String) {
-        guard let info = player.open(file: path) else {
-            Log.error("Failed to start AVI Player")
-            dispose()
-            return
+    func start() {
+        if player.open(file: file) {
+            player.play()
         }
-
-        VideoPlayerView.config.setPlayerDisplay(true)
-        queue = Queue<UnsafeRawBufferPointer?>(capacity: 1)!
-        Task(name: "Decoder", priority: 10, xCoreID: 0) { _ in
-            let decoder = try! IDF.JPEG.Decoder(outputFormat: VideoPlayerView.config.outputFormat)
-            self.jpegDecoderTask(decoder: decoder)
-            self.queue = nil
-            Log.info("Task END")
-        }
-
-        VideoPlayerView.config.audioSetClock(
-            info.audio.sampling_rate,
-            16,
-            info.audio.channels
-        )
-
-        let eventGroup = EventGroup(type: Events.self)
-        esptimer = try! IDF.ESPTimer(name: "Player") {
-            eventGroup.set(bits: .frameTimeout)
-        }
-        Task(name: "Player", priority: 8, xCoreID: 0) { _ in
-            var jpegBufferIndex = 0
-            var frameCount = 0
-            while true {
-                // if frameCount > 3 { eventGroup.wait(bits: .frameTimeout) }
-                self.player.videoBuffer = self.jpegBuffer[jpegBufferIndex]
-                self.player.audioBuffer = self.audioBuffer
-                guard let frame = self.player.readFrame() else { break }
-                if frame.type == AVI_DMUX_FRAME_TYPE_VIDEO {
-                    eventGroup.wait(bits: .frameTimeout)
-                    if frame.size > 0 {
-                        self.queue?.send(UnsafeRawBufferPointer(self.jpegBuffer[jpegBufferIndex]))
-                        jpegBufferIndex = (jpegBufferIndex + 1) % self.jpegBuffer.count
-                    }
-                    frameCount += 1
-                }
-                if frame.type == AVI_DMUX_FRAME_TYPE_AUDIO && frame.size > 0 {
-                    if info.audio.codec == AVI_DMUX_AUDIO_CODEC_MP3 {
-                        self.player.decoder.decode(buffer: self.audioBuffer) {
-                            VideoPlayerView.config.audioWrite($0)
-                        }
-                    } else {
-                        VideoPlayerView.config.audioWrite(
-                            UnsafeMutableRawBufferPointer(start: self.audioBuffer.baseAddress, count: Int(frame.size))
-                        )
-                    }
-                }
-            }
-        }
-        // let fpsTime = 1000 * 1000 / info.video.frame_rate;
-        // esptimer?.startPeriodic(period: UInt64(fpsTime))
-        esptimer?.startPeriodic(period: UInt64(info.video.frame_rate))
-
+    }
+    func close() {
+        player.close()
+        DisplayMultiplexer.pop()
     }
 
-    func stop() {
-
-    }
-
-    private func dispose() {
-        queue?.send(nil)
-        while queue != nil { Task.delay(10) }
-        VideoPlayerView.config.setPlayerDisplay(false)
-    }
-
-    private func jpegDecoderTask(decoder: IDF.JPEG.Decoder) {
-        let frameBuffers = VideoPlayerView.config.frameBuffers
-        var frameBufferIndex = 0
-        var frameCount = 0
-        var start = gptimer.count
-        var decodeDurationMax: UInt64 = 0
-        for jpegData in queue! {
-            guard let jpegData = jpegData else { break }
-            let nextFrameBufferIndex = (frameBufferIndex + 1) % frameBuffers.count
-            let decodeStart = gptimer.count
-            guard let _ = try? decoder.decode(inputBuffer: jpegData, outputBuffer: frameBuffers[nextFrameBufferIndex]) else {
-                continue
-            }
-            let decodeDuration = gptimer.duration(from: decodeStart)
-            if decodeDuration > decodeDurationMax { decodeDurationMax = decodeDuration }
-
-            VideoPlayerView.config.flush(nextFrameBufferIndex)
-            frameBufferIndex = nextFrameBufferIndex
-
-            frameCount += 1
-            let now = gptimer.count
-            if (now - start) >= 1000000 {
-                Log.info("\(frameCount)fps, decode: \(decodeDurationMax)")
-                frameCount = 0
-                start = now
-                decodeDurationMax = 0
-            }
+    private func stateChanged(state: AVIPlayer.State) {
+        switch state {
+        case .play : playButtonLabel.setText("Pause")
+        case .pause: playButtonLabel.setText("Play")
+        case .stop : playButtonLabel.setText("Play")
+        default: break
         }
+    }
+
+    // LVGL Events
+    private lazy var backButtonAction = FFI.Wrapper {
+        self.close()
+    }
+    private lazy var playButtonPressed = FFI.Wrapper {
+        if self.player.state == .play {
+            self.player.pause()
+        } else if self.player.state == .pause {
+            self.player.resume()
+        } else {
+            self.player.play()
+        }
+    }
+    private lazy var volumeSliderValueChanged = FFI.Wrapper {
+        AudioController.volume = Int(self.volumeSlider.getValue())
+    }
+}
+
+fileprivate extension LVGL.ObjectProtocol {
+    func addEventCallback(filter: lv_event_code_t, callback: FFI.Wrapper<() -> ()>) {
+        addEventCb({
+            let event = LVGL.Event(e: $0!)
+            FFI.Wrapper<() -> ()>.unretained(event.getUserData())()
+        }, filter: filter, userData: callback.passUnretained())
     }
 }

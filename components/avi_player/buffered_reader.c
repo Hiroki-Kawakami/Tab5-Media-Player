@@ -41,7 +41,7 @@ typedef struct buffered_reader {
 } buffered_reader_t;
 
 static void br_preload_task(void *args) {
-    LOG_DEBUG("Start Task");
+    LOG_INFO("Start Preload Task");
     buffered_reader_t *reader = (buffered_reader_t*)args;
     while (true) {
         br_event_t event = xEventGroupWaitBits(reader->event_group, BR_EVENT_ALL, 0, 0, portMAX_DELAY);
@@ -83,6 +83,7 @@ static void br_preload_task(void *args) {
     }
     vEventGroupDelete(reader->event_group);
     reader->event_group = NULL;
+    LOG_INFO("End Preload Task");
     vTaskDelete(NULL);
 }
 
@@ -119,9 +120,11 @@ buffered_reader_t *br_open(const char *path) {
 }
 
 void br_close(buffered_reader_t *reader) {
-    for (int i = 0; i < BR_CHUNK_NUM; i++) {
-        memory_free(reader->buffer[i]);
-    }
+    xEventGroupSetBits(reader->event_group, BR_EVENT_STOP);
+    while (reader->event_group) vTaskDelay(pdMS_TO_TICKS(10));
+    vSemaphoreDelete(reader->mutex);
+    close(reader->fd);
+    for (int i = 0; i < BR_CHUNK_NUM; i++) memory_free(reader->buffer[i]);
     memory_free(reader);
 }
 

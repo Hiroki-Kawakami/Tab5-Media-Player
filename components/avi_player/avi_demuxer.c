@@ -174,9 +174,11 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
                                             info->audio.codec = format_tag_to_audio_codec(wfx.format_tag);
                                             info->audio.channels = wfx.channels;
                                             info->audio.sampling_rate = wfx.samples_per_sec;
+                                            info->audio.bits_per_sample = wfx.bits_per_sample;
                                             info->audio.max_frame_size = strh.suggested_buffer_size;
-                                            LOG_DEBUG("        Audio: format=0x%04x, channels=%u, rate=%u, max_size=%u",
-                                                   wfx.format_tag, wfx.channels, (unsigned int)wfx.samples_per_sec, (unsigned int)strh.suggested_buffer_size);
+                                            LOG_DEBUG("        Audio: format=0x%04x, channels=%u, rate=%u, bits=%u, max_size=%u",
+                                                   wfx.format_tag, wfx.channels, (unsigned int)wfx.samples_per_sec,
+                                                   wfx.bits_per_sample, (unsigned int)strh.suggested_buffer_size);
                                             // Skip remaining bytes if any
                                             if (strf_chunk.size > sizeof(wfx)) {
                                                 br_lseek(dmux->reader, strf_chunk.size - sizeof(wfx), SEEK_CUR);

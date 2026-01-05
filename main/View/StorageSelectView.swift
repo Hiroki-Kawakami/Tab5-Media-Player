@@ -79,7 +79,7 @@ class StorageSelectView {
             FFI.Wrapper<() -> ()>.unretained(event.getUserData())()
         }, filter: .pressed, userData: openBench.passUnretained())
         let benchButtonLabel = LVGL.Label(parent: benchButton)
-        benchButtonLabel.setText(LV_SYMBOL_SETTINGS)
+        benchButtonLabel.setText(LV_SYMBOL_SD_CARD)
         benchButtonLabel.center()
         benchButtonLabel.setStyleTextColor(.white)
     }

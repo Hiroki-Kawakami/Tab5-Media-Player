@@ -53,3 +53,4 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux);
 bool avi_dmux_read_frame(avi_dmux_t *dmux, avi_dmux_frame_t *frame,
                          uint8_t *video_buffer, uint32_t video_buffer_size,
                          uint8_t *audio_buffer, uint32_t audio_buffer_size);
+void avi_dmux_seek_to_start(avi_dmux_t *dmux);

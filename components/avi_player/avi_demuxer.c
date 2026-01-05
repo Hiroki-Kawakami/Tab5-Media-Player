@@ -335,3 +335,7 @@ bool avi_dmux_read_frame(avi_dmux_t *dmux, avi_dmux_frame_t *frame,
         }
     }
 }
+
+void avi_dmux_seek_to_start(avi_dmux_t *dmux) {
+    br_lseek(dmux->reader, dmux->info->movi_location, SEEK_SET);
+}

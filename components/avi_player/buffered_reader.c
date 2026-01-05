@@ -53,6 +53,7 @@ static void br_preload_task(void *args) {
         if (current_offset < reader->first_chunk_offset) {
             reader->chunk_offset = 0;
             reader->chunk_length = 0;
+            reader->first_chunk_offset = 0;
         } else if (reader->chunk_length > 0 && reader->first_chunk_offset + BR_CHUNK_SIZE <= current_offset) {
             LOG_DEBUG("invalidate chunk: 0x%08lX", reader->first_chunk_offset);
             while (reader->chunk_length > 0 && reader->first_chunk_offset + BR_CHUNK_SIZE <= current_offset) {
@@ -222,7 +223,7 @@ void br_set_preload_enable(buffered_reader_t *reader, bool enable) {
         reader->preload_enabled = true;
         LOG_DEBUG("Prefetch enable: 0x%08lX", reader->current_offset);
         xSemaphoreGive(reader->mutex);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(100));
     } else {
         xSemaphoreTake(reader->mutex, portMAX_DELAY);
         lseek(reader->fd, reader->current_offset, SEEK_SET);

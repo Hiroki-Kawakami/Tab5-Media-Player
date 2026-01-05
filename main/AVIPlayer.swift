@@ -32,6 +32,10 @@ fileprivate struct AVIDemuxer {
         )
         return result ? frame : nil
     }
+
+    func seekToStart() {
+        avi_dmux_seek_to_start(dmux)
+    }
 }
 
 final class AVIPlayer {
@@ -96,6 +100,7 @@ final class AVIPlayer {
 
     func play() {
         if let info = info {
+            if state == .stop { dmux.seekToStart() }
             state = .play
             startTimer(frameRate: UInt64(info.video.frame_rate))
         }

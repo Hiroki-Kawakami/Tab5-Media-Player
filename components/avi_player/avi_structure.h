@@ -90,6 +90,19 @@ typedef struct {
     uint16_t size;
 } __attribute__((packed)) wave_format_ex_t;
 
+// idx1 index entry structure
+typedef struct {
+    fourcc_t chunk_id;    // '00dc', '00db', '01wb' etc
+    uint32_t flags;       // Flags (keyframe, etc)
+    uint32_t offset;      // Offset from movi start
+    uint32_t size;        // Chunk size
+} __attribute__((packed)) avi_index_entry_t;
+
+// Maximum number of index entries to keep in memory
+#ifndef AVI_DMUX_MAX_INDEX_ENTRIES
+#define AVI_DMUX_MAX_INDEX_ENTRIES 36000
+#endif
+
 inline static avi_dmux_video_codec_t fourcc_to_video_codec(fourcc_t fourcc) {
     switch (fourcc) {
         case FOURCC_MJPG:

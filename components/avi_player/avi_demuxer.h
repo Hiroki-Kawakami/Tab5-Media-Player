@@ -33,6 +33,13 @@ typedef struct {
         uint32_t max_frame_size;
     } video;
     off_t movi_location;
+    off_t idx1_location;
+    uint32_t idx1_size;
+    struct {
+        uint32_t *frame_offsets;  // Video frame offsets from movi start
+        uint32_t entry_count;     // Number of entries actually stored
+        uint32_t skip_interval;   // 1=all frames, 2=every 2nd frame, etc
+    } index;
 } avi_dmux_info_t;
 
 typedef enum {
@@ -54,3 +61,4 @@ bool avi_dmux_read_frame(avi_dmux_t *dmux, avi_dmux_frame_t *frame,
                          uint8_t *video_buffer, uint32_t video_buffer_size,
                          uint8_t *audio_buffer, uint32_t audio_buffer_size);
 void avi_dmux_seek_to_start(avi_dmux_t *dmux);
+bool avi_dmux_seek_to_frame(avi_dmux_t *dmux, uint32_t frame_number);

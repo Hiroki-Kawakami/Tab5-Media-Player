@@ -25,6 +25,72 @@ typedef struct avi_dmux {
     uint32_t video_frame_count;
 } avi_dmux_t;
 
+static bool build_video_index(avi_dmux_t *dmux, avi_dmux_info_t *info) {
+    if (info->idx1_location == 0 || info->idx1_size == 0) {
+        LOG_INFO("No idx1 chunk, indexing disabled");
+        return false;
+    }
+
+    uint32_t total_video_frames = info->video.total_frames;
+    if (total_video_frames == 0) {
+        LOG_ERROR("Total frames is 0");
+        return false;
+    }
+
+    // Calculate skip interval to fit within max entries
+    uint32_t skip_interval = 1;
+    uint32_t entry_count = total_video_frames;
+    while (entry_count > AVI_DMUX_MAX_INDEX_ENTRIES) {
+        skip_interval++;
+        entry_count = (total_video_frames + skip_interval - 1) / skip_interval;
+    }
+
+    info->index.skip_interval = skip_interval;
+    info->index.entry_count = entry_count;
+
+    // Allocate index array
+    info->index.frame_offsets = memory_allocate(sizeof(uint32_t) * entry_count);
+    if (!info->index.frame_offsets) {
+        LOG_ERROR("Failed to allocate index memory (%u entries)", (unsigned int)entry_count);
+        return false;
+    }
+
+    LOG_INFO("Building video index: %u total frames -> %u entries (skip=%u)",
+             (unsigned int)total_video_frames, (unsigned int)entry_count, (unsigned int)skip_interval);
+
+    // Read idx1 and extract video frame offsets
+    br_lseek(dmux->reader, info->idx1_location, SEEK_SET);
+
+    uint32_t video_frame_index = 0;
+    uint32_t index_entry_pos = 0;
+    uint32_t entries_in_idx1 = info->idx1_size / sizeof(avi_index_entry_t);
+
+    for (uint32_t i = 0; i < entries_in_idx1; i++) {
+        avi_index_entry_t entry;
+        if (br_read(dmux->reader, &entry, sizeof(entry)) != sizeof(entry)) {
+            LOG_ERROR("Failed to read idx1 entry %u", (unsigned int)i);
+            memory_free(info->index.frame_offsets);
+            info->index.frame_offsets = NULL;
+            return false;
+        }
+
+        // Check if this is a video frame
+        if (entry.chunk_id == FOURCC_00db || entry.chunk_id == FOURCC_00dc) {
+            // Should we store this frame?
+            if (video_frame_index % skip_interval == 0) {
+                if (index_entry_pos < entry_count) {
+                    info->index.frame_offsets[index_entry_pos] = entry.offset;
+                    index_entry_pos++;
+                }
+            }
+            video_frame_index++;
+        }
+    }
+
+    LOG_INFO("Index built: %u/%u entries filled", (unsigned int)index_entry_pos, (unsigned int)entry_count);
+    return true;
+}
+
 avi_dmux_t *avi_dmux_create(const char *file) {
     buffered_reader_t *reader;
     reader = br_open(file);
@@ -45,6 +111,9 @@ void avi_dmux_delete(avi_dmux_t *dmux) {
     }
     br_close(dmux->reader);
     if (dmux->info) {
+        if (dmux->info->index.frame_offsets) {
+            memory_free(dmux->info->index.frame_offsets);
+        }
         memory_free(dmux->info);
     }
     memory_free(dmux);
@@ -56,6 +125,13 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
         LOG_ERROR("Failed to allocate memory for info");
         return NULL;
     }
+
+    // Initialize idx1 fields
+    info->idx1_location = 0;
+    info->idx1_size = 0;
+    info->index.frame_offsets = NULL;
+    info->index.entry_count = 0;
+    info->index.skip_interval = 1;
 
     // Seek to start
     br_lseek(dmux->reader, 0, SEEK_SET);
@@ -96,21 +172,21 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
             break;
         }
 
-        LOG_DEBUG("Parsing chunk at %lld: fourcc=0x%08x, size=%u", (long long)chunk_pos, chunk.fourcc, (unsigned int)chunk.size);
+        LOG_DEBUG("Parsing chunk at %lld: fourcc=0x%08x, size=%u", (long long)chunk_pos, (unsigned int)chunk.fourcc, (unsigned int)chunk.size);
 
         if (chunk.fourcc == FOURCC_LIST) {
             fourcc_t list_type;
             off_t list_end = chunk_pos + 8 + chunk.size;
             br_read(dmux->reader, &list_type, sizeof(list_type));
-            LOG_DEBUG("  LIST type: 0x%08x, list_end=%lld", list_type, (long long)list_end);
+            LOG_DEBUG("  LIST type: 0x%08x, list_end=%lld", (unsigned int)list_type, (long long)list_end);
 
             if (list_type == FOURCC_movi) {
                 // Found movie data (LIST movi), save location
                 info->movi_location = br_lseek(dmux->reader, 0, SEEK_CUR);
                 LOG_DEBUG("Found movi chunk at position %lld", (long long)info->movi_location);
-                // Seek to movi data start for frame reading
-                br_lseek(dmux->reader, info->movi_location, SEEK_SET);
-                break;
+                // Skip to the end of movi to continue searching for idx1
+                br_lseek(dmux->reader, list_end, SEEK_SET);
+                continue;
             }
 
             // For hdrl and strl, we still need to parse the contents
@@ -123,7 +199,7 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
                         break;
                     }
 
-                    LOG_DEBUG("  Sub-chunk at %lld: fourcc=0x%08x, size=%u", (long long)sub_pos, sub_chunk.fourcc, (unsigned int)sub_chunk.size);
+                    LOG_DEBUG("  Sub-chunk at %lld: fourcc=0x%08x, size=%u", (long long)sub_pos, (unsigned int)sub_chunk.fourcc, (unsigned int)sub_chunk.size);
 
                     if (sub_chunk.fourcc == FOURCC_avih) {
                         avi_main_header_t avih;
@@ -137,7 +213,7 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
                         fourcc_t nested_list_type;
                         off_t nested_list_end = sub_pos + 8 + sub_chunk.size;
                         br_read(dmux->reader, &nested_list_type, sizeof(nested_list_type));
-                        LOG_DEBUG("    Nested LIST type: 0x%08x", nested_list_type);
+                        LOG_DEBUG("    Nested LIST type: 0x%08x", (unsigned int)nested_list_type);
 
                         if (nested_list_type == FOURCC_strl) {
                             // Parse strl contents
@@ -147,7 +223,7 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
                                     break;
                                 }
 
-                                LOG_DEBUG("      strl chunk: fourcc=0x%08x, size=%u", strl_chunk.fourcc, (unsigned int)strl_chunk.size);
+                                LOG_DEBUG("      strl chunk: fourcc=0x%08x, size=%u", (unsigned int)strl_chunk.fourcc, (unsigned int)strl_chunk.size);
 
                                 if (strl_chunk.fourcc == FOURCC_strh) {
                                     avi_stream_header_t strh;
@@ -177,8 +253,8 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
                                             info->audio.bits_per_sample = wfx.bits_per_sample;
                                             info->audio.max_frame_size = strh.suggested_buffer_size;
                                             LOG_DEBUG("        Audio: format=0x%04x, channels=%u, rate=%u, bits=%u, max_size=%u",
-                                                   wfx.format_tag, wfx.channels, (unsigned int)wfx.samples_per_sec,
-                                                   wfx.bits_per_sample, (unsigned int)strh.suggested_buffer_size);
+                                                   (unsigned int)wfx.format_tag, (unsigned int)wfx.channels, (unsigned int)wfx.samples_per_sec,
+                                                   (unsigned int)wfx.bits_per_sample, (unsigned int)strh.suggested_buffer_size);
                                             // Skip remaining bytes if any
                                             if (strf_chunk.size > sizeof(wfx)) {
                                                 br_lseek(dmux->reader, strf_chunk.size - sizeof(wfx), SEEK_CUR);
@@ -221,6 +297,13 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
 
             // Seek to the end of this LIST chunk
             br_lseek(dmux->reader, list_end, SEEK_SET);
+        } else if (chunk.fourcc == FOURCC_idx1) {
+            // Found idx1 chunk
+            info->idx1_location = chunk_pos + 8;  // Data starts after header
+            info->idx1_size = chunk.size;
+            LOG_DEBUG("Found idx1 chunk at position %lld, size=%u", (long long)info->idx1_location, (unsigned int)chunk.size);
+            // Skip idx1 data for now
+            br_lseek(dmux->reader, chunk.size, SEEK_CUR);
         } else {
             // Skip unknown chunks
             br_lseek(dmux->reader, chunk.size, SEEK_CUR);
@@ -228,6 +311,12 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
     }
 
     dmux->info = info;
+
+    // Build video frame index from idx1
+    build_video_index(dmux, info);
+
+    // Seek to movi data start for frame reading
+    br_lseek(dmux->reader, info->movi_location, SEEK_SET);
 
     // Print AVI information
     LOG_INFO("=== AVI File Information ===");
@@ -239,10 +328,24 @@ avi_dmux_info_t *avi_dmux_parse_info(avi_dmux_t *dmux) {
     LOG_INFO("  Max Frame Size: %u bytes", (unsigned int)info->video.max_frame_size);
     LOG_INFO("[Audio]");
     LOG_INFO("  Codec:       %s", audio_codec_name(info->audio.codec));
-    LOG_INFO("  Channels:    %u", info->audio.channels);
+    LOG_INFO("  Channels:    %u", (unsigned int)info->audio.channels);
     LOG_INFO("  Sample Rate: %u Hz", (unsigned int)info->audio.sampling_rate);
-    LOG_INFO("  Bit Depth:   %u bits", info->audio.bits_per_sample);
+    LOG_INFO("  Bit Depth:   %u bits", (unsigned int)info->audio.bits_per_sample);
     LOG_INFO("  Max Frame Size: %u bytes", (unsigned int)info->audio.max_frame_size);
+    LOG_INFO("[Index]");
+    if (info->idx1_location > 0) {
+        LOG_INFO("  idx1 location: %lld", (long long)info->idx1_location);
+        LOG_INFO("  idx1 size:     %u bytes", (unsigned int)info->idx1_size);
+        if (info->index.frame_offsets) {
+            LOG_INFO("  Index entries: %u (skip interval: %u)",
+                     (unsigned int)info->index.entry_count,
+                     (unsigned int)info->index.skip_interval);
+        } else {
+            LOG_INFO("  Index: Not built");
+        }
+    } else {
+        LOG_INFO("  idx1: Not found");
+    }
 
     br_set_preload_enable(dmux->reader, true);
     return info;
@@ -338,4 +441,42 @@ bool avi_dmux_read_frame(avi_dmux_t *dmux, avi_dmux_frame_t *frame,
 
 void avi_dmux_seek_to_start(avi_dmux_t *dmux) {
     br_lseek(dmux->reader, dmux->info->movi_location, SEEK_SET);
+    dmux->video_frame_count = 0;
+}
+
+bool avi_dmux_seek_to_frame(avi_dmux_t *dmux, uint32_t frame_number) {
+    if (!dmux || !dmux->info) {
+        LOG_ERROR("Invalid dmux or info");
+        return false;
+    }
+
+    if (!dmux->info->index.frame_offsets) {
+        LOG_ERROR("Index not available, cannot seek");
+        return false;
+    }
+
+    // Convert actual frame number to index entry number
+    uint32_t index_entry = frame_number / dmux->info->index.skip_interval;
+
+    if (index_entry >= dmux->info->index.entry_count) {
+        LOG_ERROR("Frame %u out of range (max index entry: %u)",
+                  (unsigned int)frame_number, (unsigned int)(dmux->info->index.entry_count - 1));
+        return false;
+    }
+
+    // Get offset from index
+    uint32_t offset = dmux->info->index.frame_offsets[index_entry];
+
+    // Seek to the frame position
+    // Note: offset is relative to 'movi' FourCC (4 bytes before movi_location)
+    off_t target_pos = dmux->info->movi_location - 4 + offset;
+    br_lseek(dmux->reader, target_pos, SEEK_SET);
+
+    // Update video frame counter
+    dmux->video_frame_count = (index_entry * dmux->info->index.skip_interval);
+
+    LOG_DEBUG("Seeked to frame %u (index entry %u, offset %u, pos %lld)",
+              (unsigned int)frame_number, (unsigned int)index_entry, (unsigned int)offset, (long long)target_pos);
+
+    return true;
 }

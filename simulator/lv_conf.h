@@ -26,7 +26,7 @@
  *====================*/
 
 /** Color depth: 1 (I1), 8 (L8), 16 (RGB565), 24 (RGB888), 32 (XRGB8888) */
-#define LV_COLOR_DEPTH 32
+#define LV_COLOR_DEPTH 16
 
 /*=========================
    STDLIB WRAPPER SETTINGS

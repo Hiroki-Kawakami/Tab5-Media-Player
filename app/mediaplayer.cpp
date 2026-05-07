@@ -2,11 +2,23 @@
 #include "platform_port.hpp"
 #include "lvgl.hpp"
 
+#define GUI_WIDTH  360
+#define GUI_HEIGHT 640
+
+static uint16_t *gui_fb;
+static pf_port::SRMClient *gui_srm;
+
 static void lvgl_setup() {
-    auto fb = pf_port::display_get_frame_buffer(0);
-    auto disp = lv_display_create(720, 1280);
-    lv_display_set_buffers(disp, fb, NULL, 720 * 1280 * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
+    gui_fb = (uint16_t*)pf_port::psram_malloc(GUI_WIDTH * GUI_HEIGHT * 2);
+    gui_srm = new pf_port::SRMClient();
+    gui_srm->setInputBlock(GUI_WIDTH, GUI_HEIGHT, GUI_WIDTH, GUI_HEIGHT, 0, 0, pf_port::PixelFormat::RGB565);
+    gui_srm->setOutputBlock(720, 1280, 0, 0, pf_port::PixelFormat::RGB565);
+    gui_srm->setScale(2, 2);
+
+    auto disp = lv_display_create(GUI_WIDTH, GUI_HEIGHT);
+    lv_display_set_buffers(disp, gui_fb, NULL, GUI_WIDTH * GUI_HEIGHT * 2, LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(disp, [](lv_display_t *disp, const lv_area_t *area, uint8_t *px_map){
+        gui_srm->do_scale_rotate_mirror(gui_fb, pf_port::display_get_frame_buffer(0));
         pf_port::display_flush(0);
         lv_display_flush_ready(disp);
     });
@@ -18,8 +30,8 @@ static void lvgl_setup() {
         auto touch = pf_port::touch_get_point();
         if (touch.has_value()) {
             data->state = LV_INDEV_STATE_PRESSED;
-            data->point.x = std::get<0>(touch.value());
-            data->point.y = std::get<1>(touch.value());
+            data->point.x = std::get<0>(touch.value()) / 2;
+            data->point.y = std::get<1>(touch.value()) / 2;
         } else {
             data->state = LV_INDEV_STATE_RELEASED;
         }

@@ -3,6 +3,7 @@
 #include <vector>
 #include <tuple>
 #include <optional>
+#include <assert.h>
 #include <unistd.h>
 #include <SDL2/SDL.h>
 #include "lvgl.hpp"
@@ -26,6 +27,26 @@ static std::optional<std::tuple<int, int>> mouse;
 static bool app_running;
 
 static void sdl_mouse_event_handler(SDL_Event *event) {
+    auto convert = [](const SDL_MouseMotionEvent &motion){
+        int win_w, win_h, x = 0, y = 0;
+        SDL_GetWindowSize(sdl_window, &win_w, &win_h);
+        if (window_rotation == 0) {
+            x = ((double)motion.x / (double)win_w) * 720;
+            y = ((double)motion.y / (double)win_h) * 1280;
+        } else if (window_rotation == 90) {
+            x = ((double)motion.y / (double)win_h) * 720;
+            y = (1 - (double)motion.x / (double)win_w) * 1280;
+        } else if (window_rotation == 180) {
+            x = (1 - (double)motion.x / (double)win_w) * 720;
+            y = (1 - (double)motion.y / (double)win_h) * 1280;
+        } else if (window_rotation == 270) {
+            x = (1 - (double)motion.y / (double)win_h) * 720;
+            y = ((double)motion.x / (double)win_w) * 1280;
+        } else {
+            assert(0);
+        }
+        return std::make_tuple(x, y);
+    };
     switch(event->type) {
     case SDL_WINDOWEVENT:
         if(event->window.event == SDL_WINDOWEVENT_LEAVE) {
@@ -41,12 +62,12 @@ static void sdl_mouse_event_handler(SDL_Event *event) {
         break;
     case SDL_MOUSEBUTTONDOWN:
         if(event->button.button == SDL_BUTTON_LEFT) {
-            mouse = {event->motion.x, event->motion.y};
+            mouse = convert(event->motion);
         }
         break;
     case SDL_MOUSEMOTION:
         if (mouse.has_value()) {
-            mouse = {event->motion.x, event->motion.y};
+            mouse = convert(event->motion);
         }
         break;
     }
@@ -147,6 +168,13 @@ void display_flush(int fb_index) {
 
 std::optional<std::tuple<int, int>> touch_get_point() {
     return mouse;
+}
+
+void *psram_malloc(size_t size) {
+    return malloc(size);
+}
+void *psram_malloc_dma(size_t size) {
+    return malloc(size);
 }
 
 }

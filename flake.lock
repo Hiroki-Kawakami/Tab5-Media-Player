@@ -1,0 +1,105 @@
+{
+  "nodes": {
+    "esp-devkit": {
+      "inputs": {
+        "esp-idf-src": "esp-idf-src",
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1789282921,
+        "narHash": "sha256-trVD4fapkI1Bf2QQ6cjcZQgrZ8Wqo/oWXFvDr7Wn3wI=",
+        "ref": "refs/heads/main",
+        "rev": "45b896fc1bc99f3a495bf4c3213f067e7298fb92",
+        "revCount": 168,
+        "type": "git",
+        "url": "file:./esp-devkit"
+      },
+      "original": {
+        "type": "git",
+        "url": "file:./esp-devkit"
+      }
+    },
+    "esp-idf-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1787628068,
+        "narHash": "sha256-6+mPhof81Yrre8CFar33ufzmPHedSnVfTG5G9A6MbYM=",
+        "ref": "refs/tags/v6.1",
+        "rev": "fff9895c82d744c7237be8847347bdd1b07c6643",
+        "revCount": 53630,
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/espressif/esp-idf"
+      },
+      "original": {
+        "ref": "refs/tags/v6.1",
+        "submodules": true,
+        "type": "git",
+        "url": "https://github.com/espressif/esp-idf"
+      }
+    },
+    "flake-utils": {
+      "inputs": {
+        "systems": "systems"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1789344334,
+        "narHash": "sha256-vdhpDJ3Lr24lkZ+fDCjmBRRtw9/vcSzkqGJOJyF5h2U=",
+        "owner": "nixos",
+        "repo": "nixpkgs",
+        "rev": "c3eea5b2156db11c7eeeada3dc737711255b253e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nixos",
+        "ref": "nixos-26.05",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "esp-devkit": "esp-devkit",
+        "flake-utils": "flake-utils",
+        "nixpkgs": "nixpkgs"
+      }
+    },
+    "systems": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}

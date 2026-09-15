@@ -1,0 +1,11 @@
+build
+build-*
+managed_components
+sdkconfig
+sdkconfig.old
+.cache
+.deps
+.direnv
+.DS_Store
+captures
+__pycache__

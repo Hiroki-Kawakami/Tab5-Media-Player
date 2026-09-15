@@ -7,7 +7,12 @@ file(GLOB_RECURSE APP_SRCS ${APP_GLOB_FLAGS}
      "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
      "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
+set(APP_REQUIRES bsp ui_framework avi_demux jpeg_decode_enhanced esp_timer)
+if(ESP_PLATFORM)
+    list(APPEND APP_REQUIRES espressif__esp_audio_codec)
+endif()
+
 idf_component_register(
     SRCS ${APP_SRCS}
     INCLUDE_DIRS "."
-    REQUIRES bsp ui_framework)
+    REQUIRES ${APP_REQUIRES})

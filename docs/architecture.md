@@ -5,6 +5,7 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
+| `components/` | project-specific plain-C components (`avi_demux`) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
@@ -27,6 +28,9 @@ CMakeLists in script mode, where it is a hard error.
 targets: `bsp_init()`, the esp-devkit LVGL port, `display_manager.create_display()`,
 then the first screen. `esp32p4/main/main.cpp` and `simulator/main/main.cpp` only
 call it.
+
+The media pipeline (containers, decode, presentation, audio, and the extension
+points left for MKV/H.264/playlists) is described in [`playback.md`](playback.md).
 
 ## SD card
 

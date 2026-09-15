@@ -18,6 +18,7 @@
       in {
         devShells.default = pkgs.mkShell {
           inputsFrom = [ esp-devkit.devShells.${system}.default ];
+          packages = [ pkgs.ffmpeg ];
         };
       }
     );

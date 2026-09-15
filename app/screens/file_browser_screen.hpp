@@ -18,6 +18,7 @@ private:
     struct Entry {
         std::string name;
         bool directory;
+        bool playable;
     };
 
     std::string path_;

@@ -1,0 +1,48 @@
+settle
+tap 360 163
+settle
+tap 360 252
+settle
+capture player_list.jpg
+tap 360 252
+wait 1200
+capture player_poster.jpg
+tap 612 1060
+wait 800
+capture player_playing.jpg
+tap 612 1060
+wait 400
+capture player_paused.jpg
+tap 300 640
+wait 600
+capture player_bar_hidden.jpg
+tap 300 640
+wait 600
+capture player_bar_shown.jpg
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 640
+wait 300
+up
+wait 1000
+capture player_seek.jpg
+tap 612 892
+wait 800
+capture player_restart.jpg
+tap 612 800
+wait 300
+tap 612 1060
+wait 3500
+capture player_looped.jpg
+tap 612 1213
+settle
+capture player_left.jpg
+tap 360 340
+wait 1200
+tap 612 1060
+wait 1500
+capture player_ffmpeg.jpg
+tap 612 1213
+settle

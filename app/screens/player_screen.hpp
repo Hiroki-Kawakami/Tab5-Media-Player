@@ -1,0 +1,42 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Hiroki Kawakami
+ */
+
+#pragma once
+#include "screen_manager.hpp"
+#include "widgets.hpp"
+
+#include <string>
+
+class PlayerScreen : public NavigationScreen {
+public:
+    PlayerScreen(std::string name, std::string path)
+        : name_(std::move(name)), path_(std::move(path)) {}
+    ~PlayerScreen() override;
+    void build() override;
+    void onEnter() override;
+    void onExit() override;
+
+private:
+    bool openOverlay();
+    void buildOverlay(lv_obj_t *parent);
+    void setLoopIndicator(bool on);
+    void refresh();
+
+    std::string name_;
+    std::string path_;
+    bool playing_ = false;
+    bool scrubbing_ = false;
+    bool looping_ = false;
+
+    lv_display_t *main_ = nullptr;
+    lv_display_t *overlay_ = nullptr;
+    lv_obj_t *play_label_ = nullptr;
+    lv_obj_t *loop_label_ = nullptr;
+    lv_obj_t *progress_ = nullptr;
+    lv_obj_t *time_label_ = nullptr;
+    lv_obj_t *status_label_ = nullptr;
+    lv_obj_t *volume_slider_ = nullptr;
+    lv_timer_t *timer_ = nullptr;
+};

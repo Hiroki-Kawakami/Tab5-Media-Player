@@ -8,6 +8,7 @@
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "playback/player.hpp"
 #include "screens/home_screen.hpp"
 
 static const char *TAG = "media_player";
@@ -31,6 +32,7 @@ static esp_err_t display_init() {
 
 void app_entry() {
     bsp_config_t bsp_config = {};
+    bsp_config.display.fb_num = 3;
     bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
@@ -41,6 +43,7 @@ void app_entry() {
         ESP_LOGE(TAG, "display init: %s", esp_err_to_name(err));
         return;
     }
+    player_start();
 
     lv_async_call([] {
         screen_manager.load(std::make_shared<HomeScreen>());

@@ -4,6 +4,8 @@
  */
 
 #include "file_browser_screen.hpp"
+#include "media/demuxer.hpp"
+#include "player_screen.hpp"
 
 #include <algorithm>
 #include <dirent.h>
@@ -36,7 +38,8 @@ bool FileBrowserScreen::load_entries() {
     if (!dir) return false;
     while (struct dirent *ent = readdir(dir)) {
         if (ent->d_name[0] == '.') continue;
-        entries_.push_back({ent->d_name, ent->d_type == DT_DIR});
+        const bool directory = ent->d_type == DT_DIR;
+        entries_.push_back({ent->d_name, directory, !directory && demuxer_supports(ent->d_name)});
     }
     closedir(dir);
 
@@ -90,14 +93,21 @@ lv_obj_t *FileBrowserScreen::createRow(lv_obj_t *parent) {
 
 void FileBrowserScreen::bindRow(lv_obj_t *row, std::size_t index) {
     const Entry &entry = entries_[index];
-    lv_label_set_text(lv_obj_get_child(row, 0), entry.directory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_FILE);
+    const char *icon = entry.directory ? LV_SYMBOL_DIRECTORY
+                     : entry.playable  ? LV_SYMBOL_VIDEO
+                                       : LV_SYMBOL_FILE;
+    lv_label_set_text(lv_obj_get_child(row, 0), icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
-    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE, entry.directory);
+    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE, entry.directory || entry.playable);
 }
 
 void FileBrowserScreen::didSelectRow(std::size_t index) {
     const Entry &entry = entries_[index];
-    if (!entry.directory) return;
-    screen_manager.push(std::make_shared<FileBrowserScreen>(path_ + "/" + entry.name, entry.name));
+    const std::string path = path_ + "/" + entry.name;
+    if (entry.directory) {
+        screen_manager.push(std::make_shared<FileBrowserScreen>(path, entry.name));
+    } else if (entry.playable) {
+        screen_manager.push(std::make_shared<PlayerScreen>(entry.name, path));
+    }
 }

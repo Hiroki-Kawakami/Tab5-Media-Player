@@ -1,0 +1,25 @@
+settle
+tap 360 163
+settle
+capture file_browser_root.jpg
+tap 360 252
+settle
+capture file_browser_movies.jpg
+tap 100 60
+settle
+tap 360 164
+settle
+capture file_browser_empty.jpg
+tap 100 60
+settle
+down 360 1100
+wait 30
+move 360 950
+wait 30
+move 360 800
+wait 30
+move 360 650
+wait 30
+up
+settle
+capture file_browser_scrolled.jpg

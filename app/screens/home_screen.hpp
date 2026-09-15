@@ -10,4 +10,7 @@
 class HomeScreen : public NavigationScreen {
 public:
     void build() override;
+
+private:
+    void open_sd_card();
 };

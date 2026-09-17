@@ -1,12 +1,12 @@
 # Playback
 
 What plays today: MJPEG or H.264 (Constrained Baseline, up to 1280x720) in
-`*.avi` and `*.mkv` with PCM, MP3, IMA ADPCM or AAC audio, plus Opus in MKV
-only (or no audio), full screen, with play/pause, restart, seek, loop and
+`*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
+audio, plus Opus in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
 volume. Picking one in the file browser opens `PlayerScreen`. The H.264 decoder
 itself is described in [`h264.md`](h264.md).
 
-The planned additions are MP4, audio-only files, images, playlists and playing
+The planned additions are audio-only files, images, playlists and playing
 a directory in order. None of them exist yet.
 Their names are in the layout so you can see where each would land. Only the
 decisions that are expensive to reverse later were taken now.
@@ -19,7 +19,7 @@ PlayerScreen        LVGL overlay, transport UI
 Player              command task, state machine, media clock, pacing, loop
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
-  (Avi/MkvDemuxer)    │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
+  (Avi/Mkv/Mp4)       │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer ─ h264_dec ▶ packed DPB
   │                   │         overlay ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 media_buffer          │           └─▶ compose overlay ─▶ present
@@ -31,8 +31,9 @@ media_buffer          │           └─▶ compose overlay ─▶ present
 | `components/media_buffer/` | aligned read-ahead into the arena, packets as views into it |
 | `components/avi_demux/` | RIFF/AVI parsing, plain C with no app types |
 | `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
+| `components/mp4_demux/` | ISO BMFF/QuickTime parsing, plain C with no app types |
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
-| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI and MKV adapters |
+| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, MKV and MP4 adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
 | `app/video/` | `video_presenter` (placement, framebuffers, overlay, decode/present stages), `VideoRenderer` and its MJPEG and H.264 implementations, the FreeRTOS hooks the decoder runs on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
@@ -55,8 +56,8 @@ replace that inside the same function.
 
 - **H.264 parameter sets are always Annex-B.** For `CodecId::H264`,
   `TrackInfo::codec_private` holds `00 00 00 01 SPS … 00 00 00 01 PPS …`
-  whatever the container stored (avcC in MKV; avcC, Annex-B or nothing in
-  AVI), converted by `h264_config_to_annexb()` in `demuxer.cpp`, so the
+  whatever the container stored (avcC in MKV and MP4; avcC, Annex-B or
+  nothing in AVI), converted by `h264_config_to_annexb()` in `demuxer.cpp`, so the
   decoder never parses avcC. The packets themselves are not rewritten:
   `TrackInfo::nal_length_size` says how they are framed (0 = start codes,
   otherwise the avcC length size). An empty `codec_private` means the SPS/PPS
@@ -193,7 +194,7 @@ the presenter drive it.
   streams whose picture order count differs from it (the JVT `MR4/MR5_TANDBERG`
   streams do) decode correctly but show frames out of order. x264's baseline
   output never does this.
-- **No MP4.** It is the most common H.264 container; it gets its own demuxer.
+- **No fragmented MP4.** Files with `mvex`/`moof` are rejected.
 - **No CABAC, B slices, interlace, weighted prediction or 8x8 transform.**
   They are rejected with "re-encode with -profile:v baseline"; see
   [`h264.md`](h264.md).
@@ -314,6 +315,64 @@ element starts without tracking the hierarchy.
   an EOF flag when it parks at the end, and the player finishes once the ring
   is empty. A `Duration` a little past the last frame no longer leaves it
   playing forever.
+
+## MP4
+
+`mp4_demux` reads `moov` whole into PSRAM (up to 16 MB) and uses the sample
+tables in place. They are never expanded per sample, since a two-hour file has
+over half a million samples. Each track has a cursor (sample, chunk, current
+`stsc`/`stts`/`ctts` run, next sync sample) that steps in constant time; a seek
+rebuilds it by walking the runs, which are few.
+
+- **Finding `moov`.** Top-level boxes are skipped by size, so a `moov` after
+  `mdat` (no faststart) works at the cost of one seek on open.
+- **Tracks.** The best `vide` and `soun` track wins: a supported codec first,
+  then the `tkhd` enabled flag. Video is `avc1`/`avc3` (`avcC`), `jpeg`/`mjpa`,
+  or `mp4v` whose esds says MJPEG (object type 0x6C, which is what ffmpeg writes
+  for MJPEG in `.mp4`). Audio is `mp4a` with an AAC or MP3 object type (the esds
+  may sit inside a QuickTime `wave`), `.mp3`, `Opus`, or 16-bit `sowt`.
+  QuickTime sound descriptions v1/v2 are longer, and their extra header is
+  skipped.
+- **`dOps` is rewritten as an OpusHead**, because that is what both Opus
+  decoders take (big-endian fields become little-endian; the mapping table is
+  the same).
+- **A `sowt` sample is one PCM frame**, and `stsz` often says 1 byte, so the
+  size comes from the channel count and a chunk is handed out in packets of up
+  to 32 KB rather than one packet per frame.
+- **Timing.** pts is dts + ctts − the first edit's `media_time`, plus any
+  leading empty edits. ffmpeg's AAC edit skips 1024 priming samples, so the
+  first audio packet has a negative pts. Later edits are ignored with a warning.
+  The frame interval is the most common `stts` delta; the length is `mvhd`'s,
+  or the video `mdhd`'s without it.
+- **Rotation** is `-atan2(b, a)` of the `tkhd` matrix, as in ffmpeg's
+  `av_display_rotation_get`, which is the same counter-clockwise angle as the
+  MKV roll: an ffmpeg `-display_rotation 90` file shows the same as
+  `rotated.mkv` in all four UI rotations.
+- **Seeking** uses `stss`. H.264 lands on the last sync sample at or before the
+  target and reports its pts; MJPEG starts at the first frame after half an
+  interval before the target. Audio starts at its first sample at or after where
+  the video landed.
+
+**Packets come out in timestamp order, not file order.** Cameras, phones and
+Apple tools interleave in chunks of 0.5-1 s (ffmpeg interleaves much finer).
+Read in file order, a second of audio fills the 8-slot audio ring and stalls the
+reader while the video for that second is still behind it, or a second of video
+fills the 4-slot ring and the audio drains. Growing the rings would change the
+ring-full rules the H.264 pacing relies on. So the demuxer returns whichever
+track's next sample is earlier and reads backwards in the file when needed.
+
+- **`mb_view_at()` is a view at an offset that leaves the cursor alone.** The
+  cursor becomes a floor: the demuxer moves it forward to the lower of the two
+  tracks' next offsets, so the window keeps everything between them and a
+  backward read is a cache hit.
+- **Files that are not interleaved at all still play, slowly.** When the view
+  would end more than half the ring past the cursor, `mb_view_at()` moves the
+  cursor to the view, which drops the window, and the next read of the other
+  track drops it again, so every switch re-reads from the card. Such files are
+  rare, so nothing smarter is done; the demuxer logs once when the tracks are
+  that far apart. On the Tab5, `j_separate_big.mp4` plays but skips a burst of
+  frames about once a second, which is accepted. 720p in a normal MP4 plays as
+  fast as the same stream in MKV.
 
 ## Source rotation
 
@@ -492,7 +551,7 @@ presenter composes it over each picture before presenting.
   blocks hold 4 bytes of the left channel, then 4 of the right, and so on (as
   in ffmpeg and libsndfile), not alternating nibbles. MS ADPCM is not
   supported.
-- **Opus is MKV only** (ffmpeg cannot mux it into AVI) and decodes at
+- **Opus is MKV and MP4 only** (ffmpeg cannot mux it into AVI) and decodes at
   48 kHz. Only channel mapping family 0 (mono or stereo) is accepted. The
   OpusHead pre-skip is not applied on the device.
 - **The playback position is PCM frames written divided by the sample rate.**
@@ -566,6 +625,31 @@ files were made by rewriting the ffmpeg MKVs with a throwaway script that
 packs runs of up to four audio SimpleBlocks into one laced block (Xiph for AAC,
 EBML for Opus) and drops `SeekHead` and `Cues`; they are therefore not
 seekable. ffmpeg decodes them to the same samples as the originals.
+`simulator/verify/mp4.txt` plays everything in `Test MP4/` (a root directory
+sorting after `Test Audio/`), with seeks on the H.264, MP3, MJPEG and
+non-interleaved files, the rotation check on `f_rotated.mp4`, and a loop on
+`h_coarse.mp4`, then opens the empty `.mp4` placeholder at the root, which
+fails. The fixtures are the ffmpeg commands above at `size=640x360` with
+`.mp4` output:
+
+| file | how |
+|---|---|
+| `a_h264_aac.mp4` | H.264 baseline `-g 30`, `-c:a aac`, `-movflags +faststart`, 6 s |
+| `b_h264_mp3_tail.mp4` | same with `libmp3lame` and no faststart (`moov` at the end) |
+| `c_mjpeg.mp4` | MJPEG at `rate=10`, AAC (ffmpeg writes `mp4v`) |
+| `d_opus.mp4` | H.264, `libopus -ac 2`, `sample_rate=48000` |
+| `e_pcm.mov` | MJPEG at `rate=10`, `pcm_s16le` at 32 kHz (`sowt`) |
+| `f_rotated.mp4` | as `rotated.mkv`, but H.264 + AAC at 1280x720 |
+| `g_noaudio.m4v` | H.264 only, 3 s |
+| `h_coarse.mp4`, `i_separate.mp4` | `a_h264_aac.mp4` rewritten into 1 s chunks, and into all video then all audio |
+| `j_separate_big.mp4` | 12 s of `testsrc2` at `-qp 12`, rewritten like `i_separate`, so the tracks are 4 MB apart |
+
+The rewritten files come from a throwaway script that copies the samples into
+a new `mdat` and rewrites `stsc`/`stco`; ffmpeg decodes them to the same
+frames as the original. The packets the demuxer returns for these files
+(track, pts, size, keyframe) match `ffprobe -show_packets` per track, within
+1 µs.
+
 - **Do not measure frame rate here.** The host decodes JPEG in software, so a
   10 fps clip shows about 8-9 fps.
 

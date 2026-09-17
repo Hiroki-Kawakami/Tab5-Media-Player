@@ -9,6 +9,7 @@
 
 std::unique_ptr<Demuxer> avi_demuxer_create();
 std::unique_ptr<Demuxer> mkv_demuxer_create();
+std::unique_ptr<Demuxer> mp4_demuxer_create();
 
 namespace {
 
@@ -20,6 +21,9 @@ struct Format {
 constexpr Format kFormats[] = {
     { ".avi", avi_demuxer_create },
     { ".mkv", mkv_demuxer_create },
+    { ".mp4", mp4_demuxer_create },
+    { ".m4v", mp4_demuxer_create },
+    { ".mov", mp4_demuxer_create },
 };
 
 bool starts_with_start_code(const uint8_t *data, std::size_t size) {

@@ -274,28 +274,24 @@ size_t mb_read(media_buffer_t *buffer, void *out, size_t size) {
     return done;
 }
 
-const uint8_t *mb_view(media_buffer_t *buffer, size_t size, uint32_t *ref) {
-    *ref = MB_NO_REF;
-    if (size == 0 || size > buffer->bounce_bytes) return NULL;
-    if (buffer->cursor + (off_t)size > buffer->size) return NULL;
-
-    xSemaphoreTake(buffer->lock, portMAX_DELAY);
-    const off_t end = buffer->cursor + (off_t)size;
+static const uint8_t *view_locked(media_buffer_t *buffer, off_t start, size_t size, bool advance,
+                                  uint32_t *ref) {
+    const off_t end = start + (off_t)size;
     if (!buffer->readahead || !wait_for(buffer, end)) {
         buffer->want = 0;
         xSemaphoreGive(buffer->lock);
         return NULL;
     }
 
-    const int first = (int)((buffer->cursor - buffer->base) / MB_CHUNK_BYTES);
-    const size_t offset = (size_t)((buffer->cursor - buffer->base) % MB_CHUNK_BYTES);
+    const int first = (int)((start - buffer->base) / MB_CHUNK_BYTES);
+    const size_t offset = (size_t)((start - buffer->base) % MB_CHUNK_BYTES);
     const int last = (int)((end - 1 - buffer->base) / MB_CHUNK_BYTES);
     const int slot = (buffer->head + first) % buffer->ring_chunks;
     const int count = last - first + 1;
 
     if (slot + count <= buffer->ring_chunks) {
         for (int i = 0; i < count; i++) buffer->pins[slot + i]++;
-        buffer->cursor = end;
+        if (advance) buffer->cursor = end;
         buffer->want = 0;
         xSemaphoreGive(buffer->lock);
         xSemaphoreGive(buffer->wake);
@@ -315,7 +311,6 @@ const uint8_t *mb_view(media_buffer_t *buffer, size_t size, uint32_t *ref) {
     }
     buffer->bounce_pins = 1;
     const off_t base = buffer->base;
-    const off_t start = buffer->cursor;
     const int head = buffer->head;
     xSemaphoreGive(buffer->lock);
 
@@ -333,12 +328,36 @@ const uint8_t *mb_view(media_buffer_t *buffer, size_t size, uint32_t *ref) {
     }
 
     xSemaphoreTake(buffer->lock, portMAX_DELAY);
-    buffer->cursor = end;
+    if (advance) buffer->cursor = end;
     buffer->want = 0;
     xSemaphoreGive(buffer->lock);
     xSemaphoreGive(buffer->wake);
     *ref = MB_BOUNCE_REF;
     return buffer->bounce;
+}
+
+const uint8_t *mb_view(media_buffer_t *buffer, size_t size, uint32_t *ref) {
+    *ref = MB_NO_REF;
+    if (size == 0 || size > buffer->bounce_bytes) return NULL;
+    if (buffer->cursor + (off_t)size > buffer->size) return NULL;
+
+    xSemaphoreTake(buffer->lock, portMAX_DELAY);
+    return view_locked(buffer, buffer->cursor, size, true, ref);
+}
+
+const uint8_t *mb_view_at(media_buffer_t *buffer, off_t offset, size_t size, uint32_t *ref) {
+    *ref = MB_NO_REF;
+    if (offset < 0 || size == 0 || size > buffer->bounce_bytes) return NULL;
+    if (offset + (off_t)size > buffer->size) return NULL;
+
+    xSemaphoreTake(buffer->lock, portMAX_DELAY);
+    const off_t span = offset + (off_t)size - align_down(buffer->cursor, MB_CHUNK_BYTES);
+    if (offset < buffer->cursor || span > (off_t)(buffer->ring_chunks / 2) * MB_CHUNK_BYTES) {
+        buffer->cursor = offset;
+        buffer->io_error = false;
+        drop_consumed(buffer);
+    }
+    return view_locked(buffer, offset, size, false, ref);
 }
 
 void mb_release(media_buffer_t *buffer, uint32_t ref) {

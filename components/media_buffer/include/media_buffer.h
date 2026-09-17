@@ -36,6 +36,7 @@ void mb_skip(media_buffer_t *buffer, off_t delta);
 void mb_set_readahead(media_buffer_t *buffer, bool enabled);
 
 const uint8_t *mb_view(media_buffer_t *buffer, size_t size, uint32_t *ref);
+const uint8_t *mb_view_at(media_buffer_t *buffer, off_t offset, size_t size, uint32_t *ref);
 void mb_release(media_buffer_t *buffer, uint32_t ref);
 void mb_release_all(media_buffer_t *buffer);
 void mb_interrupt(media_buffer_t *buffer, bool interrupted);

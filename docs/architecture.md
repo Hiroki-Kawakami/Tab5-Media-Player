@@ -32,6 +32,43 @@ call it.
 The media pipeline (containers, decode, presentation, audio, and the extension
 points left for MKV/H.264/playlists) is described in [`playback.md`](playback.md).
 
+## Shared SRAM buffer
+
+`app/media_player.cpp` reserves one 245760-byte, 64-byte-aligned array in
+`.bss`, which lands in internal SRAM (`CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`
+is off). It is split into two halves that serve two owners in turn:
+
+- the main LVGL display renders in `DisplayRenderMode::Partial` with the halves
+  as its two draw buffers;
+- media playback uses them as `jpeg_decode_enhanced` strip buffers.
+
+A hidden display does not render, so the halves are free while the main display
+is hidden. `media_player_acquire_sram()` hides it and waits for
+`bsp_display_wait_draw()`, because the second buffer makes partial blits
+asynchronous and one may still be reading a half. `media_player_release_sram()`
+shows it again. Anything else that wants the halves goes through the same pair,
+which also means media that keeps the LVGL main UI on screen cannot use them.
+
+The size is two strips of 16 rows × 2560 px × 3 bytes, which is where the 2560 px
+width limit for MJPEG comes from.
+
+## Orientation
+
+`app/ui_orientation.cpp` follows `bsp_imu_get_orientation()` for all four
+rotations; `UNKNOWN` and `FACE_UP/DOWN` keep the current one. With no listener
+it rotates the main display with `display_manager.set_rotation`, which the
+Partial render mode supports and which swaps the LVGL resolution. Home and the
+file browser have no landscape layout; their portrait layout just stretches.
+
+While the player is open it registers itself as the listener and the main
+display is left alone. `set_rotation` re-hands the draw buffers to LVGL, and
+during playback those buffers are the decoder's. The main display catches up
+when the listener is cleared, which `PlayerScreen::onExit` does after the
+decoder is gone and before the display is shown again.
+
+Opening the player keeps whatever rotation the UI already has; the video's
+aspect does not choose it.
+
 ## SD card
 
 The card is mounted at `/sdcard` when the Home screen's SD Card button is
@@ -59,7 +96,9 @@ so `./run.sh simulator --verify` / `./run.sh esp32p4 --verify` can inject touche
 back as JPEG. The console is USB-Serial-JTAG, which is what keeps full-panel
 captures fast. The harness links the JPEG encoder, which is why the factory
 partition is 4M rather than `singleapp`'s default. Coordinates in scripts are
-panel pixels (720x1280 portrait). See `esp-devkit/docs/harness.md`.
+panel pixels (720x1280 portrait) whatever the UI rotation. Scripts that need
+landscape inject it with `imu rot90`; the headless simulator otherwise stays at
+rotation 0. See `esp-devkit/docs/harness.md`.
 
 Opening the USB-Serial-JTAG port resets the board, so every
 `./run.sh esp32p4 --verify` starts from a fresh boot on the Home screen. A

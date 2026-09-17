@@ -4,28 +4,29 @@
  */
 
 #include "video_presenter.hpp"
-#include "mjpeg_decoder.hpp"
+#include "mjpeg_renderer.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 
 #include "bsp.h"
 #include "display_manager.hpp"
-#include "driver/ppa.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#ifdef ESP_PLATFORM
+#include "esp_cache.h"
+#endif
 
 static const char *TAG = "video_presenter";
 
-static constexpr uint32_t kScaleSteps = 16;
+static constexpr uint32_t kMaxScaleN = 255 * kScaleDenominator + kScaleDenominator - 1;
 static constexpr int kMaxFrameBuffers = 3;
 static constexpr uint32_t kOverlayPeriodMs = 100;
-static constexpr std::size_t kAlignment = 64;
 static constexpr float kFpsSmoothing = 0.25f;
 static constexpr uint32_t kSubmitTimeoutMs = 2000;
 static constexpr uint32_t kStopTimeoutMs = 2000;
@@ -45,52 +46,36 @@ static QueueHandle_t s_queue;
 static TaskHandle_t s_task;
 static std::atomic<bool> s_running{false};
 
-static ppa_client_handle_t s_ppa;
-static MjpegDecoder s_decoder;
-static uint8_t *s_scratch;
-static std::size_t s_scratch_capacity;
+static MjpegRenderer s_renderer;
 
 static lv_display_t *s_overlay;
 static bsp_size_t s_panel;
-static bsp_pixel_format_t s_format = BSP_PIXEL_FORMAT_RGB565;
 static std::size_t s_bytes_per_pixel = 2;
-static ppa_srm_color_mode_t s_color_mode = PPA_SRM_COLOR_MODE_RGB565;
 static bsp_rotation_t s_rotation = BSP_ROTATION_0;
+static std::atomic<bsp_rotation_t> s_requested_rotation{BSP_ROTATION_0};
 static int s_fb_count;
 static int s_fb_index;
 static std::atomic<bool> s_overlay_dirty{false};
 static std::atomic<bool> s_repaint{false};
-static bool s_have_picture;
-static DecodedFrame s_last_frame;
-static uint32_t s_last_width;
-static uint32_t s_last_height;
+static std::atomic<bool> s_clear_all{false};
+static uint32_t s_clear_pending;
+static bsp_rect_t s_rect;
+static bsp_size_t s_source;
 static std::string s_error;
 static float s_fps;
 static int64_t s_last_us;
-
-static std::size_t align_up(std::size_t value, std::size_t alignment) {
-    return (value + alignment - 1) / alignment * alignment;
-}
 
 static bool swaps_axes(bsp_rotation_t rotation) {
     return rotation == BSP_ROTATION_90 || rotation == BSP_ROTATION_270;
 }
 
-static ppa_srm_rotation_angle_t ppa_rotation(bsp_rotation_t rotation) {
-    switch (rotation) {
-    case BSP_ROTATION_90:  return PPA_SRM_ROTATION_ANGLE_90;
-    case BSP_ROTATION_180: return PPA_SRM_ROTATION_ANGLE_180;
-    case BSP_ROTATION_270: return PPA_SRM_ROTATION_ANGLE_270;
-    default:               return PPA_SRM_ROTATION_ANGLE_0;
-    }
+static bool same_rect(const bsp_rect_t &a, const bsp_rect_t &b) {
+    return a.origin.x == b.origin.x && a.origin.y == b.origin.y &&
+           a.size.width == b.size.width && a.size.height == b.size.height;
 }
 
-static bool color_mode_for(bsp_pixel_format_t format, ppa_srm_color_mode_t *out) {
-    switch (format) {
-    case BSP_PIXEL_FORMAT_RGB565: *out = PPA_SRM_COLOR_MODE_RGB565; return true;
-    case BSP_PIXEL_FORMAT_RGB888: *out = PPA_SRM_COLOR_MODE_RGB888; return true;
-    default: return false;
-    }
+static uint32_t all_framebuffers() {
+    return (1u << s_fb_count) - 1;
 }
 
 static std::size_t framebuffer_bytes() {
@@ -103,84 +88,76 @@ static void set_error(const std::string &message) {
     xSemaphoreGive(s_lock);
 }
 
-class ScratchAllocator : public FrameAllocator {
-public:
-    FrameBuffer lease(uint32_t pic_w, uint32_t pic_h) override {
-        const std::size_t needed = align_up((std::size_t)pic_w * pic_h * s_bytes_per_pixel, kAlignment);
-        if (!s_scratch || s_scratch_capacity < needed) {
-            s_have_picture = false;
-            heap_caps_free(s_scratch);
-            s_scratch = (uint8_t *)heap_caps_aligned_alloc(
-                kAlignment, needed, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
-            if (!s_scratch) {
-                s_scratch = (uint8_t *)heap_caps_aligned_alloc(kAlignment, needed, MALLOC_CAP_DEFAULT);
-            }
-            s_scratch_capacity = s_scratch ? needed : 0;
-        }
-        return { s_scratch, s_scratch_capacity };
+static void fill_black(uint8_t *framebuffer, bsp_rect_t area) {
+    if (area.size.width <= 0 || area.size.height <= 0) return;
+    const std::size_t stride = (std::size_t)s_panel.width * s_bytes_per_pixel;
+    const std::size_t row_bytes = (std::size_t)area.size.width * s_bytes_per_pixel;
+    const std::size_t first = (std::size_t)area.origin.y * stride +
+                              (std::size_t)area.origin.x * s_bytes_per_pixel;
+    for (int row = 0; row < area.size.height; row++) {
+        memset(framebuffer + first + (std::size_t)row * stride, 0, row_bytes);
     }
-};
-
-static ScratchAllocator s_scratch_allocator;
-
-static void clear_framebuffer(int index) {
-    void *framebuffer = bsp_display_get_frame_buffer(index);
-    if (framebuffer) memset(framebuffer, 0, framebuffer_bytes());
+#ifdef ESP_PLATFORM
+    const std::size_t span = (std::size_t)(area.size.height - 1) * stride + row_bytes;
+    esp_cache_msync(framebuffer + first, span,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+#endif
 }
 
-static bool blit(const DecodedFrame &frame, int index) {
-    void *framebuffer = bsp_display_get_frame_buffer(index);
-    if (!framebuffer) return false;
+static void clear_outside(int index, const bsp_rect_t &rect) {
+    auto *framebuffer = (uint8_t *)bsp_display_get_frame_buffer(index);
+    if (!framebuffer) return;
+    const int right = rect.origin.x + rect.size.width;
+    const int bottom = rect.origin.y + rect.size.height;
+    fill_black(framebuffer, { { 0, 0 }, { s_panel.width, rect.origin.y } });
+    fill_black(framebuffer, { { 0, bottom }, { s_panel.width, s_panel.height - bottom } });
+    fill_black(framebuffer, { { 0, rect.origin.y }, { rect.origin.x, rect.size.height } });
+    fill_black(framebuffer, { { right, rect.origin.y }, { s_panel.width - right, rect.size.height } });
+}
 
+static void clear_framebuffer(int index) {
+    auto *framebuffer = (uint8_t *)bsp_display_get_frame_buffer(index);
+    if (framebuffer) fill_black(framebuffer, { { 0, 0 }, s_panel });
+}
+
+static bool place(bsp_size_t source, int index, RenderTarget *target) {
     const bool swap = swaps_axes(s_rotation);
-    const uint32_t fit_w = swap ? (uint32_t)s_panel.height : (uint32_t)s_panel.width;
-    const uint32_t fit_h = swap ? (uint32_t)s_panel.width : (uint32_t)s_panel.height;
+    const uint32_t fit_w = (uint32_t)(swap ? s_panel.height : s_panel.width);
+    const uint32_t fit_h = (uint32_t)(swap ? s_panel.width : s_panel.height);
+    const uint32_t src_w = (uint32_t)source.width;
+    const uint32_t src_h = (uint32_t)source.height;
+    if (!src_w || !src_h) return false;
 
-    uint32_t steps = kScaleSteps;
-    while (steps > 1 && (frame.width * steps / kScaleSteps > fit_w ||
-                         frame.height * steps / kScaleSteps > fit_h)) {
-        steps--;
-    }
-    const uint32_t out_w = frame.width * steps / kScaleSteps;
-    const uint32_t out_h = frame.height * steps / kScaleSteps;
+    uint32_t n = std::min(fit_w * kScaleDenominator / src_w, fit_h * kScaleDenominator / src_h);
+    n = std::clamp<uint32_t>(n, 1, kMaxScaleN);
+    const uint32_t out_w = src_w * n / kScaleDenominator;
+    const uint32_t out_h = src_h * n / kScaleDenominator;
     if (!out_w || !out_h || out_w > fit_w || out_h > fit_h) return false;
 
-    const uint32_t panel_w = swap ? out_h : out_w;
-    const uint32_t panel_h = swap ? out_w : out_h;
-    const uint32_t offset_x = ((uint32_t)s_panel.width - panel_w) / 2;
-    const uint32_t offset_y = ((uint32_t)s_panel.height - panel_h) / 2;
-
-    if (panel_w != s_last_width || panel_h != s_last_height) {
-        for (int i = 0; i < s_fb_count; i++) clear_framebuffer(i);
-        s_last_width = panel_w;
-        s_last_height = panel_h;
-    }
-
-    ppa_srm_oper_config_t op = {};
-    op.in.buffer = frame.pixels;
-    op.in.pic_w = frame.pic_w;
-    op.in.pic_h = frame.pic_h;
-    op.in.block_w = frame.width;
-    op.in.block_h = frame.height;
-    op.in.srm_cm = s_color_mode;
-    op.out.buffer = framebuffer;
-    op.out.buffer_size = framebuffer_bytes();
-    op.out.pic_w = (uint32_t)s_panel.width;
-    op.out.pic_h = (uint32_t)s_panel.height;
-    op.out.block_offset_x = offset_x;
-    op.out.block_offset_y = offset_y;
-    op.out.srm_cm = s_color_mode;
-    op.rotation_angle = ppa_rotation(s_rotation);
-    op.scale_x = (float)steps / kScaleSteps;
-    op.scale_y = (float)steps / kScaleSteps;
-    op.mode = PPA_TRANS_MODE_BLOCKING;
-
-    const esp_err_t err = ppa_do_scale_rotate_mirror(s_ppa, &op);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "ppa srm: %s", esp_err_to_name(err));
-        return false;
-    }
+    const int panel_w = (int)(swap ? out_h : out_w);
+    const int panel_h = (int)(swap ? out_w : out_h);
+    target->framebuffer = bsp_display_get_frame_buffer(index);
+    if (!target->framebuffer) return false;
+    target->framebuffer_bytes = framebuffer_bytes();
+    target->panel = s_panel;
+    target->source = source;
+    target->rotation = s_rotation;
+    target->scale_n = n;
+    target->rect = { { (s_panel.width - panel_w) / 2, (s_panel.height - panel_h) / 2 },
+                     { panel_w, panel_h } };
     return true;
+}
+
+static void prepare(int index, const bsp_rect_t &rect) {
+    if (!same_rect(rect, s_rect)) {
+        s_rect = rect;
+        s_clear_pending = all_framebuffers();
+    }
+    const uint32_t bit = 1u << index;
+    if (s_clear_pending & bit) {
+        clear_outside(index, rect);
+        s_clear_pending &= ~bit;
+    }
 }
 
 static void present(int index) {
@@ -202,18 +179,38 @@ static void note_presented() {
     s_last_us = now;
 }
 
+static void consume_requests() {
+    const bsp_rotation_t rotation = s_requested_rotation.load();
+    if (rotation != s_rotation) {
+        s_rotation = rotation;
+        s_clear_all.store(true);
+        s_repaint.store(true);
+    }
+    if (s_clear_all.exchange(false)) s_clear_pending = all_framebuffers();
+}
+
 static void draw(const Job &job) {
-    DecodedFrame frame;
     std::string failure;
-    if (!s_decoder.decode(job.data, job.len, s_scratch_allocator, &frame, &failure)) {
+    bsp_size_t source = {};
+    if (!s_renderer.probe(job.data, job.len, &source, &failure)) {
         set_error(failure);
+        if (job.release) job.release(job.ctx);
         return;
     }
 
     const int next = (s_fb_index + 1) % s_fb_count;
-    if (!blit(frame, next)) return;
-    s_last_frame = frame;
-    s_have_picture = true;
+    RenderTarget target;
+    if (!place(source, next, &target)) {
+        set_error("video does not fit the panel");
+        if (job.release) job.release(job.ctx);
+        return;
+    }
+    prepare(next, target.rect);
+    if (!s_renderer.render(job.data, job.len, job.release, job.ctx, target, &failure)) {
+        set_error(failure);
+        return;
+    }
+    s_source = source;
     s_fb_index = next;
     set_error({});
     present(next);
@@ -222,10 +219,17 @@ static void draw(const Job &job) {
 
 static void repaint() {
     const int next = (s_fb_index + 1) % s_fb_count;
-    if (s_have_picture) {
-        blit(s_last_frame, next);
+    RenderTarget target;
+    if (s_renderer.has_picture() && place(s_source, next, &target)) {
+        prepare(next, target.rect);
+        std::string failure;
+        if (!s_renderer.rerender(target, &failure)) {
+            set_error(failure);
+            return;
+        }
     } else {
         clear_framebuffer(next);
+        s_clear_pending &= ~(1u << next);
     }
     s_fb_index = next;
     present(next);
@@ -236,22 +240,26 @@ static void worker(void *) {
         xSemaphoreTake(s_wake, pdMS_TO_TICKS(kOverlayPeriodMs));
 
         Job job = {};
-        if (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
-            xSemaphoreTake(s_idle, 0);
-            if (s_running.load()) draw(job);
-            if (job.release) job.release(job.ctx);
+        const bool has_job = xQueueReceive(s_queue, &job, 0) == pdTRUE;
+        if (!has_job && !s_running.load()) break;
+
+        xSemaphoreTake(s_idle, portMAX_DELAY);
+        consume_requests();
+        if (has_job) {
+            if (s_running.load()) {
+                draw(job);
+            } else if (job.release) {
+                job.release(job.ctx);
+            }
             s_overlay_dirty.store(false);
             s_repaint.store(false);
-            xSemaphoreGive(s_idle);
-            continue;
-        }
-        if (!s_running.load()) break;
-        if (s_repaint.exchange(false)) {
+        } else if (s_repaint.exchange(false)) {
             s_overlay_dirty.store(false);
             repaint();
-            continue;
+        } else if (s_overlay_dirty.exchange(false)) {
+            present(s_fb_index);
         }
-        if (s_overlay_dirty.exchange(false)) present(s_fb_index);
+        xSemaphoreGive(s_idle);
     }
 
     s_task = nullptr;
@@ -259,27 +267,13 @@ static void worker(void *) {
     vTaskDelete(nullptr);
 }
 
-static bool create_resources() {
-    if (!s_ppa) {
-        ppa_client_config_t config = {};
-        config.oper_type = PPA_OPERATION_SRM;
-        config.max_pending_trans_num = 1;
-        const esp_err_t err = ppa_register_client(&config, &s_ppa);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "ppa_register_client: %s", esp_err_to_name(err));
-            set_error(std::string("video output unavailable: ") + esp_err_to_name(err));
-            return false;
-        }
-    }
-    std::string failure;
-    if (!s_decoder.open(s_format, &failure)) {
-        set_error(failure);
-        return false;
-    }
-    return true;
+static void hand_back_framebuffer() {
+    if (!bsp_display_get_frame_buffer(0)) return;
+    clear_framebuffer(0);
+    display_manager.present(0);
 }
 
-bool video_presenter_begin(bsp_rotation_t rotation, lv_display_t *overlay) {
+bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     if (s_running.load()) return true;
 
     if (!s_lock) s_lock = xSemaphoreCreateMutex();
@@ -296,12 +290,8 @@ bool video_presenter_begin(bsp_rotation_t rotation, lv_display_t *overlay) {
     }
 
     s_panel = bsp_display_get_size();
-    s_format = bsp_display_get_pixel_format();
-    if (!color_mode_for(s_format, &s_color_mode)) {
-        set_error("unsupported panel pixel format for video");
-        return false;
-    }
-    s_bytes_per_pixel = bsp_pixel_format_bytes(s_format);
+    const bsp_pixel_format_t format = bsp_display_get_pixel_format();
+    s_bytes_per_pixel = bsp_pixel_format_bytes(format);
     s_fb_count = 0;
     for (int i = 0; i < kMaxFrameBuffers; i++) {
         if (!bsp_display_get_frame_buffer(i)) break;
@@ -311,29 +301,35 @@ bool video_presenter_begin(bsp_rotation_t rotation, lv_display_t *overlay) {
         set_error("no framebuffers for video output");
         return false;
     }
-    if (!create_resources()) return false;
+    std::string failure;
+    if (!s_renderer.open(sram, format, &failure)) {
+        set_error(failure);
+        return false;
+    }
 
-    s_overlay = overlay;
+    s_overlay = nullptr;
     s_rotation = rotation;
+    s_requested_rotation.store(rotation);
     s_fb_index = s_fb_count - 1;
-    s_have_picture = false;
-    s_last_frame = {};
-    s_last_width = 0;
-    s_last_height = 0;
+    s_rect = {};
+    s_source = {};
+    s_clear_pending = all_framebuffers();
+    s_clear_all.store(false);
     s_overlay_dirty.store(false);
-    s_repaint.store(false);
+    s_repaint.store(true);
     s_fps = 0.0f;
     s_last_us = 0;
     set_error({});
-    for (int i = 0; i < s_fb_count; i++) clear_framebuffer(i);
 
     xSemaphoreTake(s_done, 0);
     s_running.store(true);
     if (xTaskCreatePinnedToCore(worker, "video_presenter", 4096, nullptr, 5, &s_task, 0) != pdPASS) {
         s_running.store(false);
+        s_renderer.close();
         set_error("video output task creation failed");
         return false;
     }
+    xSemaphoreGive(s_wake);
     ESP_LOGI(TAG, "%d framebuffers, panel %dx%d", s_fb_count, s_panel.width, s_panel.height);
     return true;
 }
@@ -345,7 +341,11 @@ void video_presenter_end() {
         ESP_LOGE(TAG, "presenter did not stop");
     }
     video_presenter_flush();
+    xSemaphoreTake(s_idle, portMAX_DELAY);
+    s_renderer.close();
     s_overlay = nullptr;
+    xSemaphoreGive(s_idle);
+    hand_back_framebuffer();
 }
 
 bool video_presenter_submit(const uint8_t *data, std::size_t len,
@@ -363,12 +363,29 @@ void video_presenter_flush() {
     while (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
         if (job.release) job.release(job.ctx);
     }
-    if (s_idle && xSemaphoreTake(s_idle, pdMS_TO_TICKS(1000)) == pdTRUE) {
-        xSemaphoreGive(s_idle);
+    if (!s_idle || xSemaphoreTake(s_idle, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+        ESP_LOGE(TAG, "flush: frame in flight did not finish");
+        return;
     }
     while (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
         if (job.release) job.release(job.ctx);
     }
+    s_renderer.discard();
+    xSemaphoreGive(s_idle);
+}
+
+void video_presenter_set_overlay(lv_display_t *overlay) {
+    if (s_idle) xSemaphoreTake(s_idle, portMAX_DELAY);
+    s_overlay = overlay;
+    s_clear_all.store(true);
+    s_repaint.store(true);
+    if (s_idle) xSemaphoreGive(s_idle);
+    if (s_wake) xSemaphoreGive(s_wake);
+}
+
+void video_presenter_set_rotation(bsp_rotation_t rotation) {
+    s_requested_rotation.store(rotation);
+    if (s_wake) xSemaphoreGive(s_wake);
 }
 
 void video_presenter_mark_overlay_dirty() {
@@ -379,6 +396,7 @@ void video_presenter_mark_overlay_dirty() {
 
 void video_presenter_repaint() {
     if (!s_running.load()) return;
+    s_clear_all.store(true);
     s_repaint.store(true);
     if (s_wake) xSemaphoreGive(s_wake);
 }

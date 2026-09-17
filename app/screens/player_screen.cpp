@@ -5,24 +5,39 @@
 
 #include "player_screen.hpp"
 #include "audio/audio_out.hpp"
+#include "media_player.hpp"
 #include "playback/player.hpp"
 #include "video/video_presenter.hpp"
+#include "ui_orientation.hpp"
 #include "bsp.h"
 #include "display_manager.hpp"
 
 #include <cstdio>
 
-static constexpr int32_t kBarHeight = 160;
-static constexpr bsp_rotation_t kRotation = BSP_ROTATION_90;
+static constexpr int32_t kLandscapeBarHeight = 160;
+static constexpr int32_t kPortraitBarHeight = 240;
 static constexpr uint32_t kRefreshPeriodMs = 300;
 
 static lv_display_t *s_bar;
-static bool s_bar_active;
 static bool s_bar_visible;
 static bool s_outside_down;
 
+static bool is_portrait(bsp_rotation_t rotation) {
+    return rotation == BSP_ROTATION_0 || rotation == BSP_ROTATION_180;
+}
+
+static bsp_rect_t bar_area(bsp_rotation_t rotation, bsp_size_t panel) {
+    const int32_t height = is_portrait(rotation) ? kPortraitBarHeight : kLandscapeBarHeight;
+    switch (rotation) {
+    case BSP_ROTATION_90:  return { { panel.width - height, 0 }, { height, panel.height } };
+    case BSP_ROTATION_180: return { { 0, 0 }, { panel.width, height } };
+    case BSP_ROTATION_270: return { { 0, 0 }, { height, panel.height } };
+    default:               return { { 0, panel.height - height }, { panel.width, height } };
+    }
+}
+
 static void set_bar_visible(bool visible) {
-    if (!s_bar || !s_bar_active || visible == s_bar_visible) return;
+    if (!s_bar || visible == s_bar_visible) return;
     s_bar_visible = visible;
     display_manager.set_visible(s_bar, visible);
     if (!visible) video_presenter_repaint();
@@ -46,40 +61,61 @@ void PlayerScreen::build() {
 }
 
 bool PlayerScreen::openOverlay() {
-    const bsp_size_t panel = bsp_display_get_size();
-
-    if (!s_bar) {
-        DisplayManagerConfig config = {};
-        config.present_mode = DisplayPresentMode::Deferred;
-        config.make_default = false;
-        config.viewport.rotation = kRotation;
-        config.viewport.output_area = { { panel.width - kBarHeight, 0 },
-                                        { kBarHeight, panel.height } };
-        if (display_manager.create_display(config, &s_bar) != ESP_OK) {
-            s_bar = nullptr;
-            return false;
-        }
-        lv_display_add_event_cb(
-            s_bar, [](lv_event_t *) { video_presenter_mark_overlay_dirty(); },
-            LV_EVENT_RENDER_READY, nullptr);
+    DisplayManagerConfig config = {};
+    config.present_mode = DisplayPresentMode::Deferred;
+    config.make_default = false;
+    config.viewport.rotation = rotation_;
+    config.viewport.output_area = bar_area(rotation_, bsp_display_get_size());
+    if (display_manager.create_display(config, &overlay_) != ESP_OK) {
+        overlay_ = nullptr;
+        return false;
     }
+    lv_display_add_event_cb(
+        overlay_, [](lv_event_t *) { video_presenter_mark_overlay_dirty(); },
+        LV_EVENT_RENDER_READY, nullptr);
 
-    overlay_ = s_bar;
-    s_bar_active = true;
-    s_bar_visible = true;
-    s_outside_down = false;
-    display_manager.set_visible(overlay_, true);
-    lv_obj_clean(lv_display_get_screen_active(overlay_));
+    buildOverlay(lv_display_get_screen_active(overlay_), is_portrait(rotation_));
+    display_manager.set_visible(overlay_, s_bar_visible);
+    s_bar = overlay_;
+    refresh();
     return true;
 }
 
+void PlayerScreen::closeOverlay() {
+    if (!overlay_) return;
+    s_bar = nullptr;
+    display_manager.delete_display(overlay_);
+    overlay_ = nullptr;
+    play_label_ = nullptr;
+    loop_label_ = nullptr;
+    progress_ = nullptr;
+    time_label_ = nullptr;
+    status_label_ = nullptr;
+    volume_slider_ = nullptr;
+    scrubbing_ = false;
+}
+
+void PlayerScreen::rotate(bsp_rotation_t rotation) {
+    if (rotation == rotation_) return;
+    video_presenter_set_overlay(nullptr);
+    closeOverlay();
+    rotation_ = rotation;
+    video_presenter_set_rotation(rotation);
+    if (openOverlay()) video_presenter_set_overlay(overlay_);
+}
+
 void PlayerScreen::onEnter() {
-    main_ = lv_display_get_default();
+    rotation_ = ui_orientation_current();
+    s_bar_visible = true;
+    s_outside_down = false;
     if (!openOverlay()) return;
 
-    if (main_) display_manager.set_visible(main_, false);
-    buildOverlay(lv_display_get_screen_active(overlay_));
-    video_presenter_begin(kRotation, overlay_);
+    const SharedSram sram = media_player_acquire_sram();
+    video_presenter_begin(sram, rotation_);
+    video_presenter_set_overlay(overlay_);
+    ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
+        static_cast<PlayerScreen *>(arg)->rotate(rotation);
+    }, this);
     display_manager.set_outside_touch_callback(outside_touch);
     player_open(path_);
 
@@ -94,25 +130,22 @@ void PlayerScreen::onExit() {
         lv_timer_delete(timer_);
         timer_ = nullptr;
     }
+    if (!overlay_) return;
     display_manager.set_outside_touch_callback(nullptr);
-    s_bar_active = false;
     player_close();
     video_presenter_end();
-    if (overlay_) {
-        lv_obj_clean(lv_display_get_screen_active(overlay_));
-        display_manager.set_visible(overlay_, false);
-        s_bar_visible = false;
-        overlay_ = nullptr;
-    }
-    if (main_) display_manager.set_visible(main_, true);
-    status_label_ = nullptr;
+    video_presenter_set_overlay(nullptr);
+    closeOverlay();
+    ui_orientation_set_listener(nullptr, nullptr);
+    media_player_release_sram();
 }
 
 PlayerScreen::~PlayerScreen() {
     if (timer_) lv_timer_delete(timer_);
+    closeOverlay();
 }
 
-void PlayerScreen::buildOverlay(lv_obj_t *parent) {
+void PlayerScreen::buildOverlay(lv_obj_t *parent, bool portrait) {
     lv_obj_set_style_bg_color(parent, lv_color_hex(0x101010), 0);
     lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_hor(parent, 20, 0);
@@ -123,10 +156,11 @@ void PlayerScreen::buildOverlay(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(parent, 8, 0);
     lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *row = lv_container_create(parent, LV_FLEX_FLOW_ROW);
+    lv_obj_t *row = lv_container_create(parent, portrait ? LV_FLEX_FLOW_ROW_WRAP : LV_FLEX_FLOW_ROW);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 16, 0);
+    lv_obj_set_style_pad_row(row, 8, 0);
 
     lv_obj_t *back = lv_button_create(row, LV_BUTTON_STYLE_PLAIN);
     lv_obj_set_size(back, 90, 72);

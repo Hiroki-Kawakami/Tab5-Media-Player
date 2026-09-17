@@ -9,7 +9,7 @@ file(GLOB_RECURSE APP_SRCS ${APP_GLOB_FLAGS}
 
 set(APP_REQUIRES bsp ui_framework avi_demux jpeg_decode_enhanced esp_timer)
 if(ESP_PLATFORM)
-    list(APPEND APP_REQUIRES espressif__esp_audio_codec)
+    list(APPEND APP_REQUIRES espressif__esp_audio_codec esp_mm)
 endif()
 
 idf_component_register(

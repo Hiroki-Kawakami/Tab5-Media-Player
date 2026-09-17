@@ -4,6 +4,17 @@
  */
 
 #pragma once
+#include <cstddef>
 #include "bsp.h"
 
+inline constexpr std::size_t kSharedSramBytes = 245760;
+
+struct SharedSram {
+    void *halves[2];
+    std::size_t half_bytes;
+};
+
 void app_entry();
+
+SharedSram media_player_acquire_sram();
+void media_player_release_sram();

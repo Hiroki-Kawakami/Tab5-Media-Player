@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include "bsp_types.h"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
@@ -20,7 +21,9 @@ public:
 
 private:
     bool openOverlay();
-    void buildOverlay(lv_obj_t *parent);
+    void closeOverlay();
+    void rotate(bsp_rotation_t rotation);
+    void buildOverlay(lv_obj_t *parent, bool portrait);
     void setLoopIndicator(bool on);
     void refresh();
 
@@ -29,8 +32,8 @@ private:
     bool playing_ = false;
     bool scrubbing_ = false;
     bool looping_ = false;
+    bsp_rotation_t rotation_ = BSP_ROTATION_0;
 
-    lv_display_t *main_ = nullptr;
     lv_display_t *overlay_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *loop_label_ = nullptr;

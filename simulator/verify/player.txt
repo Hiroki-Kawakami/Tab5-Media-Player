@@ -6,6 +6,8 @@ settle
 capture player_list.jpg
 tap 360 252
 wait 1200
+imu rot90
+wait 800
 capture player_poster.jpg
 tap 612 1060
 wait 800
@@ -39,10 +41,16 @@ capture player_looped.jpg
 tap 612 1213
 settle
 capture player_left.jpg
+imu rot0
+wait 800
+settle
 tap 360 340
 wait 1200
+imu rot90
+wait 800
 tap 612 1060
 wait 1500
 capture player_ffmpeg.jpg
 tap 612 1213
 settle
+imu release

@@ -22,6 +22,7 @@ static constexpr int kVideoSlots = 4;
 static constexpr int kAudioSlots = 8;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
+static constexpr uint32_t kAudioStackBytes = 20 * 1024;
 
 enum class Command {
     Open,
@@ -336,8 +337,7 @@ static void handle_open(const std::string &path) {
     video_presenter_set_source_rotation(info.video.rotation);
 
     std::string note;
-    s_have_audio = audio_out_open(info.audio.codec, info.audio.sample_rate, info.audio.bits,
-                                  info.audio.channels, &note);
+    s_have_audio = audio_out_open(info.audio, &note);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_duration_us = info.duration_us;
@@ -542,7 +542,7 @@ void player_start(const media_arena_t &arena) {
     xSemaphoreGive(s_audio_idle);
     audio_out_start();
     xTaskCreate(reader_task, "media_reader", 4096, nullptr, 4, nullptr);
-    xTaskCreate(audio_task, "media_audio", 4096, nullptr, 6, nullptr);
+    xTaskCreate(audio_task, "media_audio", kAudioStackBytes, nullptr, 6, nullptr);
     xTaskCreate(player_task, "player", 6144, nullptr, 5, nullptr);
 }
 

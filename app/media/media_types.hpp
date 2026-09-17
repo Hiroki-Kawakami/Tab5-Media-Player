@@ -6,6 +6,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "bsp_types.h"
 
 enum class CodecId {
@@ -13,6 +14,9 @@ enum class CodecId {
     Mjpeg,
     Pcm,
     Mp3,
+    AdpcmIma,
+    Aac,
+    Opus,
     Unsupported,
 };
 
@@ -28,6 +32,8 @@ struct TrackInfo {
     uint32_t sample_rate = 0;
     uint8_t channels = 0;
     uint8_t bits = 0;
+    uint16_t block_align = 0;
+    std::vector<uint8_t> codec_private;
     uint32_t max_packet_bytes = 0;
     bsp_rotation_t rotation = BSP_ROTATION_0;
 };
@@ -54,6 +60,9 @@ inline const char *codec_name(CodecId codec) {
     case CodecId::Mjpeg: return "MJPEG";
     case CodecId::Pcm: return "PCM";
     case CodecId::Mp3: return "MP3";
+    case CodecId::AdpcmIma: return "IMA ADPCM";
+    case CodecId::Aac: return "AAC";
+    case CodecId::Opus: return "Opus";
     case CodecId::Unsupported: return "unsupported";
     default: return "none";
     }

@@ -23,6 +23,8 @@ CodecId map_audio(avi_audio_codec_t codec) {
     switch (codec) {
     case AVI_AUDIO_CODEC_PCM: return CodecId::Pcm;
     case AVI_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case AVI_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
+    case AVI_AUDIO_CODEC_AAC: return CodecId::Aac;
     case AVI_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -68,6 +70,9 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.audio.sample_rate = avi->audio.sample_rate;
     info_.audio.channels = avi->audio.channels;
     info_.audio.bits = avi->audio.bits_per_sample;
+    info_.audio.block_align = avi->audio.block_align;
+    info_.audio.codec_private.assign(avi->audio.codec_private,
+                                     avi->audio.codec_private + avi->audio.codec_private_size);
     info_.audio.max_packet_bytes = avi->audio.max_frame_bytes;
     if (info_.audio.codec != CodecId::None &&
         (info_.audio.sample_rate == 0 || info_.audio.channels == 0)) {

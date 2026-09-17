@@ -1,6 +1,7 @@
 # Playback
 
-What plays today: MJPEG `*.avi` and `*.mkv` with PCM or MP3 audio (or none),
+What plays today: MJPEG `*.avi` and `*.mkv` with PCM, MP3, IMA ADPCM or AAC
+audio, plus Opus in MKV only (or no audio),
 full screen, with play/pause, restart, seek, loop and volume. Picking one in the
 file browser opens `PlayerScreen`.
 
@@ -20,7 +21,7 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   (Avi/MkvDemuxer)    │         placement, FB,                     └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
   │                   │         letterbox, overlay ◀────────────────────────────┘
 media_buffer          │           └─▶ compose overlay ─▶ present
-  (arena)             └──▶ audio_out (PCM / MP3) ──▶ bsp_audio_write
+  (arena)             └──▶ audio_out (PCM / MP3 / ADPCM / AAC / Opus) ──▶ bsp_audio_write
 ```
 
 | path | role |
@@ -31,7 +32,7 @@ media_buffer          │           └─▶ compose overlay ─▶ present
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI and MKV adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
 | `app/video/` | `video_presenter` (placement, framebuffers, overlay), `MjpegRenderer` |
-| `app/audio/` | `audio_out`: BSP output, MP3 decode, playback position |
+| `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/player_screen.*` | the full-screen player UI |
 
 ## Decisions taken now because they are expensive later
@@ -193,12 +194,21 @@ cluster children, so an unknown-size `Cluster` ends where the next top-level
 element starts without tracking the hierarchy.
 
 - **Tracks.** The first video track must be `V_MJPEG`. Audio is
-  `A_PCM/INT/LIT` or `A_MPEG/L3`; anything else is ignored as unsupported. A
-  track with `ContentEncodings` (header stripping, compression) is unsupported.
-- **Lacing.** A laced audio block is handed on as one packet: the lace header
-  is skipped and the frames are contiguous. PCM concatenates, and the MP3
-  decoder consumes several frames from one buffer. A laced video block is
-  skipped.
+  `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, or `A_MS/ACM` whose
+  WAVEFORMATEX is IMA ADPCM (`0x0011`); anything else is ignored as
+  unsupported. `CodecPrivate` is handed up as-is, except for `A_MS/ACM`, where
+  the rate, channels and block align come from the WAVEFORMATEX and only its
+  extra bytes are passed on. A track with `ContentEncodings` (header stripping,
+  compression) is unsupported.
+- **Lacing.** A laced audio block is split and each frame is a packet of its
+  own, because raw AAC and Opus frames carry no length and a decoder cannot
+  find the boundaries in concatenated data. mkvmerge laces audio by default;
+  ffmpeg never does. Every frame takes its own `mb_view()` instead of one view
+  over the whole block: the pending frames then hold no pin, so
+  `releaseAll()` in `reader_stop()` cannot pull memory from under them (a
+  failed seek restarts the reader without seeking), and an interrupted view
+  rewinds to that frame. A block whose lace sizes do not add up is skipped, and
+  so is a laced video block.
 - **Timing.** `DefaultDuration` gives the frame interval; without it, the first
   two video blocks are measured. `Info/Duration` gives the length; without it,
   the last cue plus one interval.
@@ -262,6 +272,11 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 
 Audio has the highest priority because a late audio write is audible and a
 late frame is not.
+
+`media_audio` has a 20 KB stack because the decoders run on it. Opus's CELT
+decoder keeps its work buffers in stack VLAs and overflowed the 4 KB that was
+enough for MP3; `esp_audio_codec`'s README asks for about 20 KB. The simulator
+never shows this, since host threads have large stacks.
 
 Every session change goes through `reader_stop()`, which is the only safe way
 to reuse ring slots:
@@ -351,16 +366,38 @@ presenter composes it over each picture before presenting.
 
 - **PCM is copied before it goes out.** `bsp_audio_write` runs the BSP's DSP
   chain in place on the buffer it is given. `audio_out` copies PCM into its own
-  buffer first, so a ring slot is never passed directly. Decoded MP3 already
+  buffer first, so a ring slot is never passed directly. Decoded audio already
   lands in that buffer.
+- **The decoder follows the stream, not the container.** When a decoder
+  reports a different rate or channel count (HE-AAC doubles the rate the
+  AudioSpecificConfig states), `bsp_audio_open` is called again.
+- **Decoders are reset on seek** (`audio_out_flush()`), so AAC and Opus do not
+  carry state from before the jump. The audio task is parked by then.
+- **AAC decides raw or ADTS from the first packet**, not from the container:
+  AVI has several format tags for AAC and they are not used consistently. Raw
+  AAC with no AudioSpecificConfig gets one built from the track's rate and
+  channels (LC).
+- **IMA ADPCM is decoded by `app/audio/ima_adpcm.cpp`**, on both targets.
+  `esp_audio_codec`'s ADPCM decoder has no block-align setting, so it cannot
+  follow the file's block size. Packets are split by `block_align`. Stereo
+  blocks hold 4 bytes of the left channel, then 4 of the right, and so on (as
+  in ffmpeg and libsndfile), not alternating nibbles. MS ADPCM is not
+  supported.
+- **Opus is MKV only** (ffmpeg cannot mux it into AVI) and decodes at
+  48 kHz. Only channel mapping family 0 (mono or stereo) is accepted. The
+  OpusHead pre-skip is not applied on the device.
 - **The playback position is PCM frames written divided by the sample rate.**
   It feeds the clock correction above.
-- **The device MP3 decoder is `espressif/esp_audio_codec`, pinned below 2.6.**
+- **The device MP3, AAC and Opus decoders are `espressif/esp_audio_codec`,
+  pinned below 2.6.**
   2.6 and later refuse to build unless the ESP32-P4 is chip revision 3.0 or
   newer, and this board's P4 is older (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3`).
   Check the silicon before raising the pin. The dependency is device-only.
-- **The simulator decodes MP3 with ffmpeg's libavcodec.** It is linked in
-  `simulator/CMakeLists.txt`, and `flake.nix` provides it.
+- **The simulator decodes MP3, AAC and Opus with ffmpeg's libavcodec.** It is
+  linked in `simulator/CMakeLists.txt`, and `flake.nix` provides it.
+- **`MP3` uses `ESP_AUDIO_DEC_RECOVERY_PLC` on every packet and the others do
+  not.** That is what MP3 has always been given; for Opus, PLC means "this
+  packet was lost".
 
 ## Simulator
 
@@ -402,5 +439,23 @@ nix develop -c ffmpeg -display_rotation 90 -i upright_cw.mkv -c copy \
   nothing.
 - **`[mp3float] overread` after a seek is harmless.** ffmpeg's MP3 parser was
   handed a chunk from the middle of a frame and resynchronises.
+- **`[opus] Could not update timestamps for skipped samples` is harmless.**
+  libavcodec applies the OpusHead pre-skip and our packets carry no pts.
+
+`simulator/verify/audio_codecs.txt` plays every file in `Test Audio/` (a root
+directory named to sort after `Music/`, so the other scripts' rows do not
+move): `aac.avi`, `aac.mkv` (with a seek), `aac_laced.mkv`, `adpcm.avi`,
+`adpcm.mkv` (stereo), `opus.mkv` (with a seek) and `opus_laced.mkv`, each to
+the end. Audio cannot be captured, so the check is the codec label and the
+clock: a decoder that writes nothing holds the video at the first frame. Make
+them with the first ffmpeg command above at `size=640x360:rate=10`, swapping
+the audio codec (`-c:a adpcm_ima_wav`, `-c:a aac`, `-c:a libopus -ac 2` with
+`sample_rate=48000`; `adpcm.mkv` uses
+`aeval=val(0)|sin(t*3000)*0.5:c=stereo` after the sine). ffmpeg never laces,
+and mkvtoolnix does not build from nixpkgs on macOS, so the `*_laced.mkv`
+files were made by rewriting the ffmpeg MKVs with a throwaway script that
+packs runs of up to four audio SimpleBlocks into one laced block (Xiph for AAC,
+EBML for Opus) and drops `SeekHead` and `Cues`; they are therefore not
+seekable. ffmpeg decodes them to the same samples as the originals.
 - **Do not measure frame rate here.** The host decodes JPEG in software, so a
   10 fps clip shows about 8-9 fps.

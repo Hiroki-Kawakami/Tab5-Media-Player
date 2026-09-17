@@ -24,6 +24,8 @@ typedef enum {
     AVI_AUDIO_CODEC_NONE,
     AVI_AUDIO_CODEC_PCM,
     AVI_AUDIO_CODEC_MP3,
+    AVI_AUDIO_CODEC_ADPCM_IMA,
+    AVI_AUDIO_CODEC_AAC,
     AVI_AUDIO_CODEC_UNSUPPORTED,
 } avi_audio_codec_t;
 
@@ -42,6 +44,9 @@ typedef struct {
         uint32_t max_frame_bytes;
         uint8_t channels;
         uint8_t bits_per_sample;
+        uint16_t block_align;
+        const uint8_t *codec_private;
+        uint32_t codec_private_size;
     } audio;
     bool seekable;
 } avi_info_t;

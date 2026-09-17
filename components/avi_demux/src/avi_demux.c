@@ -39,6 +39,7 @@ struct avi_demux {
     uint32_t next_frame;
     uint8_t stream_kind[AVI_MAX_STREAMS];
     uint8_t stream_count;
+    uint8_t *audio_extra;
 };
 
 static bool read_exact(media_buffer_t *reader, void *buffer, size_t size) {
@@ -83,9 +84,51 @@ static avi_audio_codec_t audio_codec_of(uint16_t format_tag) {
         return AVI_AUDIO_CODEC_PCM;
     case AVI_WAVE_FORMAT_MP3:
         return AVI_AUDIO_CODEC_MP3;
+    case AVI_WAVE_FORMAT_IMA_ADPCM:
+        return AVI_AUDIO_CODEC_ADPCM_IMA;
+    case AVI_WAVE_FORMAT_AAC:
+    case AVI_WAVE_FORMAT_AAC_ADTS:
+    case AVI_WAVE_FORMAT_AAC_FAAD:
+        return AVI_AUDIO_CODEC_AAC;
     default:
         return AVI_AUDIO_CODEC_UNSUPPORTED;
     }
+}
+
+static const char *audio_codec_name(avi_audio_codec_t codec) {
+    switch (codec) {
+    case AVI_AUDIO_CODEC_NONE: return "none";
+    case AVI_AUDIO_CODEC_PCM: return "PCM";
+    case AVI_AUDIO_CODEC_MP3: return "MP3";
+    case AVI_AUDIO_CODEC_ADPCM_IMA: return "IMA ADPCM";
+    case AVI_AUDIO_CODEC_AAC: return "AAC";
+    default: return "unsupported";
+    }
+}
+
+static void read_wave_extra(avi_demux_t *demux, uint32_t available) {
+    heap_caps_free(demux->audio_extra);
+    demux->audio_extra = NULL;
+    demux->info.audio.codec_private = NULL;
+    demux->info.audio.codec_private_size = 0;
+
+    uint16_t extra_size = 0;
+    if (available < sizeof(extra_size) || !read_exact(demux->reader, &extra_size, sizeof(extra_size))) {
+        return;
+    }
+    available -= sizeof(extra_size);
+    if (extra_size > available) extra_size = (uint16_t)available;
+    if (extra_size == 0 || extra_size > AVI_WAVE_FORMAT_EXTRA_LIMIT) return;
+
+    uint8_t *extra = heap_caps_malloc(extra_size, MALLOC_CAP_DEFAULT);
+    if (!extra) return;
+    if (!read_exact(demux->reader, extra, extra_size)) {
+        heap_caps_free(extra);
+        return;
+    }
+    demux->audio_extra = extra;
+    demux->info.audio.codec_private = extra;
+    demux->info.audio.codec_private_size = extra_size;
 }
 
 static void parse_stream(avi_demux_t *demux, off_t list_end) {
@@ -125,6 +168,8 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
                 demux->info.audio.sample_rate = wave.samples_per_sec;
                 demux->info.audio.bits_per_sample =
                     wave.bits_per_sample ? (uint8_t)wave.bits_per_sample : 16;
+                demux->info.audio.block_align = wave.block_align;
+                read_wave_extra(demux, chunk.size - sizeof(wave));
             }
         }
         mb_seek(demux->reader, next);
@@ -321,9 +366,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
              (unsigned)demux->info.video.frame_count,
              (unsigned)demux->info.video.frame_interval_us,
              (unsigned)demux->info.video.max_frame_bytes,
-             demux->info.audio.codec == AVI_AUDIO_CODEC_PCM ? "PCM"
-                 : demux->info.audio.codec == AVI_AUDIO_CODEC_MP3 ? "MP3"
-                 : demux->info.audio.codec == AVI_AUDIO_CODEC_NONE ? "none" : "unsupported",
+             audio_codec_name(demux->info.audio.codec),
              (unsigned)demux->info.audio.sample_rate, (unsigned)demux->info.audio.channels);
 
     mb_seek(demux->reader, demux->movi_start);
@@ -335,6 +378,7 @@ void avi_demux_close(avi_demux_t *demux) {
     if (!demux) return;
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->offsets);
+    heap_caps_free(demux->audio_extra);
     heap_caps_free(demux);
 }
 

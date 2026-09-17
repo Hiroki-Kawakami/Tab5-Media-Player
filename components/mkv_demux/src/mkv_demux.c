@@ -28,6 +28,7 @@ static const char *TAG = "mkv_demux";
 #define ID_TRACK_NUMBER      0xD7
 #define ID_TRACK_TYPE        0x83
 #define ID_CODEC_ID          0x86
+#define ID_CODEC_PRIVATE     0x63A2
 #define ID_DEFAULT_DURATION  0x23E383
 #define ID_CONTENT_ENCODINGS 0x6D80
 #define ID_VIDEO             0xE0
@@ -61,6 +62,7 @@ static const char *TAG = "mkv_demux";
 #define LACING_XIPH  0x02
 #define LACING_FIXED 0x04
 #define LACING_EBML  0x06
+#define MKV_MAX_LACES 256
 
 #define MKV_UNKNOWN_SIZE UINT64_MAX
 #define MKV_MAX_EBML_HEADER_BYTES 4096
@@ -70,6 +72,8 @@ static const char *TAG = "mkv_demux";
 #define MKV_PROBE_BLOCKS 64
 #define MKV_ROTATION_TOLERANCE_DEG 1.0
 #define MKV_POSE_TOLERANCE_DEG 1.0
+#define MKV_WAVE_FORMAT_BYTES 18
+#define MKV_WAVE_FORMAT_IMA_ADPCM 0x0011
 
 typedef struct {
     uint32_t time_ms;
@@ -81,6 +85,7 @@ typedef struct {
     int64_t pts_us;
     bool keyframe;
     bool laced;
+    uint16_t laces;
     off_t end;
     uint32_t payload;
 } block_t;
@@ -89,6 +94,8 @@ typedef struct {
     uint64_t number;
     uint64_t type;
     char codec[32];
+    const uint8_t *codec_private;
+    size_t codec_private_size;
     uint64_t default_duration_ns;
     bool encoded;
     uint32_t width;
@@ -119,6 +126,12 @@ struct mkv_demux {
     int64_t skip_before_us;
     cue_t *cues;
     uint32_t cue_count;
+    uint8_t *audio_private;
+    uint32_t lace_sizes[MKV_MAX_LACES];
+    uint16_t lace_count;
+    uint16_t lace_next;
+    int64_t lace_pts_us;
+    off_t lace_end;
 };
 
 typedef struct {
@@ -336,17 +349,75 @@ static void use_video_track(mkv_demux_t *demux, const track_t *track) {
     demux->info.video.rotation_ccw = rotation_of(track);
 }
 
+static uint16_t read_le16(const uint8_t *p) {
+    return (uint16_t)(p[0] | (p[1] << 8));
+}
+
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void keep_audio_private(mkv_demux_t *demux, const uint8_t *data, size_t size) {
+    if (!size) return;
+    demux->audio_private = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    if (!demux->audio_private) return;
+    memcpy(demux->audio_private, data, size);
+    demux->info.audio.codec_private = demux->audio_private;
+    demux->info.audio.codec_private_size = (uint32_t)size;
+}
+
+static mkv_audio_codec_t use_wave_format(mkv_demux_t *demux, const track_t *track) {
+    const uint8_t *wave = track->codec_private;
+    if (!wave || track->codec_private_size < MKV_WAVE_FORMAT_BYTES) return MKV_AUDIO_CODEC_UNSUPPORTED;
+    if (read_le16(wave) != MKV_WAVE_FORMAT_IMA_ADPCM) return MKV_AUDIO_CODEC_UNSUPPORTED;
+
+    demux->info.audio.channels = (uint8_t)read_le16(wave + 2);
+    demux->info.audio.sample_rate = read_le32(wave + 4);
+    demux->info.audio.block_align = read_le16(wave + 12);
+    demux->info.audio.bits_per_sample = (uint8_t)read_le16(wave + 14);
+    size_t extra = read_le16(wave + 16);
+    if (extra > track->codec_private_size - MKV_WAVE_FORMAT_BYTES) {
+        extra = track->codec_private_size - MKV_WAVE_FORMAT_BYTES;
+    }
+    keep_audio_private(demux, wave + MKV_WAVE_FORMAT_BYTES, extra);
+    return MKV_AUDIO_CODEC_ADPCM_IMA;
+}
+
+static const char *audio_codec_name(mkv_audio_codec_t codec) {
+    switch (codec) {
+    case MKV_AUDIO_CODEC_NONE: return "none";
+    case MKV_AUDIO_CODEC_PCM: return "PCM";
+    case MKV_AUDIO_CODEC_MP3: return "MP3";
+    case MKV_AUDIO_CODEC_ADPCM_IMA: return "IMA ADPCM";
+    case MKV_AUDIO_CODEC_AAC: return "AAC";
+    case MKV_AUDIO_CODEC_OPUS: return "Opus";
+    default: return "unsupported";
+    }
+}
+
 static void use_audio_track(mkv_demux_t *demux, const track_t *track) {
     demux->audio_track = track->number;
-    mkv_audio_codec_t codec = MKV_AUDIO_CODEC_UNSUPPORTED;
-    if (!track->encoded) {
-        if (strcmp(track->codec, "A_PCM/INT/LIT") == 0) codec = MKV_AUDIO_CODEC_PCM;
-        if (strcmp(track->codec, "A_MPEG/L3") == 0) codec = MKV_AUDIO_CODEC_MP3;
-    }
-    demux->info.audio.codec = codec;
     demux->info.audio.sample_rate = (uint32_t)lround(track->sample_rate);
     demux->info.audio.channels = (uint8_t)track->channels;
     demux->info.audio.bits_per_sample = track->bits ? (uint8_t)track->bits : 16;
+
+    mkv_audio_codec_t codec = MKV_AUDIO_CODEC_UNSUPPORTED;
+    if (!track->encoded) {
+        if (strcmp(track->codec, "A_PCM/INT/LIT") == 0) {
+            codec = MKV_AUDIO_CODEC_PCM;
+        } else if (strcmp(track->codec, "A_MPEG/L3") == 0) {
+            codec = MKV_AUDIO_CODEC_MP3;
+        } else if (strncmp(track->codec, "A_AAC", 5) == 0) {
+            codec = MKV_AUDIO_CODEC_AAC;
+            keep_audio_private(demux, track->codec_private, track->codec_private_size);
+        } else if (strcmp(track->codec, "A_OPUS") == 0) {
+            codec = MKV_AUDIO_CODEC_OPUS;
+            keep_audio_private(demux, track->codec_private, track->codec_private_size);
+        } else if (strcmp(track->codec, "A_MS/ACM") == 0) {
+            codec = use_wave_format(demux, track);
+        }
+    }
+    demux->info.audio.codec = codec;
     if (!demux->info.audio.sample_rate || !demux->info.audio.channels) {
         demux->info.audio.codec = MKV_AUDIO_CODEC_UNSUPPORTED;
     }
@@ -365,6 +436,10 @@ static void parse_tracks(mkv_demux_t *demux, span_t span) {
             case ID_TRACK_NUMBER:      track.number = span_uint(body); break;
             case ID_TRACK_TYPE:        track.type = span_uint(body); break;
             case ID_CODEC_ID:          span_string(body, track.codec, sizeof(track.codec)); break;
+            case ID_CODEC_PRIVATE:
+                track.codec_private = body.p;
+                track.codec_private_size = (size_t)(body.end - body.p);
+                break;
             case ID_DEFAULT_DURATION:  track.default_duration_ns = span_uint(body); break;
             case ID_CONTENT_ENCODINGS: track.encoded = true; break;
             case ID_VIDEO:             parse_video(&track, body); break;
@@ -480,23 +555,69 @@ static void load_cues(mkv_demux_t *demux) {
     demux->info.seekable = true;
 }
 
-static bool skip_lacing(media_buffer_t *reader, uint8_t lacing) {
-    uint8_t frames = 0;
-    if (!read_byte(reader, &frames)) return false;
-    if (lacing == LACING_FIXED) return true;
+static bool read_lace_delta(media_buffer_t *reader, int64_t *out) {
+    uint8_t byte = 0;
+    if (!read_byte(reader, &byte)) return false;
+    const int length = vint_length(byte);
+    if (length == 0) return false;
+    int64_t value = byte & (0xFF >> length);
+    for (int i = 1; i < length; i++) {
+        if (!read_byte(reader, &byte)) return false;
+        value = (value << 8) | byte;
+    }
+    *out = value - ((INT64_C(1) << (7 * length - 1)) - 1);
+    return true;
+}
+
+static bool read_lacing(mkv_demux_t *demux, uint8_t lacing, off_t end, uint16_t *laces) {
+    media_buffer_t *reader = demux->reader;
+    uint32_t *sizes = demux->lace_sizes;
+    uint8_t last = 0;
+    if (!read_byte(reader, &last)) return false;
+    const uint16_t count = (uint16_t)last + 1;
+
+    uint64_t known = 0;
+    bool valid = true;
     if (lacing == LACING_XIPH) {
-        for (int i = 0; i < frames; i++) {
+        for (uint16_t i = 0; i < last; i++) {
+            uint64_t size = 0;
             uint8_t byte = 0;
             do {
                 if (!read_byte(reader, &byte)) return false;
+                size += byte;
             } while (byte == 0xFF);
+            sizes[i] = (uint32_t)size;
+            known += size;
         }
-        return true;
+    } else if (lacing == LACING_EBML) {
+        uint64_t size = 0;
+        if (last && !read_vint(reader, &size)) return false;
+        for (uint16_t i = 0; i < last; i++) {
+            if (i > 0) {
+                int64_t delta = 0;
+                if (!read_lace_delta(reader, &delta)) return false;
+                const int64_t next = (int64_t)size + delta;
+                if (next < 0) valid = false;
+                size = next < 0 ? 0 : (uint64_t)next;
+            }
+            if (size > UINT32_MAX) valid = false;
+            sizes[i] = (uint32_t)size;
+            known += size;
+        }
     }
-    uint64_t ignored = 0;
-    for (int i = 0; i < frames; i++) {
-        if (!read_vint(reader, &ignored)) return false;
+
+    const off_t payload = mb_tell(reader);
+    if (payload > end) return false;
+    const uint64_t total = (uint64_t)(end - payload);
+    if (lacing == LACING_FIXED) {
+        if (total % count) valid = false;
+        for (uint16_t i = 0; i < count; i++) sizes[i] = (uint32_t)(total / count);
+    } else if (known > total) {
+        valid = false;
+    } else {
+        sizes[last] = (uint32_t)(total - known);
     }
+    *laces = valid ? count : 0;
     return true;
 }
 
@@ -539,7 +660,8 @@ static bool next_block(mkv_demux_t *demux, block_t *block) {
         const int16_t relative = (int16_t)((head[0] << 8) | head[1]);
         const uint8_t flags = head[2];
         const uint8_t lacing = flags & LACING_MASK;
-        if (lacing && !skip_lacing(reader, lacing)) return false;
+        uint16_t laces = 0;
+        if (lacing && !read_lacing(demux, lacing, end, &laces)) return false;
         const off_t payload = mb_tell(reader);
         if (payload > end) return false;
 
@@ -549,6 +671,7 @@ static bool next_block(mkv_demux_t *demux, block_t *block) {
         block->pts_us = to_us(demux, timestamp);
         block->keyframe = id == ID_SIMPLE_BLOCK ? (flags & 0x80) != 0 : true;
         block->laced = lacing != 0;
+        block->laces = laces;
         block->end = end;
         block->payload = (uint32_t)(end - payload);
         return true;
@@ -578,9 +701,7 @@ static void log_info(const char *path, const mkv_info_t *info) {
              path, (unsigned)info->video.width, (unsigned)info->video.height,
              (unsigned)info->video.rotation_ccw, (long long)info->video.frame_interval_us,
              (long long)info->duration_us, info->seekable ? "seekable" : "not seekable",
-             info->audio.codec == MKV_AUDIO_CODEC_PCM ? "PCM"
-                 : info->audio.codec == MKV_AUDIO_CODEC_MP3 ? "MP3"
-                 : info->audio.codec == MKV_AUDIO_CODEC_NONE ? "none" : "unsupported",
+             audio_codec_name(info->audio.codec),
              (unsigned)info->audio.sample_rate, (unsigned)info->audio.channels);
 }
 
@@ -694,6 +815,7 @@ void mkv_demux_close(mkv_demux_t *demux) {
     if (!demux) return;
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->cues);
+    heap_caps_free(demux->audio_private);
     heap_caps_free(demux);
 }
 
@@ -705,13 +827,57 @@ media_buffer_t *mkv_demux_buffer(mkv_demux_t *demux) {
     return demux ? demux->reader : NULL;
 }
 
+static void drop_laces(mkv_demux_t *demux) {
+    if (demux->lace_count) mb_seek(demux->reader, demux->lace_end);
+    demux->lace_count = 0;
+    demux->lace_next = 0;
+}
+
+static int read_lace(mkv_demux_t *demux, mkv_packet_t *packet, size_t max_view) {
+    const off_t start = mb_tell(demux->reader);
+    const uint32_t size = demux->lace_sizes[demux->lace_next];
+    if (size == 0 || size > max_view) {
+        mb_seek(demux->reader, start + (off_t)size);
+        if (++demux->lace_next == demux->lace_count) drop_laces(demux);
+        return 0;
+    }
+
+    uint32_t ref = MB_NO_REF;
+    const uint8_t *data = mb_view(demux->reader, size, &ref);
+    if (!data) {
+        mb_seek(demux->reader, start);
+        return -1;
+    }
+    mb_seek(demux->reader, start + (off_t)size);
+    if (++demux->lace_next == demux->lace_count) drop_laces(demux);
+
+    packet->type = MKV_PACKET_AUDIO;
+    packet->pts_us = demux->lace_pts_us;
+    packet->keyframe = true;
+    packet->data = data;
+    packet->size = size;
+    packet->ref = ref;
+    return 1;
+}
+
 bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
     if (!demux || !packet) return false;
     const size_t max_view = mb_arena_max_view(&demux->arena);
-    const bool audio_usable = demux->info.audio.codec == MKV_AUDIO_CODEC_PCM ||
-                              demux->info.audio.codec == MKV_AUDIO_CODEC_MP3;
+    const bool audio_usable = demux->info.audio.codec != MKV_AUDIO_CODEC_NONE &&
+                              demux->info.audio.codec != MKV_AUDIO_CODEC_UNSUPPORTED;
 
     for (;;) {
+        if (demux->lace_next < demux->lace_count) {
+            if (!want_audio) {
+                drop_laces(demux);
+                continue;
+            }
+            const int result = read_lace(demux, packet, max_view);
+            if (result < 0) return false;
+            if (result > 0) return true;
+            continue;
+        }
+
         const off_t start = mb_tell(demux->reader);
         const uint64_t cluster_time = demux->cluster_time;
         block_t block;
@@ -719,10 +885,18 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
 
         const bool video = block.track == demux->video_track;
         const bool skip = (video ? block.laced : !(want_audio && audio_usable)) ||
-                          block.payload == 0 || block.payload > max_view ||
+                          (block.laced && !block.laces) || block.payload == 0 ||
+                          (!block.laced && block.payload > max_view) ||
                           (demux->skip_before_us >= 0 && block.pts_us < demux->skip_before_us);
         if (skip) {
             mb_seek(demux->reader, block.end);
+            continue;
+        }
+        if (block.laced) {
+            demux->lace_count = block.laces;
+            demux->lace_next = 0;
+            demux->lace_pts_us = block.pts_us;
+            demux->lace_end = block.end;
             continue;
         }
 
@@ -749,6 +923,8 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
 bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us) {
     if (!demux) return false;
     if (pts_us <= 0) {
+        demux->lace_count = 0;
+        demux->lace_next = 0;
         mb_seek(demux->reader, demux->first_cluster);
         demux->cluster_time = 0;
         demux->skip_before_us = -1;
@@ -768,6 +944,8 @@ bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us) {
         }
     }
     mb_seek(demux->reader, demux->segment_start + (off_t)demux->cues[low].position);
+    demux->lace_count = 0;
+    demux->lace_next = 0;
     demux->cluster_time = 0;
     demux->skip_before_us = pts_us - demux->info.video.frame_interval_us / 2;
     return true;

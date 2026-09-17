@@ -10,8 +10,7 @@
 #include <string>
 
 void audio_out_start();
-bool audio_out_open(CodecId codec, uint32_t rate, uint8_t bits, uint8_t channels,
-                    std::string *note);
+bool audio_out_open(const TrackInfo &track, std::string *note);
 void audio_out_close();
 void audio_out_write(const uint8_t *data, std::size_t len);
 void audio_out_flush();

@@ -20,6 +20,9 @@ CodecId map_audio(mkv_audio_codec_t codec) {
     switch (codec) {
     case MKV_AUDIO_CODEC_PCM: return CodecId::Pcm;
     case MKV_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case MKV_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
+    case MKV_AUDIO_CODEC_AAC: return CodecId::Aac;
+    case MKV_AUDIO_CODEC_OPUS: return CodecId::Opus;
     case MKV_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -70,6 +73,9 @@ bool MkvDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.audio.sample_rate = mkv->audio.sample_rate;
     info_.audio.channels = mkv->audio.channels;
     info_.audio.bits = mkv->audio.bits_per_sample;
+    info_.audio.block_align = mkv->audio.block_align;
+    info_.audio.codec_private.assign(mkv->audio.codec_private,
+                                     mkv->audio.codec_private + mkv->audio.codec_private_size);
 
     info_.frame_interval_us = mkv->video.frame_interval_us;
     info_.duration_us = mkv->duration_us;

@@ -1,0 +1,104 @@
+settle
+tap 360 160
+settle
+tap 360 400
+settle
+capture audio_list.jpg
+tap 360 160
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture audio_aac_avi.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 240
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 1000
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 640
+wait 300
+up
+wait 3000
+capture audio_aac_mkv.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 320
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture audio_aac_laced.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 400
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture audio_adpcm_avi.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 480
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture audio_adpcm_mkv.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 560
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 1000
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 640
+wait 300
+up
+wait 3000
+capture audio_opus_mkv.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 640
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture audio_opus_laced.jpg
+tap 612 1213
+settle
+imu release

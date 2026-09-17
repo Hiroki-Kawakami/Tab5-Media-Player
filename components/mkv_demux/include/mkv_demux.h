@@ -24,6 +24,9 @@ typedef enum {
     MKV_AUDIO_CODEC_NONE,
     MKV_AUDIO_CODEC_PCM,
     MKV_AUDIO_CODEC_MP3,
+    MKV_AUDIO_CODEC_ADPCM_IMA,
+    MKV_AUDIO_CODEC_AAC,
+    MKV_AUDIO_CODEC_OPUS,
     MKV_AUDIO_CODEC_UNSUPPORTED,
 } mkv_audio_codec_t;
 
@@ -40,6 +43,9 @@ typedef struct {
         uint32_t sample_rate;
         uint8_t channels;
         uint8_t bits_per_sample;
+        uint16_t block_align;
+        const uint8_t *codec_private;
+        uint32_t codec_private_size;
     } audio;
     int64_t duration_us;
     bool seekable;

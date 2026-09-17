@@ -1,5 +1,4 @@
 idf_component_register(
-    SRCS "src/avi_demux.c"
+    SRCS "src/mkv_demux.c"
     INCLUDE_DIRS "include"
-    PRIV_INCLUDE_DIRS "src"
     REQUIRES media_buffer)

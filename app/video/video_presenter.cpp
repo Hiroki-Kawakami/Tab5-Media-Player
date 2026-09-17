@@ -53,6 +53,8 @@ static bsp_size_t s_panel;
 static std::size_t s_bytes_per_pixel = 2;
 static bsp_rotation_t s_rotation = BSP_ROTATION_0;
 static std::atomic<bsp_rotation_t> s_requested_rotation{BSP_ROTATION_0};
+static bsp_rotation_t s_source_rotation = BSP_ROTATION_0;
+static std::atomic<bsp_rotation_t> s_requested_source_rotation{BSP_ROTATION_0};
 static int s_fb_count;
 static int s_fb_index;
 static std::atomic<bool> s_overlay_dirty{false};
@@ -67,6 +69,10 @@ static int64_t s_last_us;
 
 static bool swaps_axes(bsp_rotation_t rotation) {
     return rotation == BSP_ROTATION_90 || rotation == BSP_ROTATION_270;
+}
+
+static bsp_rotation_t output_rotation() {
+    return static_cast<bsp_rotation_t>((s_rotation + s_source_rotation) % 4);
 }
 
 static bool same_rect(const bsp_rect_t &a, const bsp_rect_t &b) {
@@ -121,7 +127,8 @@ static void clear_framebuffer(int index) {
 }
 
 static bool place(bsp_size_t source, int index, RenderTarget *target) {
-    const bool swap = swaps_axes(s_rotation);
+    const bsp_rotation_t rotation = output_rotation();
+    const bool swap = swaps_axes(rotation);
     const uint32_t fit_w = (uint32_t)(swap ? s_panel.height : s_panel.width);
     const uint32_t fit_h = (uint32_t)(swap ? s_panel.width : s_panel.height);
     const uint32_t src_w = (uint32_t)source.width;
@@ -141,7 +148,7 @@ static bool place(bsp_size_t source, int index, RenderTarget *target) {
     target->framebuffer_bytes = framebuffer_bytes();
     target->panel = s_panel;
     target->source = source;
-    target->rotation = s_rotation;
+    target->rotation = rotation;
     target->scale_n = n;
     target->rect = { { (s_panel.width - panel_w) / 2, (s_panel.height - panel_h) / 2 },
                      { panel_w, panel_h } };
@@ -181,8 +188,10 @@ static void note_presented() {
 
 static void consume_requests() {
     const bsp_rotation_t rotation = s_requested_rotation.load();
-    if (rotation != s_rotation) {
+    const bsp_rotation_t source_rotation = s_requested_source_rotation.load();
+    if (rotation != s_rotation || source_rotation != s_source_rotation) {
         s_rotation = rotation;
+        s_source_rotation = source_rotation;
         s_clear_all.store(true);
         s_repaint.store(true);
     }
@@ -310,6 +319,8 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     s_overlay = nullptr;
     s_rotation = rotation;
     s_requested_rotation.store(rotation);
+    s_source_rotation = BSP_ROTATION_0;
+    s_requested_source_rotation.store(BSP_ROTATION_0);
     s_fb_index = s_fb_count - 1;
     s_rect = {};
     s_source = {};
@@ -385,6 +396,11 @@ void video_presenter_set_overlay(lv_display_t *overlay) {
 
 void video_presenter_set_rotation(bsp_rotation_t rotation) {
     s_requested_rotation.store(rotation);
+    if (s_wake) xSemaphoreGive(s_wake);
+}
+
+void video_presenter_set_source_rotation(bsp_rotation_t rotation) {
+    s_requested_source_rotation.store(rotation);
     if (s_wake) xSemaphoreGive(s_wake);
 }
 

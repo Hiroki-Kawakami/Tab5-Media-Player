@@ -8,19 +8,36 @@
 #include <strings.h>
 
 std::unique_ptr<Demuxer> avi_demuxer_create();
+std::unique_ptr<Demuxer> mkv_demuxer_create();
 
-static constexpr const char *kAviSuffix = ".avi";
+namespace {
 
-static const char *extension_of(const char *name) {
+struct Format {
+    const char *suffix;
+    std::unique_ptr<Demuxer> (*create)();
+};
+
+constexpr Format kFormats[] = {
+    { ".avi", avi_demuxer_create },
+    { ".mkv", mkv_demuxer_create },
+};
+
+const Format *format_of(const char *name) {
     const char *dot = strrchr(name, '.');
-    return dot ? dot : "";
+    if (!dot) return nullptr;
+    for (const Format &format : kFormats) {
+        if (strcasecmp(dot, format.suffix) == 0) return &format;
+    }
+    return nullptr;
+}
+
 }
 
 bool demuxer_supports(const char *name) {
-    return strcasecmp(extension_of(name), kAviSuffix) == 0;
+    return format_of(name) != nullptr;
 }
 
 std::unique_ptr<Demuxer> demuxer_create(const std::string &path) {
-    if (strcasecmp(extension_of(path.c_str()), kAviSuffix) == 0) return avi_demuxer_create();
-    return nullptr;
+    const Format *format = format_of(path.c_str());
+    return format ? format->create() : nullptr;
 }

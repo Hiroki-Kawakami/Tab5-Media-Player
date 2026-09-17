@@ -14,6 +14,8 @@
 
 static const char *TAG = "media_player";
 
+static constexpr std::size_t kMediaArenaBytes = 4 * 1024 * 1024;
+
 alignas(64) static uint8_t s_shared_sram[kSharedSramBytes];
 static lv_display_t *s_main;
 
@@ -70,7 +72,15 @@ void app_entry() {
     ESP_LOGI(TAG, "internal heap free after display init: %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 #endif
-    player_start();
+    media_arena_t arena = {};
+    arena.data = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+        MB_ARENA_ALIGNMENT, kMediaArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
+    if (arena.data) {
+        arena.size = kMediaArenaBytes;
+    } else {
+        ESP_LOGE(TAG, "no memory for the media arena");
+    }
+    player_start(arena);
 
     lv_async_call([] {
         ui_orientation_start(s_main);

@@ -1,0 +1,66 @@
+settle
+tap 360 163
+settle
+tap 360 252
+settle
+tap 360 480
+wait 1200
+capture mkv_rotated_0.jpg
+imu rot270
+wait 800
+capture mkv_rotated_270.jpg
+imu rot90
+wait 800
+capture mkv_rotated_90.jpg
+imu rot180
+wait 800
+capture mkv_rotated_180.jpg
+imu rot270
+wait 800
+tap 108 220
+wait 1500
+capture mkv_rotated_270_playing.jpg
+tap 108 67
+settle
+imu rot0
+wait 800
+settle
+tap 360 560
+wait 1200
+imu rot90
+wait 800
+capture mkv_poster.jpg
+tap 612 1060
+wait 800
+capture mkv_playing.jpg
+tap 612 1060
+wait 400
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 640
+wait 300
+up
+wait 1000
+capture mkv_seek.jpg
+tap 612 800
+wait 300
+tap 612 1060
+wait 3500
+capture mkv_looped.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 640
+wait 1200
+imu rot90
+wait 800
+tap 612 1060
+wait 5500
+capture mkv_pcm_finished.jpg
+tap 612 1213
+settle
+imu release

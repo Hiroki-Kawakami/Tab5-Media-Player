@@ -7,22 +7,19 @@
 #include "audio/audio_out.hpp"
 #include "media/demuxer.hpp"
 #include "video/video_presenter.hpp"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <atomic>
 #include <memory>
 
 static const char *TAG = "player";
 
 static constexpr int kVideoSlots = 4;
 static constexpr int kAudioSlots = 8;
-static constexpr std::size_t kMaxVideoSlotBytes = 1024 * 1024;
-static constexpr std::size_t kMaxAudioSlotBytes = 128 * 1024;
-static constexpr std::size_t kAlignment = 64;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
 
@@ -43,17 +40,17 @@ struct CommandItem {
 };
 
 struct VideoSlot {
-    uint8_t *data;
-    std::size_t capacity;
+    const uint8_t *data;
     std::size_t len;
     int64_t pts_us;
+    uint32_t ref;
     int refs;
 };
 
 struct AudioSlot {
-    uint8_t *data;
-    std::size_t capacity;
+    const uint8_t *data;
     std::size_t len;
+    uint32_t ref;
 };
 
 static SemaphoreHandle_t s_lock;
@@ -70,11 +67,13 @@ static SemaphoreHandle_t s_audio_idle;
 static VideoSlot s_video[kVideoSlots];
 static AudioSlot s_audio[kAudioSlots];
 static std::unique_ptr<Demuxer> s_demuxer;
+static media_arena_t s_arena;
 
 static bool s_reader_active;
 static bool s_audio_active;
 static bool s_have_audio;
 static bool s_loop;
+static std::atomic<bool> s_reader_eof{false};
 
 static PlayerState s_state = PlayerState::Idle;
 static std::string s_error;
@@ -111,37 +110,13 @@ static void slot_release(int slot) {
     const bool last = --s_video[slot].refs <= 0;
     if (last) s_video[slot].refs = 0;
     xSemaphoreGive(s_lock);
-    if (last) xQueueSend(s_video_free, &slot, 0);
+    if (!last) return;
+    if (s_demuxer) s_demuxer->release(s_video[slot].ref);
+    xQueueSend(s_video_free, &slot, 0);
 }
 
 static void presented(void *ctx) {
     slot_release((int)(intptr_t)ctx);
-}
-
-static uint8_t *allocate_slot(std::size_t bytes) {
-    uint8_t *data = (uint8_t *)heap_caps_aligned_alloc(
-        kAlignment, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED);
-    if (!data) data = (uint8_t *)heap_caps_aligned_alloc(kAlignment, bytes, MALLOC_CAP_DEFAULT);
-    return data;
-}
-
-static bool ensure_buffers(std::size_t video_bytes, std::size_t audio_bytes) {
-    for (int i = 0; i < kVideoSlots; i++) {
-        if (s_video[i].capacity >= video_bytes) continue;
-        heap_caps_free(s_video[i].data);
-        s_video[i].data = allocate_slot(video_bytes);
-        s_video[i].capacity = s_video[i].data ? video_bytes : 0;
-        if (!s_video[i].data) return false;
-    }
-    if (!audio_bytes) return true;
-    for (int i = 0; i < kAudioSlots; i++) {
-        if (s_audio[i].capacity >= audio_bytes) continue;
-        heap_caps_free(s_audio[i].data);
-        s_audio[i].data = allocate_slot(audio_bytes);
-        s_audio[i].capacity = s_audio[i].data ? audio_bytes : 0;
-        if (!s_audio[i].data) return false;
-    }
-    return true;
 }
 
 static void refill_free_queues() {
@@ -154,13 +129,22 @@ static void refill_free_queues() {
     }
     while (xQueueReceive(s_audio_ready, &slot, 0) == pdTRUE) {
     }
+    if (s_demuxer) s_demuxer->releaseAll();
     for (int i = 0; i < kVideoSlots; i++) {
-        s_video[i].refs = 0;
-        if (s_video[i].data) xQueueSend(s_video_free, &i, 0);
+        s_video[i] = {};
+        xQueueSend(s_video_free, &i, 0);
     }
     for (int i = 0; i < kAudioSlots; i++) {
-        if (s_audio[i].data) xQueueSend(s_audio_free, &i, 0);
+        s_audio[i] = {};
+        xQueueSend(s_audio_free, &i, 0);
     }
+}
+
+static bool take_slot(QueueHandle_t queue, int *slot) {
+    while (s_reader_active) {
+        if (xQueueReceive(queue, slot, pdMS_TO_TICKS(50)) == pdTRUE) return true;
+    }
+    return false;
 }
 
 static void reader_task(void *) {
@@ -169,49 +153,34 @@ static void reader_task(void *) {
 
         bool produced = false;
         while (s_reader_active) {
-            int video_slot = -1;
-            if (xQueueReceive(s_video_free, &video_slot, pdMS_TO_TICKS(50)) != pdTRUE) continue;
-
-            int audio_slot = -1;
-            if (s_have_audio &&
-                xQueueReceive(s_audio_free, &audio_slot, pdMS_TO_TICKS(50)) != pdTRUE) {
-                xQueueSend(s_video_free, &video_slot, 0);
-                continue;
-            }
-            if (!s_reader_active) {
-                xQueueSend(s_video_free, &video_slot, 0);
-                if (audio_slot >= 0) xQueueSend(s_audio_free, &audio_slot, 0);
-                break;
-            }
-
             Packet packet = {};
-            const bool ok = s_demuxer && s_demuxer->read(
-                s_video[video_slot].data, s_video[video_slot].capacity,
-                audio_slot >= 0 ? s_audio[audio_slot].data : nullptr,
-                audio_slot >= 0 ? s_audio[audio_slot].capacity : 0, &packet);
-
-            if (!ok) {
-                xQueueSend(s_video_free, &video_slot, 0);
-                if (audio_slot >= 0) xQueueSend(s_audio_free, &audio_slot, 0);
+            if (!s_demuxer || !s_demuxer->read(s_have_audio, &packet)) {
+                if (!s_reader_active) break;
                 if (s_demuxer && !s_demuxer->error().empty()) {
                     set_state(PlayerState::Failed, s_demuxer->error());
                     break;
                 }
-                if (!s_loop || !produced || !s_reader_active || !s_demuxer->seek(0)) break;
+                if (!s_loop || !produced || !s_demuxer->seek(0)) {
+                    s_reader_eof = true;
+                    break;
+                }
                 produced = false;
                 continue;
             }
 
-            if (packet.track == TrackType::Video) {
-                if (audio_slot >= 0) xQueueSend(s_audio_free, &audio_slot, 0);
-                s_video[video_slot].len = packet.len;
-                s_video[video_slot].pts_us = packet.pts_us;
+            const bool video = packet.track == TrackType::Video;
+            int slot = -1;
+            if (!take_slot(video ? s_video_free : s_audio_free, &slot)) {
+                s_demuxer->release(packet.ref);
+                break;
+            }
+            if (video) {
+                s_video[slot] = { packet.data, packet.len, packet.pts_us, packet.ref, 0 };
                 produced = true;
-                xQueueSend(s_video_ready, &video_slot, portMAX_DELAY);
+                xQueueSend(s_video_ready, &slot, portMAX_DELAY);
             } else {
-                xQueueSend(s_video_free, &video_slot, 0);
-                s_audio[audio_slot].len = packet.len;
-                xQueueSend(s_audio_ready, &audio_slot, portMAX_DELAY);
+                s_audio[slot] = { packet.data, packet.len, packet.ref };
+                xQueueSend(s_audio_ready, &slot, portMAX_DELAY);
             }
         }
 
@@ -227,6 +196,7 @@ static void audio_task(void *) {
             int slot = -1;
             if (xQueueReceive(s_audio_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) continue;
             if (s_audio_active) audio_out_write(s_audio[slot].data, s_audio[slot].len);
+            s_demuxer->release(s_audio[slot].ref);
             xQueueSend(s_audio_free, &slot, 0);
         }
 
@@ -254,6 +224,7 @@ static void audio_stop() {
 static void reader_stop() {
     audio_stop();
     s_reader_active = false;
+    if (s_demuxer) s_demuxer->interrupt(true);
     if (xSemaphoreTake(s_reader_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) == pdTRUE) {
         xSemaphoreGive(s_reader_idle);
     } else {
@@ -271,6 +242,8 @@ static void reader_stop() {
 
 static void reader_start() {
     xSemaphoreTake(s_reader_idle, 0);
+    if (s_demuxer) s_demuxer->interrupt(false);
+    s_reader_eof = false;
     s_reader_active = true;
     xSemaphoreGive(s_reader_wake);
 }
@@ -286,6 +259,10 @@ static int64_t media_clock_us() {
         }
     }
     return elapsed;
+}
+
+static bool before(int64_t pts_us, int64_t mark_us) {
+    return pts_us + s_interval_us / 2 < mark_us;
 }
 
 static void show(int slot) {
@@ -341,7 +318,7 @@ static void handle_open(const std::string &path) {
         set_state(PlayerState::Failed, "unsupported file");
         return;
     }
-    if (!s_demuxer->open(path)) {
+    if (!s_demuxer->open(path, s_arena)) {
         fail_open(s_demuxer->error());
         return;
     }
@@ -355,15 +332,8 @@ static void handle_open(const std::string &path) {
         fail_open("video has no timeline");
         return;
     }
-    if (info.video.max_packet_bytes > kMaxVideoSlotBytes ||
-        info.audio.max_packet_bytes > kMaxAudioSlotBytes) {
-        fail_open("video frames are too large to buffer");
-        return;
-    }
-    if (!ensure_buffers(info.video.max_packet_bytes, info.audio.max_packet_bytes)) {
-        fail_open("out of memory for the frame ring");
-        return;
-    }
+
+    video_presenter_set_source_rotation(info.video.rotation);
 
     std::string note;
     s_have_audio = audio_out_open(info.audio.codec, info.audio.sample_rate, info.audio.bits,
@@ -451,6 +421,7 @@ static void handle_loop(bool loop) {
     if (s_state != PlayerState::Playing && s_state != PlayerState::Paused) return;
     if (xSemaphoreTake(s_reader_idle, 0) != pdTRUE) return;
     if (s_reader_active && s_demuxer->seek(0)) {
+        s_reader_eof = false;
         xSemaphoreGive(s_reader_wake);
     } else {
         xSemaphoreGive(s_reader_idle);
@@ -473,19 +444,16 @@ static void handle_command(const CommandItem &item) {
 static void step_poster() {
     int slot = -1;
     if (xQueueReceive(s_video_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) return;
-    if (s_video[slot].pts_us < s_next_us) {
-        xQueueSend(s_video_free, &slot, 0);
-        return;
-    }
     slot_acquire(slot);
-    show(slot);
+    if (!before(s_video[slot].pts_us, s_next_us)) show(slot);
     slot_release(slot);
 }
 
 static void step_playing() {
     if (!s_have_pending) {
+        const bool drained = s_reader_eof;
         if (xQueueReceive(s_video_ready, &s_pending_slot, pdMS_TO_TICKS(20)) != pdTRUE) {
-            if (!s_loop && s_next_us >= s_duration_us) {
+            if (!s_loop && (drained || s_next_us >= s_duration_us)) {
                 audio_stop();
                 set_state(PlayerState::Finished);
             }
@@ -496,7 +464,7 @@ static void step_playing() {
     }
 
     const int64_t pts = s_video[s_pending_slot].pts_us;
-    if (pts < s_origin_pts_us) {
+    if (before(pts, s_origin_pts_us)) {
         if (!s_loop) {
             s_have_pending = false;
             slot_release(s_pending_slot);
@@ -557,8 +525,9 @@ static void send_command(Command command, const std::string *path = nullptr, int
     if (xQueueSend(s_commands, &item, pdMS_TO_TICKS(100)) != pdTRUE) delete item.path;
 }
 
-void player_start() {
+void player_start(const media_arena_t &arena) {
     if (s_lock) return;
+    s_arena = arena;
     s_lock = xSemaphoreCreateMutex();
     s_commands = xQueueCreate(4, sizeof(CommandItem));
     s_video_free = xQueueCreate(kVideoSlots, sizeof(int));

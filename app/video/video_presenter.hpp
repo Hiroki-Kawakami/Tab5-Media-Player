@@ -21,6 +21,7 @@ void video_presenter_flush();
 
 void video_presenter_set_overlay(lv_display_t *overlay);
 void video_presenter_set_rotation(bsp_rotation_t rotation);
+void video_presenter_set_source_rotation(bsp_rotation_t rotation);
 void video_presenter_mark_overlay_dirty();
 void video_presenter_repaint();
 

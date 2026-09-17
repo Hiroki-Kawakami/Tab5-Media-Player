@@ -32,11 +32,10 @@ class AviDemuxer : public Demuxer {
 public:
     ~AviDemuxer() override { close(); }
 
-    bool open(const std::string &path) override;
+    bool open(const std::string &path, const media_arena_t &arena) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
-    bool read(uint8_t *video, std::size_t video_capacity,
-              uint8_t *audio, std::size_t audio_capacity, Packet *out) override;
+    bool read(bool want_audio, Packet *out) override;
     bool seek(int64_t pts_us) override;
 
 private:
@@ -45,16 +44,17 @@ private:
     int64_t next_video_pts_us_ = 0;
 };
 
-bool AviDemuxer::open(const std::string &path) {
+bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = avi_demux_open(path.c_str(), &failure);
+    demux_ = avi_demux_open(path.c_str(), &arena, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this AVI";
         return false;
     }
+    buffer_ = avi_demux_buffer(demux_);
 
     const avi_info_t *avi = avi_demux_info(demux_);
     interval_us_ = avi->video.frame_interval_us;
@@ -86,20 +86,17 @@ void AviDemuxer::close() {
         avi_demux_close(demux_);
         demux_ = nullptr;
     }
+    buffer_ = nullptr;
     info_ = {};
     interval_us_ = 0;
     next_video_pts_us_ = 0;
 }
 
-bool AviDemuxer::read(uint8_t *video, std::size_t video_capacity,
-                      uint8_t *audio, std::size_t audio_capacity, Packet *out) {
+bool AviDemuxer::read(bool want_audio, Packet *out) {
     if (!demux_) return false;
 
     avi_packet_t packet = {};
-    if (!avi_demux_read(demux_, &packet, video, (uint32_t)video_capacity,
-                        audio, (uint32_t)audio_capacity)) {
-        return false;
-    }
+    if (!avi_demux_read(demux_, &packet, want_audio)) return false;
     if (packet.type == AVI_PACKET_VIDEO) {
         out->track = TrackType::Video;
         out->pts_us = (int64_t)packet.frame_index * interval_us_;
@@ -109,7 +106,9 @@ bool AviDemuxer::read(uint8_t *video, std::size_t video_capacity,
         out->pts_us = next_video_pts_us_;
     }
     out->keyframe = true;
+    out->data = packet.data;
     out->len = packet.size;
+    out->ref = packet.ref;
     return true;
 }
 

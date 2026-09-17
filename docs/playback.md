@@ -1,10 +1,10 @@
 # Playback
 
-What plays today: MJPEG `*.avi` with PCM or MP3 audio (or none), full screen,
-with play/pause, restart, seek, loop and volume. Picking a `.avi` in the file
-browser opens `PlayerScreen`.
+What plays today: MJPEG `*.avi` and `*.mkv` with PCM or MP3 audio (or none),
+full screen, with play/pause, restart, seek, loop and volume. Picking one in the
+file browser opens `PlayerScreen`.
 
-The planned additions are MKV, H.264 at low resolutions, audio-only files,
+The planned additions are H.264 at low resolutions, audio-only files,
 images, playlists and playing a directory in order. None of them exist yet.
 Their names are in the layout so you can see where each would land. Only the
 decisions that are expensive to reverse later were taken now.
@@ -17,16 +17,18 @@ PlayerScreen        LVGL overlay, transport UI
 Player              command task, state machine, media clock, pacing, loop
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
-  (AviDemuxer)        │         placement, FB,                     └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
-                      │         letterbox, overlay ◀────────────────────────────┘
-                      │           └─▶ compose overlay ─▶ present
-                      └──▶ audio_out (PCM / MP3) ──▶ bsp_audio_write
+  (Avi/MkvDemuxer)    │         placement, FB,                     └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
+  │                   │         letterbox, overlay ◀────────────────────────────┘
+media_buffer          │           └─▶ compose overlay ─▶ present
+  (arena)             └──▶ audio_out (PCM / MP3) ──▶ bsp_audio_write
 ```
 
 | path | role |
 |---|---|
-| `components/avi_demux/` | RIFF/AVI parsing and aligned read-ahead, plain C with no app types |
-| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI adapter |
+| `components/media_buffer/` | aligned read-ahead into the arena, packets as views into it |
+| `components/avi_demux/` | RIFF/AVI parsing, plain C with no app types |
+| `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
+| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI and MKV adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
 | `app/video/` | `video_presenter` (placement, framebuffers, overlay), `MjpegRenderer` |
 | `app/audio/` | `audio_out`: BSP output, MP3 decode, playback position |
@@ -48,7 +50,7 @@ seeking and frame dropping will need it. `demuxer_create()` dispatches on the
 file extension. Probing magic bytes can replace that inside the same function.
 
 **The presenter places, the renderer draws.** `video_presenter` owns
-everything that does not depend on the codec: the fit (rotation, a scale of
+everything that does not depend on the codec: the fit (output rotation, a scale of
 `n/16`, the output rect), which framebuffer is next, clearing the letterbox,
 composing the overlay and presenting. `MjpegRenderer` gets a `RenderTarget`
 (framebuffer, rotation, `n`, rect, source size) and puts one packet there. A
@@ -62,11 +64,15 @@ second codec gets a class with the same operations (`open`, `close`, `probe`,
   Strips are 16 rows, so every strip boundary scales to a whole row and the
   pipeline's check never rejects this scale. The simulator's PPA shim rounds
   instead of truncating and can be a pixel off.
-- **The renderer chooses the path.** When the target is rotation 0, `n == 16`,
+- **The output rotation is the UI rotation plus the source rotation**, both
+  counter-clockwise quarter turns (see [Source rotation](#source-rotation)).
+  `place()` fits the undecoded source with that sum, so PPA rotates once.
+- **The renderer chooses the path.** When the output rotation is 0, `n == 16`,
   the whole panel, a source equal to the panel with both sides multiples of 16,
   and a framebuffer whose address and size are on 64-byte boundaries, the JPEG
   is decoded straight into the framebuffer with `jpeg_enh_decoder_process()`
-  and PPA is skipped. That is a 720x1280 clip on a portrait UI. Anything else
+  and PPA is skipped. That is a 720x1280 clip on a portrait UI, or a 720x1280
+  MKV marked as rotated, held in the matching landscape. Anything else
   goes through `jpeg_ppa_pipeline`. The framebuffer check runs on every frame
   because the DPI driver's allocation (`MALLOC_CAP_DMA` on PSRAM) is not
   documented as aligned.
@@ -86,7 +92,8 @@ second codec gets a class with the same operations (`open`, `close`, `probe`,
   of RGB888 must fit one shared SRAM half, see
   [`architecture.md`](architecture.md)) and frames over 1920×1088 pixels. The
   decoder has no size limit of its own anymore. A still-image path would need
-  different buffers and different limits.
+  different buffers and different limits. Separately, no packet can exceed the
+  arena's bounce area (1 MB); larger ones are skipped.
 
 **The pixel format follows the panel.** `video_presenter_begin()` reads
 `bsp_display_get_pixel_format()`. That one value decides the strip format
@@ -125,18 +132,42 @@ and calls `player_open()` again. The screen is called `PlayerScreen`, not
   breaks every later frame that references it. Late frames will need to be
   decoded but not presented, or skipped until the next keyframe. The drop
   branch in `step_playing()` is the code to change.
-- **`buffered_reader` still lives inside `avi_demux`.** Move it into a shared
-  component when a second demuxer needs it.
+- **MKV carries no H.264 metadata yet.** `CodecPrivate` (SPS/PPS) is not read
+  and `V_MPEG4/ISO/AVC` is not mapped. Both belong in `mkv_demux` when H.264
+  arrives.
 
-## Reading: staying on FatFs's fast path
+## Reading: one buffer from the card to the decoder
 
 FatFs only reads straight into the caller's buffer, via DMA, for whole sectors.
 A partial sector at either end of a read goes through its window buffer and
-costs an extra copy. AVI chunks sit at whatever offset the muxer chose, so
-`buffered_reader` reads 64 KB chunks at sector-aligned offsets on its own task
-(`avi_reader`) and copies arbitrary ranges out of them. It uses `open()/read()`
-rather than `fopen/fread`. The file I/O happens outside the reader's state
-lock, so a cache miss does not block the other side for a whole read.
+costs an extra copy. Chunks and blocks sit at whatever offset the muxer chose,
+so `media_buffer` reads 64 KB chunks at sector-aligned offsets on its own task
+(`media_readahead`) into the arena, and a demuxer hands out **views** of that
+memory instead of copying packets out. It uses `open()/read()` rather than
+`fopen/fread`, and the file I/O happens outside the buffer's state lock.
+
+- **Why views.** Measured on the Tab5 with the old design, copying a 20-45 KB
+  frame out of the read-ahead cost 1-2 ms (PSRAM to PSRAM runs at about
+  22 MB/s), against about 15 ms for the JPEG decode. The copy also forced
+  per-slot buffers sized for the largest frame, which MKV cannot state up front.
+  A 60 fps clip that drops frames went from 34.5 to 39.3 fps after the change.
+- **The arena is 4 MB, allocated once at boot and never freed**
+  (`app_entry()`), so PSRAM fragmentation after many open/close cycles cannot
+  make it unavailable. One quarter is a bounce area; the rest is a ring of
+  64 KB chunks filled in ring order, so consecutive chunks are adjacent in
+  memory. The HW JPEG decoder only needs its input contiguous, not aligned
+  (it syncs the input with `ESP_CACHE_MSYNC_FLAG_UNALIGNED`).
+- **A view pins the chunks it covers.** Read-ahead never writes into a pinned
+  chunk; it waits. A view that would cross the ring's end is copied into the
+  bounce area instead, once per trip around the ring, and pins that.
+- **A view can wait on the player** (pins held by the presenter or the ring), so
+  `reader_stop()` interrupts the buffer before waiting for the reader to park.
+  An interrupted read rewinds the demuxer to the element it started on.
+- **Pins are dropped wholesale** (`releaseAll()`) in `refill_free_queues()`,
+  after every holder has been flushed. A packet still queued in a ring is never
+  released one by one.
+- **Header parsing runs with read-ahead off** and reads the file directly.
+  Only the sequential passes (`idx1`, `Cues`, playback) turn it on.
 
 Three things about AVIs from other tools:
 
@@ -153,6 +184,56 @@ An AVI written by ffmpeg (`-c:v mjpeg -pix_fmt yuvj420p`, with PCM or
 `libmp3lame` audio) plays on the simulator. The P4's hardware decoder only
 accepts baseline JPEG, and `jpeg_image_size()` rejects anything else with a
 message.
+
+## MKV
+
+`mkv_demux` walks the stream flat: `Cluster` and `BlockGroup` are entered, and
+every other element is skipped by its size. Top-level IDs never collide with
+cluster children, so an unknown-size `Cluster` ends where the next top-level
+element starts without tracking the hierarchy.
+
+- **Tracks.** The first video track must be `V_MJPEG`. Audio is
+  `A_PCM/INT/LIT` or `A_MPEG/L3`; anything else is ignored as unsupported. A
+  track with `ContentEncodings` (header stripping, compression) is unsupported.
+- **Lacing.** A laced audio block is handed on as one packet: the lace header
+  is skipped and the frames are contiguous. PCM concatenates, and the MP3
+  decoder consumes several frames from one buffer. A laced video block is
+  skipped.
+- **Timing.** `DefaultDuration` gives the frame interval; without it, the first
+  two video blocks are measured. `Info/Duration` gives the length; without it,
+  the last cue plus one interval.
+- **Seeking needs `Cues`**, found through `SeekHead` or before the first
+  cluster. Without them only `seek(0)` works (restart and loop). A seek jumps to
+  the last cue at or before the target and skips blocks earlier than half an
+  interval before it. ffmpeg starts a cluster for every MJPEG frame, so the
+  index keeps one entry per cluster and is decimated past 60000 entries.
+- **Timestamps are rounded to `TimestampScale`** (1 ms from ffmpeg), so a frame
+  at `k × interval` can be a fraction of a millisecond early. The player
+  compares pts with half an interval of tolerance, otherwise a seek would drop
+  its first frame or be taken for a loop wrap.
+- **The end is known from the reader, not from the duration.** The reader sets
+  an EOF flag when it parks at the end, and the player finishes once the ring
+  is empty. A `Duration` a little past the last frame no longer leaves it
+  playing forever.
+
+## Source rotation
+
+An MKV track's `Video/Projection/ProjectionPoseRoll` is honoured when
+`ProjectionType` is 0 (or absent) and yaw and pitch are 0. It is rounded to a
+quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
+
+- **Roll is counter-clockwise, and so are `bsp_rotation_t` and PPA's angle**,
+  so +90 maps to `BSP_ROTATION_90`. ffmpeg writes +90 for
+  `-display_rotation 90` and reads it back as `rotation=90`.
+  `simulator/verify/mkv.txt` shows the picture upright in all four UI
+  rotations.
+- **The point is the direct path.** A 1280x720 picture stored as 720x1280
+  (`transpose=clock`) with roll +90 decodes straight into the framebuffer when
+  the UI is at 270. At 90 the output rotation is 180 and it goes through PPA;
+  store it with roll -90 (`transpose=cclock`) if the other landscape is the one
+  in use.
+- **The player sets it on open** (`video_presenter_set_source_rotation`). The
+  presenter applies it between frames like a UI rotation.
 
 ## Pacing and the clock
 
@@ -174,7 +255,7 @@ message.
 | task | prio | work |
 |---|---|---|
 | `media_reader` | 4 | `Demuxer::read` → video ring (4 slots) / audio ring (8 slots) |
-| `avi_reader` | 3 | 64 KB aligned read-ahead |
+| `media_readahead` | 3 | 64 KB aligned read-ahead into the arena |
 | `player` | 5 | commands, pacing, submit to the presenter |
 | `video_presenter` | 5 | decode → PPA → compose overlay → present |
 | `media_audio` | 6 | audio ring → `audio_out_write` |
@@ -186,9 +267,9 @@ Every session change goes through `reader_stop()`, which is the only safe way
 to reuse ring slots:
 
 1. Park the audio task.
-2. Park the reader.
+2. Interrupt the buffer and park the reader.
 3. Flush the presenter, waiting for the frame being drawn.
-4. Refill the free queues.
+4. Drop every pin and refill the free queues.
 
 - **Parking uses "idle tokens".** Each task gives its token back when it
   parks, so "token available" always means "task is parked", no matter how
@@ -201,9 +282,9 @@ to reuse ring slots:
   hands the CPU to a lower-priority task. The player (prio 5) waiting on the
   reader (prio 4) that way spins until the task watchdog fires on `IDLE0`. Use
   a semaphore.
-- **Slots are allocated on the first open, grown when needed, and never
-  freed.** That is what makes `close()` safe while the presenter may still be
-  reading a slot.
+- **Ring slots hold no memory**, only a view and its pin. The bytes live in the
+  arena, which outlives every session, so `close()` is safe while the presenter
+  may still be reading a slot.
 
 ## Looping
 
@@ -289,15 +370,31 @@ on `Movies/clip.avi`. It then plays `Movies/ffmpeg.avi`. It injects `imu rot90`
 once the player is open, so the bar coordinates are the landscape ones.
 `simulator/verify/rotation.txt` plays `Movies/portrait.avi` (720x1280, the
 direct path) and turns it through all four rotations, then checks the list
-after going back. All three files are local fixtures in the gitignored
-`simulator/sdcard`. To make an ffmpeg fixture (`size=720x1280` for
-`portrait.avi`):
+after going back. `simulator/verify/mkv.txt` turns `Movies/rotated.mkv`
+through all four rotations and plays it at 270 (the direct path), exercises
+play, seek and loop on `Movies/sample.mkv`, and plays `Movies/sample_pcm.mkv`
+(640x360, PCM) to the end. The scripts tap list rows by position, so MKV
+fixtures are named to sort after the AVIs. All of them are local fixtures in
+the gitignored `simulator/sdcard`. To make an ffmpeg fixture (`size=720x1280`
+for `portrait.avi`; `.mkv` for `sample.mkv`; `size=640x360:rate=10`,
+`sample_rate=32000` and `-c:a pcm_s16le` for `sample_pcm.mkv`):
 
 ```sh
 nix develop -c ffmpeg -f lavfi -i testsrc=size=1280x720:rate=15 \
     -f lavfi -i sine=frequency=440:sample_rate=44100 -t 4 \
     -c:v mjpeg -q:v 5 -pix_fmt yuvj420p -c:a libmp3lame -b:a 128k \
     simulator/sdcard/Movies/ffmpeg.avi
+```
+
+`rotated.mkv` is a landscape clip stored portrait, with the roll added on remux
+(`-display_rotation` is an input option):
+
+```sh
+nix develop -c ffmpeg -f lavfi -i testsrc=size=1280x720:rate=15 \
+    -f lavfi -i sine=frequency=440:sample_rate=44100 -t 4 -vf transpose=clock \
+    -c:v mjpeg -q:v 5 -pix_fmt yuvj420p -c:a libmp3lame -b:a 128k upright_cw.mkv
+nix develop -c ffmpeg -display_rotation 90 -i upright_cw.mkv -c copy \
+    simulator/sdcard/Movies/rotated.mkv
 ```
 
 - **Seek drags need a `wait` between `down` and each `move`.** A `move` in the

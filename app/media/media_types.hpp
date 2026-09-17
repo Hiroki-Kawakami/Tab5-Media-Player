@@ -6,6 +6,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "bsp_types.h"
 
 enum class CodecId {
     None,
@@ -28,6 +29,7 @@ struct TrackInfo {
     uint8_t channels = 0;
     uint8_t bits = 0;
     uint32_t max_packet_bytes = 0;
+    bsp_rotation_t rotation = BSP_ROTATION_0;
 };
 
 struct MediaInfo {
@@ -42,7 +44,9 @@ struct Packet {
     TrackType track = TrackType::Video;
     int64_t pts_us = 0;
     bool keyframe = false;
+    const uint8_t *data = nullptr;
     std::size_t len = 0;
+    uint32_t ref = 0;
 };
 
 inline const char *codec_name(CodecId codec) {

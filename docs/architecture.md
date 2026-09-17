@@ -5,7 +5,7 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
-| `components/` | project-specific plain-C components (`avi_demux`) |
+| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
@@ -51,6 +51,15 @@ which also means media that keeps the LVGL main UI on screen cannot use them.
 
 The size is two strips of 16 rows × 2560 px × 3 bytes, which is where the 2560 px
 width limit for MJPEG comes from.
+
+## Media arena
+
+`app_entry()` also allocates the 4 MB PSRAM arena that playback reads into
+(see [`playback.md`](playback.md)). It is allocated at boot and never freed
+because it must be one contiguous block: allocating it per session would risk
+PSRAM fragmentation making it unavailable after the UI has been used for a
+while. It cannot be a `.bss` array like the SRAM buffer, because `.bss` stays in
+internal RAM.
 
 ## Orientation
 

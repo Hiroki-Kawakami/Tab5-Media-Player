@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "media_buffer.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -51,20 +53,22 @@ typedef enum {
 
 typedef struct {
     avi_packet_type_t type;
+    const uint8_t *data;
     uint32_t size;
+    uint32_t ref;
     uint32_t frame_index;
 } avi_packet_t;
 
 typedef struct avi_demux avi_demux_t;
 
-avi_demux_t *avi_demux_open(const char *path, const char **error);
+avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const char **error);
 void avi_demux_close(avi_demux_t *demux);
 
 const avi_info_t *avi_demux_info(const avi_demux_t *demux);
 
-bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet,
-                    uint8_t *video, uint32_t video_capacity,
-                    uint8_t *audio, uint32_t audio_capacity);
+media_buffer_t *avi_demux_buffer(avi_demux_t *demux);
+
+bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio);
 
 bool avi_demux_seek(avi_demux_t *demux, uint32_t frame);
 

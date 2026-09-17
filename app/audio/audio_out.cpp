@@ -47,6 +47,7 @@ struct DecoderSetup {
     uint32_t rate = 0;
     uint8_t channels = 0;
     bool adts = false;
+    bool sbr = true;
     std::vector<uint8_t> extradata;
 };
 
@@ -198,7 +199,7 @@ static bool decoder_open() {
         aac.channel = setup.channels;
         aac.bits_per_sample = 16;
         aac.no_adts_header = !setup.adts;
-        aac.aac_plus_enable = true;
+        aac.aac_plus_enable = setup.sbr;
         config.cfg = &aac;
         config.cfg_sz = sizeof(aac);
         break;
@@ -422,9 +423,10 @@ static void write_adpcm(const uint8_t *data, std::size_t len) {
     }
 }
 
-static bool prepare(const TrackInfo &track, std::string *note) {
+static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
     s_setup = {};
     s_setup.codec = track.codec;
+    s_setup.sbr = aac_sbr;
     s_setup.rate = track.sample_rate;
     s_setup.channels = track.channels;
     s_block_align = track.block_align;
@@ -474,7 +476,7 @@ void audio_out_start() {
     bsp_audio_set_volume(s_volume);
 }
 
-bool audio_out_open(const TrackInfo &track, std::string *note) {
+bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
     if (!s_lock) return false;
     audio_out_close();
 
@@ -501,7 +503,7 @@ bool audio_out_open(const TrackInfo &track, std::string *note) {
         }
     }
 
-    if (!prepare(track, note)) {
+    if (!prepare(track, aac_sbr, note)) {
         s_mode = Mode::Pcm;
         return false;
     }

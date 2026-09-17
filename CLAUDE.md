@@ -15,6 +15,9 @@ submodule.
 
 - [`docs/architecture.md`](docs/architecture.md) — component layout and the
   device/simulator split.
+- [`docs/h264.md`](docs/h264.md) — the in-house H.264 decoder: memory layout,
+  the two-core row pipeline, PIE facts, and how to check it bit-exact against
+  ffmpeg on the host and on the board.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button

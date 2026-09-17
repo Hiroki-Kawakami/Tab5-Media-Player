@@ -1,12 +1,13 @@
 # Playback
 
-What plays today: MJPEG `*.avi` and `*.mkv` with PCM, MP3, IMA ADPCM or AAC
-audio, plus Opus in MKV only (or no audio),
-full screen, with play/pause, restart, seek, loop and volume. Picking one in the
-file browser opens `PlayerScreen`.
+What plays today: MJPEG or H.264 (Constrained Baseline, up to 1280x720) in
+`*.avi` and `*.mkv` with PCM, MP3, IMA ADPCM or AAC audio, plus Opus in MKV
+only (or no audio), full screen, with play/pause, restart, seek, loop and
+volume. Picking one in the file browser opens `PlayerScreen`. The H.264 decoder
+itself is described in [`h264.md`](h264.md).
 
-The planned additions are H.264 at low resolutions, audio-only files,
-images, playlists and playing a directory in order. None of them exist yet.
+The planned additions are MP4, audio-only files, images, playlists and playing
+a directory in order. None of them exist yet.
 Their names are in the layout so you can see where each would land. Only the
 decisions that are expensive to reverse later were taken now.
 
@@ -18,8 +19,9 @@ PlayerScreen        LVGL overlay, transport UI
 Player              command task, state machine, media clock, pacing, loop
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
-  (Avi/MkvDemuxer)    │         placement, FB,                     └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
-  │                   │         letterbox, overlay ◀────────────────────────────┘
+  (Avi/MkvDemuxer)    │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
+  │                   │         letterbox,      └─ decoder task ─▶ H264Renderer ─ h264_dec ▶ packed DPB
+  │                   │         overlay ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 media_buffer          │           └─▶ compose overlay ─▶ present
   (arena)             └──▶ audio_out (PCM / MP3 / ADPCM / AAC / Opus) ──▶ bsp_audio_write
 ```
@@ -29,9 +31,10 @@ media_buffer          │           └─▶ compose overlay ─▶ present
 | `components/media_buffer/` | aligned read-ahead into the arena, packets as views into it |
 | `components/avi_demux/` | RIFF/AVI parsing, plain C with no app types |
 | `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
+| `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI and MKV adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
-| `app/video/` | `video_presenter` (placement, framebuffers, overlay), `MjpegRenderer` |
+| `app/video/` | `video_presenter` (placement, framebuffers, overlay, decode/present stages), `VideoRenderer` and its MJPEG and H.264 implementations, the FreeRTOS hooks the decoder runs on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/player_screen.*` | the full-screen player UI |
 
@@ -46,17 +49,27 @@ once.
 
 **Containers and codecs are separate.** A `Demuxer` produces bytes tagged with
 a `CodecId`. It knows nothing about JPEG, and nothing above it knows about
-RIFF. `Packet::keyframe` already exists (always true for MJPEG) because H.264
-seeking and frame dropping will need it. `demuxer_create()` dispatches on the
-file extension. Probing magic bytes can replace that inside the same function.
+RIFF. `Packet::keyframe` comes from the container (always true for MJPEG).
+`demuxer_create()` dispatches on the file extension. Probing magic bytes can
+replace that inside the same function.
+
+- **H.264 parameter sets are always Annex-B.** For `CodecId::H264`,
+  `TrackInfo::codec_private` holds `00 00 00 01 SPS … 00 00 00 01 PPS …`
+  whatever the container stored (avcC in MKV; avcC, Annex-B or nothing in
+  AVI), converted by `h264_config_to_annexb()` in `demuxer.cpp`, so the
+  decoder never parses avcC. The packets themselves are not rewritten:
+  `TrackInfo::nal_length_size` says how they are framed (0 = start codes,
+  otherwise the avcC length size). An empty `codec_private` means the SPS/PPS
+  are only in-band.
 
 **The presenter places, the renderer draws.** `video_presenter` owns
 everything that does not depend on the codec: the fit (output rotation, a scale of
 `n/16`, the output rect), which framebuffer is next, clearing the letterbox,
-composing the overlay and presenting. `MjpegRenderer` gets a `RenderTarget`
-(framebuffer, rotation, `n`, rect, source size) and puts one packet there. A
-second codec gets a class with the same operations (`open`, `close`, `probe`,
-`render`, `rerender`, `discard`); extract the interface then.
+composing the overlay and presenting. A `VideoRenderer` turns a packet into a
+`VideoFrame` (`decode`) and puts a frame into a `RenderTarget` (framebuffer,
+rotation, `n`, rect, source size) with `draw`. `draw(nullptr, …)` redraws the
+held frame. MJPEG's `decode` only reads the header and the JPEG is decoded
+inside `draw`; H.264's `decode` does the real work and `draw` is one PPA call.
 
 - **The scale is `n/16` because PPA quantizes to 1/16** (8-bit integer and
   4-bit fraction). `n` is `floor(16 × min(fit/source))`, so clips are scaled up
@@ -83,18 +96,19 @@ second codec gets a class with the same operations (`open`, `close`, `probe`,
   makes the whole-frame call on that handle safe.
 - **The renderer owns each packet it is given** and releases it exactly once.
   MJPEG holds the last drawn packet until the next one is drawn, or until
-  `discard()` / `close()`, so `rerender()` decodes it again. The framebuffer
+  `discard()` / `close()`, so a redraw decodes it again. The framebuffer
   cannot be copied back because the overlay is already composed into it. One
   of the four ring slots is therefore always held. A failed draw releases the
-  new packet and keeps the old one. A codec with reference frames must not work
-  this way: it releases right after decoding and keeps its decoded picture for
-  `rerender()`.
-- **The size limits are MJPEG's.** `probe()` rejects widths over 2560 (16 rows
+  new packet and keeps the old one. H.264 cannot work this way, because a
+  packet cannot be decoded twice once later frames have used its picture: it
+  releases the packet right after decoding and holds the decoded picture (a
+  hold count on a DPB frame) instead.
+- **The size limits are per codec.** MJPEG rejects widths over 2560 (16 rows
   of RGB888 must fit one shared SRAM half, see
-  [`architecture.md`](architecture.md)) and frames over 1920×1088 pixels. The
-  decoder has no size limit of its own anymore. A still-image path would need
-  different buffers and different limits. Separately, no packet can exceed the
-  arena's bounce area (1 MB); larger ones are skipped.
+  [`architecture.md`](architecture.md)) and frames over 1920×1088 pixels.
+  H.264 rejects more than 3600 macroblocks or a side over 1280, because its row
+  buffers live in the same 240 KiB (see [`h264.md`](h264.md)). Separately, no
+  packet can exceed the arena's bounce area (1 MB); larger ones are skipped.
 
 **The pixel format follows the panel.** `video_presenter_begin()` reads
 `bsp_display_get_pixel_format()`. That one value decides the strip format
@@ -121,21 +135,68 @@ directory in order or a playlist becomes a layer that watches for `Finished`
 and calls `player_open()` again. The screen is called `PlayerScreen`, not
 `VideoScreen`, because audio files will use it too.
 
+## H.264 playback
+
+The decoder's internals are in [`h264.md`](h264.md). This is how the player and
+the presenter drive it.
+
+- **Decode and present are separate stages.** `video_presenter` runs a
+  `video_decoder` task next to its worker. H.264 packets go to the decoder,
+  decoded frames wait in a two-entry ready queue with an absolute due time, and
+  the worker draws each one when it is due. A PPA call on a 640x360 picture
+  scaled to the panel takes 13-24 ms and mostly waits for the hardware, so the
+  next frame decodes meanwhile; decoding and drawing in one task capped a clip
+  that decodes at 38 fps to 19 fps on screen. The worker starts a draw early by
+  a running average of how long draws take, and when several frames are due it
+  draws only the newest. MJPEG stays single-stage: its decode and scale are one
+  hardware pipeline.
+- **The player submits H.264 frames early.** `step_playing()` hands a frame
+  over 120 ms before it is due (`kDecodeLeadUs`) together with its due time in
+  `esp_timer` terms. The poster and anything submitted while paused carry a due
+  time of 0, which means "now". Pausing therefore still shows the few frames
+  already in the pipeline.
+- **Late frames are decoded, not skipped.** A frame more than one interval late
+  is still decoded (`present = false`) because later frames reference it,
+  unless its NAL header says nothing references it (`nal_ref_idc == 0`,
+  checked by the reader). A late frame is still shown if nothing has been
+  shown for 200 ms, so a stream that runs just behind keeps moving on screen.
+- **Too late means skipping to the next keyframe.** Past
+  `max(500 ms, 5 intervals)` of lateness, or three intervals while the video
+  ring is full, the player drops everything up to the next keyframe and shows
+  that one whatever its lateness. The full-ring rule is what keeps audio
+  going: the reader takes packets in file order, so a full video ring also
+  stops audio, and the audio-corrected clock then slows down with it, which
+  hid the lateness. A 720p clip that decodes at 10 fps played in slow motion
+  before this.
+- **The clock ignores audio while the video ring is full.** Same reason: that
+  audio gap is caused by the video, so pulling the clock back to it would only
+  make the video look on time.
+- **Seeking snaps to the keyframe.** `Demuxer::seek` reports where it landed and
+  `rewind_to()` takes that as the new position, so the poster is the keyframe
+  itself and the slider jumps back to it. Decoding forward to the exact target
+  would cost a full GOP of decode time on every drag.
+- **A flush restarts the decoder.** `video_presenter_flush()` drains both queues,
+  waits for the frame in flight in each stage, drops the held picture and calls
+  `restart()`, which makes the decoder skip everything up to the next I
+  picture. `reader_stop()` already flushes on every session change, so a seek
+  never mixes references from before and after it. A loop wrap does not flush;
+  the stream restarts at an IDR, which resets the decoder by itself.
+- **Colours come from the VUI.** The PPA input range follows
+  `video_full_range_flag`; the matrix is BT.709 when `matrix_coefficients` says
+  so, BT.601 for 5 and 6, and otherwise BT.709 from 720 lines up. PPA's YUV420
+  input is Espressif's packed `O_UYY_E_VYY`, which is why the decoder stores
+  pictures in that layout.
+
 ## Deliberately not done yet
 
-- **No abstract video renderer.** MJPEG is the only codec, so `MjpegRenderer`
-  is a concrete class used directly by `video_presenter`. Introduce the
-  interface with the second codec. H.264 and PNG decode into their own buffer
-  (YUV420 / RGB) and need a "raster → PPA → framebuffer" path, which the MJPEG
-  renderer does not have.
-- **Dropping late frames stays in the player, before decode.** That is correct
-  only because every MJPEG frame stands alone. With H.264 a skipped frame
-  breaks every later frame that references it. Late frames will need to be
-  decoded but not presented, or skipped until the next keyframe. The drop
-  branch in `step_playing()` is the code to change.
-- **MKV carries no H.264 metadata yet.** `CodecPrivate` (SPS/PPS) is not read
-  and `V_MPEG4/ISO/AVC` is not mapped. Both belong in `mkv_demux` when H.264
-  arrives.
+- **No output reordering.** Pictures are shown in decoding order. Baseline
+  streams whose picture order count differs from it (the JVT `MR4/MR5_TANDBERG`
+  streams do) decode correctly but show frames out of order. x264's baseline
+  output never does this.
+- **No MP4.** It is the most common H.264 container; it gets its own demuxer.
+- **No CABAC, B slices, interlace, weighted prediction or 8x8 transform.**
+  They are rejected with "re-encode with -profile:v baseline"; see
+  [`h264.md`](h264.md).
 
 ## Reading: one buffer from the card to the decoder
 
@@ -170,7 +231,7 @@ memory instead of copying packets out. It uses `open()/read()` rather than
 - **Header parsing runs with read-ahead off** and reads the file directly.
   Only the sequential passes (`idx1`, `Cues`, playback) turn it on.
 
-Three things about AVIs from other tools:
+Things about AVIs from other tools:
 
 - **Streams are matched by `strl` order, not by fixed chunk ids.** A file that
   declares audio first still plays.
@@ -180,6 +241,19 @@ Three things about AVIs from other tools:
 - **`suggested_buffer_size` is ignored.** Muxers often write 0 there. Ring
   slots are sized from the largest chunk listed in `idx1`, and a chunk that
   does not fit its slot is skipped.
+- **H.264 keyframes come from `idx1` (`AVIIF_KEYFRAME`).** The index keeps
+  only keyframes as seek points, so `avi_demux_seek()` lands on the last
+  keyframe at or before the target and reports that frame; the adapter derives
+  pts from it. Without `idx1` a packet is a keyframe when its first slice NAL
+  is IDR (type 5), and only `seek(0)` works. MJPEG ignores the flags.
+- **Zero-size video chunks are frames.** ffmpeg writes them to keep the frame
+  clock (its H.264 AVIs have one right after the first frame), so pts counts
+  them, matching ffprobe's dts, and every keyframe there is one frame later
+  than in the same encode muxed to MKV.
+- **ffmpeg's H.264 AVIs have no extradata** (libx264 only emits it with
+  `-flags +global_header`, and then as Annex-B). ffmpeg refuses to mux
+  length-prefixed H.264 into AVI, so the avcC branch is untested on real files.
+  `strf` extradata is cut to `biSize - 40`; the chunk carries a pad byte.
 
 An AVI written by ffmpeg (`-c:v mjpeg -pix_fmt yuvj420p`, with PCM or
 `libmp3lame` audio) plays on the simulator. The P4's hardware decoder only
@@ -193,7 +267,8 @@ every other element is skipped by its size. Top-level IDs never collide with
 cluster children, so an unknown-size `Cluster` ends where the next top-level
 element starts without tracking the hierarchy.
 
-- **Tracks.** The first video track must be `V_MJPEG`. Audio is
+- **Tracks.** The first video track must be `V_MJPEG` or `V_MPEG4/ISO/AVC`
+  (its avcC `CodecPrivate` is copied and handed up raw). Audio is
   `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, or `A_MS/ACM` whose
   WAVEFORMATEX is IMA ADPCM (`0x0011`); anything else is ignored as
   unsupported. `CodecPrivate` is handed up as-is, except for `A_MS/ACM`, where
@@ -209,14 +284,28 @@ element starts without tracking the hierarchy.
   failed seek restarts the reader without seeking), and an interrupted view
   rewinds to that frame. A block whose lace sizes do not add up is skipped, and
   so is a laced video block.
+- **Keyframes.** A `SimpleBlock` has a keyframe flag; a `Block` has none and is
+  a keyframe when its `BlockGroup` has no `ReferenceBlock`. The walk is flat,
+  so for a video `Block` the rest of its group is read ahead and the reader
+  steps back to the payload. That backward seek can throw away the read-ahead
+  window, which is acceptable because muxers use `BlockGroup` for video only
+  on odd frames (ffmpeg: a duration that differs from the default).
 - **Timing.** `DefaultDuration` gives the frame interval; without it, the first
   two video blocks are measured. `Info/Duration` gives the length; without it,
   the last cue plus one interval.
 - **Seeking needs `Cues`**, found through `SeekHead` or before the first
   cluster. Without them only `seek(0)` works (restart and loop). A seek jumps to
-  the last cue at or before the target and skips blocks earlier than half an
-  interval before it. ffmpeg starts a cluster for every MJPEG frame, so the
-  index keeps one entry per cluster and is decimated past 60000 entries.
+  the last cue at or before the target. The index is decimated past 60000
+  entries.
+  - MJPEG skips blocks earlier than half an interval before the target, since
+    any frame can be shown. ffmpeg starts a cluster for every MJPEG frame, so
+    the index keeps one entry per cluster.
+  - H.264 must start at a keyframe, so nothing near the target is skipped:
+    blocks before the cue's own time are dropped (a cluster can hold more than
+    one cued keyframe, so cues are not merged per cluster) and so are video
+    blocks until the first keyframe, in case a cue points at a cluster that
+    does not start with one. The first video packet's pts is where the seek
+    landed. ffmpeg cues only video keyframes.
 - **Timestamps are rounded to `TimestampScale`** (1 ms from ffmpeg), so a frame
   at `k × interval` can be a fraction of a millisecond early. The player
   compares pts with half an interval of tolerance, otherwise a seek would drop
@@ -267,11 +356,26 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `media_reader` | 4 | `Demuxer::read` → video ring (4 slots) / audio ring (8 slots) |
 | `media_readahead` | 3 | 64 KB aligned read-ahead into the arena |
 | `player` | 5 | commands, pacing, submit to the presenter |
-| `video_presenter` | 5 | decode → PPA → compose overlay → present |
+| `video_presenter` | 6 | (MJPEG: decode →) PPA → compose overlay → present, core 0 |
+| `video_decoder` | 2 | H.264 decode (parse, prediction, residual), core 0 |
+| `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
 | `media_audio` | 6 | audio ring → `audio_out_write` |
 
 Audio has the highest priority because a late audio write is audible and a
-late frame is not.
+late frame is not. The presenter sits at 6 too, on core 0 with the decoder,
+so it wakes on time while the decoder is busy; it spends most of its time
+waiting for PPA.
+
+The two H.264 workers sit below everything else because they are the only
+tasks that use a whole core. At 720p they never block, and above the reader
+(4), the read-ahead (3) and LVGL (4) they would starve all three. The decoder
+also sleeps 20 ms after 500 ms without blocking, which keeps `IDLE0` fed for
+the task watchdog. Taking a harness capture while a heavy clip plays still
+trips the watchdog, since the capture itself runs on core 0 for seconds.
+
+- **The overlay costs frame rate.** With the bar shown, every frame is also
+  blended with it, and a 360p clip that plays at 30 fps with the bar hidden
+  falls to about 20 fps on screen (the rest are decoded but not shown).
 
 `media_audio` has a 20 KB stack because the decoders run on it. Opus's CELT
 decoder keeps its work buffers in stack VLAs and overflowed the 4 KB that was
@@ -373,6 +477,11 @@ presenter composes it over each picture before presenting.
   AudioSpecificConfig states), `bsp_audio_open` is called again.
 - **Decoders are reset on seek** (`audio_out_flush()`), so AAC and Opus do not
   carry state from before the jump. The audio task is parked by then.
+- **AAC's SBR (HE-AAC) decoding is on only next to MJPEG.** On the device it
+  took about a quarter of a core even for plain AAC-LC, which H.264 playback
+  cannot spare; MJPEG is decoded in hardware and can. With H.264, an HE-AAC
+  track plays its core only (half the rate, no high band); the rate change is
+  handled like any other. The simulator's libavcodec ignores the setting.
 - **AAC decides raw or ADTS from the first packet**, not from the container:
   AVI has several format tags for AAC and they are not used consistently. Raw
   AAC with no AudioSpecificConfig gets one built from the track's rate and
@@ -459,3 +568,15 @@ EBML for Opus) and drops `SeekHead` and `Cues`; they are therefore not
 seekable. ffmpeg decodes them to the same samples as the originals.
 - **Do not measure frame rate here.** The host decodes JPEG in software, so a
   10 fps clip shows about 8-9 fps.
+
+`z_h264_360p.mkv` and `z_h264_360p.avi` are H.264 Constrained Baseline
+fixtures (keyframe every second), named to sort last so no script's rows move:
+
+```sh
+nix develop -c ffmpeg -f lavfi -i testsrc=size=640x360:rate=30 \
+    -f lavfi -i sine=frequency=440:sample_rate=44100 -t 6 \
+    -c:v libx264 -profile:v baseline -g 30 -pix_fmt yuv420p -c:a aac \
+    simulator/sdcard/Movies/z_h264_360p.mkv
+```
+
+The `.avi` is the same command with `-c:a libmp3lame`.

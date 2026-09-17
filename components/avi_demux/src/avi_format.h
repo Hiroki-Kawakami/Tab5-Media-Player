@@ -29,6 +29,13 @@ enum {
     AVI_mjpg = AVI_FOURCC('m', 'j', 'p', 'g'),
     AVI_jpeg = AVI_FOURCC('j', 'p', 'e', 'g'),
     AVI_JPEG = AVI_FOURCC('J', 'P', 'E', 'G'),
+    AVI_H264 = AVI_FOURCC('H', '2', '6', '4'),
+    AVI_h264 = AVI_FOURCC('h', '2', '6', '4'),
+    AVI_X264 = AVI_FOURCC('X', '2', '6', '4'),
+    AVI_x264 = AVI_FOURCC('x', '2', '6', '4'),
+    AVI_AVC1 = AVI_FOURCC('A', 'V', 'C', '1'),
+    AVI_avc1 = AVI_FOURCC('a', 'v', 'c', '1'),
+    AVI_DAVC = AVI_FOURCC('D', 'A', 'V', 'C'),
 };
 
 #define AVI_WAVE_FORMAT_PCM 0x0001
@@ -38,6 +45,8 @@ enum {
 #define AVI_WAVE_FORMAT_AAC_ADTS 0x1600
 #define AVI_WAVE_FORMAT_AAC_FAAD 0x706D
 #define AVI_WAVE_FORMAT_EXTRA_LIMIT 256
+#define AVI_BITMAP_EXTRA_LIMIT 4096
+#define AVI_INDEX_KEYFRAME 0x10
 
 typedef struct {
     uint32_t fourcc;

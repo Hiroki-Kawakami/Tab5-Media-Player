@@ -49,7 +49,8 @@ static bool covers_panel_unscaled(const RenderTarget &target) {
            target.framebuffer_bytes % kCacheAlignment == 0;
 }
 
-bool MjpegRenderer::open(const SharedSram &sram, bsp_pixel_format_t format, std::string *error) {
+bool MjpegRenderer::open(const SharedSram &sram, bsp_pixel_format_t format, const TrackInfo &,
+                         std::string *error) {
     close();
     if (!color_mode_for(format, &color_mode_)) {
         *error = "unsupported panel pixel format for video";
@@ -84,48 +85,54 @@ void MjpegRenderer::close() {
     }
 }
 
-bool MjpegRenderer::probe(const uint8_t *data, std::size_t len, bsp_size_t *size,
-                          std::string *error) {
+void MjpegRenderer::drop(VideoFrame *frame) {
+    const VideoFrame f = *frame;
+    *frame = {};
+    if (f.release) f.release(f.ctx);
+}
+
+DecodeResult MjpegRenderer::decode(const uint8_t *data, std::size_t len,
+                                   VideoPresenterRelease release, void *ctx, bool present,
+                                   VideoFrame *frame, std::string *error) {
+    VideoFrame packet;
+    packet.data = data;
+    packet.len = len;
+    packet.release = release;
+    packet.ctx = ctx;
+    if (!present) {
+        drop(&packet);
+        return DecodeResult::Hidden;
+    }
     uint32_t width = 0, height = 0;
-    if (!jpeg_image_size(data, len, &width, &height, error)) return false;
+    if (!jpeg_image_size(data, len, &width, &height, error)) {
+        drop(&packet);
+        return DecodeResult::Failed;
+    }
     if (width > kMaxWidth) {
         *error = "video is wider than " + std::to_string(kMaxWidth) + " px";
-        return false;
+        drop(&packet);
+        return DecodeResult::Failed;
     }
     if ((uint64_t)width * height > kMaxPixels) {
         *error = "video frame is too large to decode";
-        return false;
+        drop(&packet);
+        return DecodeResult::Failed;
     }
-    *size = { (int)width, (int)height };
-    return true;
-}
-
-bool MjpegRenderer::render(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
-                           void *ctx, const RenderTarget &target, std::string *error) {
-    if (!draw(data, len, target, error)) {
-        if (release) release(ctx);
-        return false;
-    }
-    discard();
-    held_ = { data, len, release, ctx };
-    return true;
-}
-
-bool MjpegRenderer::rerender(const RenderTarget &target, std::string *error) {
-    if (!held_.data) return false;
-    return draw(held_.data, held_.len, target, error);
+    packet.size = { (int)width, (int)height };
+    *frame = packet;
+    return DecodeResult::Ready;
 }
 
 void MjpegRenderer::discard() {
-    const Packet packet = held_;
-    held_ = {};
-    if (packet.release) packet.release(packet.ctx);
+    drop(&held_);
 }
 
-bool MjpegRenderer::draw(const uint8_t *data, std::size_t len, const RenderTarget &target,
-                         std::string *error) {
+bool MjpegRenderer::draw(VideoFrame *frame, const RenderTarget &target, std::string *error) {
+    const VideoFrame &source = frame ? *frame : held_;
+    if (!source.data) return false;
     if (!pipeline_) {
         *error = "video decoder is not open";
+        if (frame) drop(frame);
         return false;
     }
     const Path path = covers_panel_unscaled(target) ? Path::Direct : Path::Pipeline;
@@ -139,8 +146,17 @@ bool MjpegRenderer::draw(const uint8_t *data, std::size_t len, const RenderTarge
                  target.rect.size.width, target.rect.size.height,
                  target.framebuffer, (unsigned)target.framebuffer_bytes);
     }
-    if (path == Path::Direct) return decode_direct(data, len, target, error);
-    return decode_scaled(data, len, target, error);
+    const bool ok = path == Path::Direct ? decode_direct(source.data, source.len, target, error)
+                                         : decode_scaled(source.data, source.len, target, error);
+    if (!frame) return ok;
+    if (!ok) {
+        drop(frame);
+        return false;
+    }
+    discard();
+    held_ = *frame;
+    *frame = {};
+    return true;
 }
 
 bool MjpegRenderer::decode_direct(const uint8_t *data, std::size_t len,

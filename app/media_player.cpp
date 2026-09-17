@@ -8,6 +8,7 @@
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "bench/h264_bench.hpp"
 #include "playback/player.hpp"
 #include "screens/home_screen.hpp"
 #include "ui_orientation.hpp"
@@ -21,7 +22,7 @@ static lv_display_t *s_main;
 
 static SharedSram shared_sram() {
     const std::size_t half = kSharedSramBytes / 2;
-    return { { s_shared_sram, s_shared_sram + half }, half };
+    return { s_shared_sram, kSharedSramBytes, { s_shared_sram, s_shared_sram + half }, half };
 }
 
 static esp_err_t display_init() {
@@ -81,6 +82,7 @@ void app_entry() {
         ESP_LOGE(TAG, "no memory for the media arena");
     }
     player_start(arena);
+    h264_bench_register();
 
     lv_async_call([] {
         ui_orientation_start(s_main);

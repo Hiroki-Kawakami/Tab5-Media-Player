@@ -17,6 +17,7 @@ extern "C" {
 typedef enum {
     MKV_VIDEO_CODEC_NONE,
     MKV_VIDEO_CODEC_MJPEG,
+    MKV_VIDEO_CODEC_H264,
     MKV_VIDEO_CODEC_UNSUPPORTED,
 } mkv_video_codec_t;
 
@@ -37,6 +38,8 @@ typedef struct {
         uint32_t height;
         int64_t frame_interval_us;
         uint16_t rotation_ccw;
+        const uint8_t *codec_private;
+        uint32_t codec_private_size;
     } video;
     struct {
         mkv_audio_codec_t codec;
@@ -74,7 +77,7 @@ const mkv_info_t *mkv_demux_info(const mkv_demux_t *demux);
 media_buffer_t *mkv_demux_buffer(mkv_demux_t *demux);
 
 bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio);
-bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us);
+bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us);
 
 #ifdef __cplusplus
 }

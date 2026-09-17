@@ -25,6 +25,7 @@ struct PlayerStatus {
     bool seekable = false;
     bool loop = false;
     CodecId audio_codec = CodecId::None;
+    CodecId video_codec = CodecId::None;
     std::string audio_note;
     std::string error;
 };

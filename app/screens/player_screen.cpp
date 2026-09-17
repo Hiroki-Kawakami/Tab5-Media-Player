@@ -111,7 +111,12 @@ void PlayerScreen::onEnter() {
     if (!openOverlay()) return;
 
     const SharedSram sram = media_player_acquire_sram();
-    video_presenter_begin(sram, rotation_);
+    if (!video_presenter_begin(sram, rotation_)) {
+        closeOverlay();
+        media_player_release_sram();
+        showStartError(video_presenter_error());
+        return;
+    }
     video_presenter_set_overlay(overlay_);
     ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
         static_cast<PlayerScreen *>(arg)->rotate(rotation);
@@ -143,6 +148,16 @@ void PlayerScreen::onExit() {
 PlayerScreen::~PlayerScreen() {
     if (timer_) lv_timer_delete(timer_);
     closeOverlay();
+}
+
+void PlayerScreen::showStartError(const std::string &message) {
+    auto modal = lv_modal_open(root_);
+    lv_modal_title_create(modal, "Video");
+    lv_modal_message_create(modal, message.empty() ? "video output unavailable" : message.c_str());
+    lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY, [this, modal](lv_event_t *) {
+        lv_modal_close(modal);
+        back();
+    });
 }
 
 void PlayerScreen::buildOverlay(lv_obj_t *parent, bool portrait) {
@@ -275,6 +290,7 @@ void PlayerScreen::refresh() {
     const std::string decode = video_presenter_error();
     const char *audio = status.audio_note.empty() ? codec_name(status.audio_codec)
                                                   : status.audio_note.c_str();
-    snprintf(text, sizeof(text), "audio %s   %s   %s", audio, name_.c_str(), decode.c_str());
+    snprintf(text, sizeof(text), "%s + %s   %s   %s", codec_name(status.video_codec), audio,
+             name_.c_str(), decode.c_str());
     lv_label_set_text(status_label_, text);
 }

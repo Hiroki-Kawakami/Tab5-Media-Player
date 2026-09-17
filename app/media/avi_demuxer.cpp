@@ -14,6 +14,7 @@ namespace {
 CodecId map_video(avi_video_codec_t codec) {
     switch (codec) {
     case AVI_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
+    case AVI_VIDEO_CODEC_H264: return CodecId::H264;
     case AVI_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -38,7 +39,7 @@ public:
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
-    bool seek(int64_t pts_us) override;
+    bool seek(int64_t pts_us, int64_t *landed_us) override;
 
 private:
     avi_demux_t *demux_ = nullptr;
@@ -65,6 +66,13 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.video.width = avi->video.width;
     info_.video.height = avi->video.height;
     info_.video.max_packet_bytes = avi->video.max_frame_bytes;
+    if (info_.video.codec == CodecId::H264 &&
+        !h264_config_to_annexb(avi->video.codec_private, avi->video.codec_private_size,
+                               &info_.video.codec_private, &info_.video.nal_length_size) &&
+        avi->video.codec_private_size) {
+        ESP_LOGW(TAG, "ignoring %u bytes of unrecognised H.264 extradata",
+                 (unsigned)avi->video.codec_private_size);
+    }
 
     info_.audio.codec = map_audio(avi->audio.codec);
     info_.audio.sample_rate = avi->audio.sample_rate;
@@ -110,21 +118,23 @@ bool AviDemuxer::read(bool want_audio, Packet *out) {
         out->track = TrackType::Audio;
         out->pts_us = next_video_pts_us_;
     }
-    out->keyframe = true;
+    out->keyframe = packet.keyframe;
     out->data = packet.data;
     out->len = packet.size;
     out->ref = packet.ref;
     return true;
 }
 
-bool AviDemuxer::seek(int64_t pts_us) {
+bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
     if (!demux_ || interval_us_ <= 0) return false;
     const uint32_t frame = (uint32_t)(pts_us > 0 ? pts_us / interval_us_ : 0);
-    if (!avi_demux_seek(demux_, frame)) {
+    uint32_t landed = 0;
+    if (!avi_demux_seek(demux_, frame, &landed)) {
         ESP_LOGW(TAG, "cannot seek to frame %u", (unsigned)frame);
         return false;
     }
-    next_video_pts_us_ = (int64_t)frame * interval_us_;
+    next_video_pts_us_ = (int64_t)landed * interval_us_;
+    if (landed_us) *landed_us = next_video_pts_us_;
     return true;
 }
 

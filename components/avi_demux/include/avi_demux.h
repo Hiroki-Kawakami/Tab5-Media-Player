@@ -17,6 +17,7 @@ extern "C" {
 typedef enum {
     AVI_VIDEO_CODEC_NONE,
     AVI_VIDEO_CODEC_MJPEG,
+    AVI_VIDEO_CODEC_H264,
     AVI_VIDEO_CODEC_UNSUPPORTED,
 } avi_video_codec_t;
 
@@ -37,6 +38,8 @@ typedef struct {
         uint32_t frame_count;
         uint32_t frame_interval_us;
         uint32_t max_frame_bytes;
+        const uint8_t *codec_private;
+        uint32_t codec_private_size;
     } video;
     struct {
         avi_audio_codec_t codec;
@@ -62,6 +65,7 @@ typedef struct {
     uint32_t size;
     uint32_t ref;
     uint32_t frame_index;
+    bool keyframe;
 } avi_packet_t;
 
 typedef struct avi_demux avi_demux_t;
@@ -75,7 +79,7 @@ media_buffer_t *avi_demux_buffer(avi_demux_t *demux);
 
 bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio);
 
-bool avi_demux_seek(avi_demux_t *demux, uint32_t frame);
+bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame);
 
 #ifdef __cplusplus
 }

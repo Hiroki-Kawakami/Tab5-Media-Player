@@ -48,6 +48,7 @@ static const char *TAG = "mkv_demux";
 #define ID_SIMPLE_BLOCK      0xA3
 #define ID_BLOCK_GROUP       0xA0
 #define ID_BLOCK             0xA1
+#define ID_REFERENCE_BLOCK   0xFB
 #define ID_CUES              0x1C53BB6B
 #define ID_CUE_POINT         0xBB
 #define ID_CUE_TIME          0xB3
@@ -124,9 +125,13 @@ struct mkv_demux {
     uint64_t default_duration_ns;
     uint64_t cluster_time;
     int64_t skip_before_us;
+    bool need_keyframe;
+    off_t group_end;
+    bool group_has_ref;
     cue_t *cues;
     uint32_t cue_count;
     uint8_t *audio_private;
+    uint8_t *video_private;
     uint32_t lace_sizes[MKV_MAX_LACES];
     uint16_t lace_count;
     uint16_t lace_next;
@@ -338,12 +343,30 @@ static uint16_t rotation_of(const track_t *track) {
     return (uint16_t)(turns * 90);
 }
 
+static uint8_t *copy_private(const uint8_t *data, size_t size) {
+    if (!size) return NULL;
+    uint8_t *copy = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    if (copy) memcpy(copy, data, size);
+    return copy;
+}
+
 static void use_video_track(mkv_demux_t *demux, const track_t *track) {
     demux->video_track = track->number;
     demux->default_duration_ns = track->default_duration_ns;
-    demux->info.video.codec = strcmp(track->codec, "V_MJPEG") == 0 && !track->encoded
-                                  ? MKV_VIDEO_CODEC_MJPEG
-                                  : MKV_VIDEO_CODEC_UNSUPPORTED;
+    mkv_video_codec_t codec = MKV_VIDEO_CODEC_UNSUPPORTED;
+    if (!track->encoded) {
+        if (strcmp(track->codec, "V_MJPEG") == 0) {
+            codec = MKV_VIDEO_CODEC_MJPEG;
+        } else if (strcmp(track->codec, "V_MPEG4/ISO/AVC") == 0) {
+            codec = MKV_VIDEO_CODEC_H264;
+            demux->video_private = copy_private(track->codec_private, track->codec_private_size);
+            if (demux->video_private) {
+                demux->info.video.codec_private = demux->video_private;
+                demux->info.video.codec_private_size = (uint32_t)track->codec_private_size;
+            }
+        }
+    }
+    demux->info.video.codec = codec;
     demux->info.video.width = track->width;
     demux->info.video.height = track->height;
     demux->info.video.rotation_ccw = rotation_of(track);
@@ -358,10 +381,8 @@ static uint32_t read_le32(const uint8_t *p) {
 }
 
 static void keep_audio_private(mkv_demux_t *demux, const uint8_t *data, size_t size) {
-    if (!size) return;
-    demux->audio_private = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    demux->audio_private = copy_private(data, size);
     if (!demux->audio_private) return;
-    memcpy(demux->audio_private, data, size);
     demux->info.audio.codec_private = demux->audio_private;
     demux->info.audio.codec_private_size = (uint32_t)size;
 }
@@ -514,6 +535,7 @@ static void load_cues(mkv_demux_t *demux) {
         return;
     }
 
+    const bool dedup = demux->info.video.codec == MKV_VIDEO_CODEC_MJPEG;
     uint32_t count = 0;
     uint32_t step = 1;
     uint32_t seen = 0;
@@ -532,7 +554,7 @@ static void load_cues(mkv_demux_t *demux) {
         uint64_t position = 0;
         const span_t span = { point, point + size };
         if (!parse_cue_point(demux, span, &time, &position) || position > UINT32_MAX) continue;
-        if (count && cues[count - 1].position == (uint32_t)position) continue;
+        if (dedup && count && cues[count - 1].position == (uint32_t)position) continue;
         if (seen++ % step != 0) continue;
         if (count == capacity) {
             for (uint32_t i = 0; i < count / 2; i++) cues[i] = cues[i * 2];
@@ -621,6 +643,20 @@ static bool read_lacing(mkv_demux_t *demux, uint8_t lacing, off_t end, uint16_t 
     return true;
 }
 
+static bool group_references(mkv_demux_t *demux, off_t block_end) {
+    media_buffer_t *reader = demux->reader;
+    mb_seek(reader, block_end);
+    while (mb_tell(reader) < demux->group_end) {
+        uint32_t id = 0;
+        uint64_t size = 0;
+        if (!read_header(reader, &id, &size)) return false;
+        if (size == MKV_UNKNOWN_SIZE) break;
+        if (id == ID_REFERENCE_BLOCK) demux->group_has_ref = true;
+        mb_seek(reader, mb_tell(reader) + (off_t)size);
+    }
+    return true;
+}
+
 static bool next_block(mkv_demux_t *demux, block_t *block) {
     media_buffer_t *reader = demux->reader;
     for (;;) {
@@ -630,12 +666,18 @@ static bool next_block(mkv_demux_t *demux, block_t *block) {
         if (!read_header(reader, &id, &size)) return false;
         if (id == ID_CLUSTER) {
             demux->cluster_time = 0;
+            demux->group_end = 0;
             continue;
         }
-        if (id == ID_BLOCK_GROUP) continue;
+        if (id == ID_BLOCK_GROUP) {
+            demux->group_end = size == MKV_UNKNOWN_SIZE ? 0 : mb_tell(reader) + (off_t)size;
+            demux->group_has_ref = false;
+            continue;
+        }
         if (size == MKV_UNKNOWN_SIZE) return false;
 
         const off_t end = mb_tell(reader) + (off_t)size;
+        if (id == ID_REFERENCE_BLOCK) demux->group_has_ref = true;
         if (id == ID_TIMESTAMP && size <= 8) {
             uint8_t bytes[8];
             if (mb_read(reader, bytes, (size_t)size) != size) return false;
@@ -669,7 +711,15 @@ static bool next_block(mkv_demux_t *demux, block_t *block) {
         if (timestamp < 0) timestamp = 0;
         block->track = track;
         block->pts_us = to_us(demux, timestamp);
-        block->keyframe = id == ID_SIMPLE_BLOCK ? (flags & 0x80) != 0 : true;
+        if (id == ID_SIMPLE_BLOCK) {
+            block->keyframe = (flags & 0x80) != 0;
+        } else if (track == demux->video_track && end <= demux->group_end) {
+            if (!group_references(demux, end)) return false;
+            mb_seek(reader, payload);
+            block->keyframe = !demux->group_has_ref;
+        } else {
+            block->keyframe = true;
+        }
         block->laced = lacing != 0;
         block->laces = laces;
         block->end = end;
@@ -786,7 +836,9 @@ mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, const 
     const char *failure = read_ebml_header(demux);
     if (!failure) failure = read_segment_headers(demux);
     if (!failure && demux->info.video.codec == MKV_VIDEO_CODEC_NONE) failure = "no video track";
-    if (!failure && demux->info.video.codec != MKV_VIDEO_CODEC_MJPEG) failure = "not an MJPEG MKV";
+    if (!failure && demux->info.video.codec == MKV_VIDEO_CODEC_UNSUPPORTED) {
+        failure = "unsupported video codec in this MKV";
+    }
     if (failure) {
         *error = failure;
         mkv_demux_close(demux);
@@ -816,6 +868,7 @@ void mkv_demux_close(mkv_demux_t *demux) {
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->cues);
     heap_caps_free(demux->audio_private);
+    heap_caps_free(demux->video_private);
     heap_caps_free(demux);
 }
 
@@ -887,7 +940,8 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
         const bool skip = (video ? block.laced : !(want_audio && audio_usable)) ||
                           (block.laced && !block.laces) || block.payload == 0 ||
                           (!block.laced && block.payload > max_view) ||
-                          (demux->skip_before_us >= 0 && block.pts_us < demux->skip_before_us);
+                          (demux->skip_before_us >= 0 && block.pts_us < demux->skip_before_us) ||
+                          (video && demux->need_keyframe && !block.keyframe);
         if (skip) {
             mb_seek(demux->reader, block.end);
             continue;
@@ -908,7 +962,10 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
             return false;
         }
         mb_seek(demux->reader, block.end);
-        if (video) demux->skip_before_us = -1;
+        if (video) {
+            demux->skip_before_us = -1;
+            demux->need_keyframe = false;
+        }
 
         packet->type = video ? MKV_PACKET_VIDEO : MKV_PACKET_AUDIO;
         packet->pts_us = block.pts_us;
@@ -920,14 +977,17 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
     }
 }
 
-bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us) {
+bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     if (!demux) return false;
+    if (landed_us) *landed_us = 0;
     if (pts_us <= 0) {
         demux->lace_count = 0;
         demux->lace_next = 0;
         mb_seek(demux->reader, demux->first_cluster);
         demux->cluster_time = 0;
+        demux->group_end = 0;
         demux->skip_before_us = -1;
+        demux->need_keyframe = false;
         return true;
     }
     if (!demux->cue_count) return false;
@@ -947,6 +1007,15 @@ bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us) {
     demux->lace_count = 0;
     demux->lace_next = 0;
     demux->cluster_time = 0;
-    demux->skip_before_us = pts_us - demux->info.video.frame_interval_us / 2;
+    demux->group_end = 0;
+    if (demux->info.video.codec == MKV_VIDEO_CODEC_MJPEG) {
+        demux->skip_before_us = pts_us - demux->info.video.frame_interval_us / 2;
+        demux->need_keyframe = false;
+        if (landed_us) *landed_us = pts_us;
+    } else {
+        demux->skip_before_us = (int64_t)demux->cues[low].time_ms * 1000;
+        demux->need_keyframe = true;
+        if (landed_us) *landed_us = demux->skip_before_us;
+    }
     return true;
 }

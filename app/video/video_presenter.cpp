@@ -4,11 +4,14 @@
  */
 
 #include "video_presenter.hpp"
+#include "h264_renderer.hpp"
+#include "h264_threads.hpp"
 #include "mjpeg_renderer.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <memory>
 
 #include "bsp.h"
 #include "display_manager.hpp"
@@ -30,12 +33,27 @@ static constexpr uint32_t kOverlayPeriodMs = 100;
 static constexpr float kFpsSmoothing = 0.25f;
 static constexpr uint32_t kSubmitTimeoutMs = 2000;
 static constexpr uint32_t kStopTimeoutMs = 2000;
+static constexpr uint32_t kStackBytes = 6144;
+static constexpr uint32_t kDecodeStackBytes = 8192;
+static constexpr UBaseType_t kDecodePriority = 2;
+static constexpr int kReadyFrames = 2;
+static constexpr float kDrawSmoothing = 0.125f;
+static constexpr int64_t kLateDropUs = 8000;
+static constexpr int64_t kDecoderBusyUs = 500000;
+static constexpr uint32_t kDecoderRestMs = 20;
 
 struct Job {
     const uint8_t *data;
     std::size_t len;
     VideoPresenterRelease release;
     void *ctx;
+    bool present;
+    int64_t due_us;
+};
+
+struct Ready {
+    VideoFrame frame;
+    int64_t due_us;
 };
 
 static SemaphoreHandle_t s_lock;
@@ -43,10 +61,21 @@ static SemaphoreHandle_t s_wake;
 static SemaphoreHandle_t s_idle;
 static SemaphoreHandle_t s_done;
 static QueueHandle_t s_queue;
+static QueueHandle_t s_decode_queue;
+static QueueHandle_t s_ready;
+static SemaphoreHandle_t s_decode_idle;
+static SemaphoreHandle_t s_decode_done;
 static TaskHandle_t s_task;
 static std::atomic<bool> s_running{false};
+static std::atomic<bool> s_pipelined{false};
+static std::atomic<bool> s_flushing{false};
+static float s_draw_us;
+static bool s_have_next;
+static Ready s_next;
 
-static MjpegRenderer s_renderer;
+static std::unique_ptr<VideoRenderer> s_renderer;
+static SharedSram s_sram;
+static bsp_pixel_format_t s_format;
 
 static lv_display_t *s_overlay;
 static bsp_size_t s_panel;
@@ -198,27 +227,28 @@ static void consume_requests() {
     if (s_clear_all.exchange(false)) s_clear_pending = all_framebuffers();
 }
 
-static void draw(const Job &job) {
-    std::string failure;
-    bsp_size_t source = {};
-    if (!s_renderer.probe(job.data, job.len, &source, &failure)) {
-        set_error(failure);
-        if (job.release) job.release(job.ctx);
-        return;
-    }
+static void release_job(const Job &job) {
+    if (job.release) job.release(job.ctx);
+}
 
+static void show_frame(VideoFrame *frame) {
+    std::string failure;
+    const bsp_size_t source = frame->size;
     const int next = (s_fb_index + 1) % s_fb_count;
     RenderTarget target;
     if (!place(source, next, &target)) {
+        s_renderer->drop(frame);
         set_error("video does not fit the panel");
-        if (job.release) job.release(job.ctx);
         return;
     }
     prepare(next, target.rect);
-    if (!s_renderer.render(job.data, job.len, job.release, job.ctx, target, &failure)) {
+    const int64_t start = esp_timer_get_time();
+    if (!s_renderer->draw(frame, target, &failure)) {
         set_error(failure);
         return;
     }
+    const float took = (float)(esp_timer_get_time() - start);
+    s_draw_us = s_draw_us > 0.0f ? s_draw_us + (took - s_draw_us) * kDrawSmoothing : took;
     s_source = source;
     s_fb_index = next;
     set_error({});
@@ -226,13 +256,30 @@ static void draw(const Job &job) {
     note_presented();
 }
 
+static void draw(const Job &job) {
+    if (!s_renderer) {
+        release_job(job);
+        return;
+    }
+    std::string failure;
+    VideoFrame frame;
+    const DecodeResult result = s_renderer->decode(job.data, job.len, job.release, job.ctx,
+                                                   job.present, &frame, &failure);
+    if (result == DecodeResult::Failed) {
+        set_error(failure);
+        return;
+    }
+    if (result == DecodeResult::Hidden) return;
+    show_frame(&frame);
+}
+
 static void repaint() {
     const int next = (s_fb_index + 1) % s_fb_count;
     RenderTarget target;
-    if (s_renderer.has_picture() && place(s_source, next, &target)) {
+    if (s_renderer && s_renderer->has_picture() && place(s_source, next, &target)) {
         prepare(next, target.rect);
         std::string failure;
-        if (!s_renderer.rerender(target, &failure)) {
+        if (!s_renderer->draw(nullptr, target, &failure)) {
             set_error(failure);
             return;
         }
@@ -244,21 +291,64 @@ static void repaint() {
     present(next);
 }
 
+static void drop_next() {
+    if (!s_have_next) return;
+    s_have_next = false;
+    if (s_renderer) s_renderer->drop(&s_next.frame);
+}
+
+static TickType_t pending_wait() {
+    if (!s_have_next && xQueuePeek(s_ready, &s_next, 0) == pdTRUE) {
+        xQueueReceive(s_ready, &s_next, 0);
+        s_have_next = true;
+    }
+    if (!s_have_next || !s_next.due_us) return pdMS_TO_TICKS(kOverlayPeriodMs);
+    const int64_t wait = s_next.due_us - (int64_t)s_draw_us - esp_timer_get_time();
+    if (wait <= 0) return 0;
+    const TickType_t ticks = pdMS_TO_TICKS(wait / 1000);
+    return std::min<TickType_t>(ticks ? ticks : 1, pdMS_TO_TICKS(kOverlayPeriodMs));
+}
+
+static bool take_due(Ready *out) {
+    if (!s_have_next) return false;
+    const int64_t now = esp_timer_get_time();
+    if (s_next.due_us && s_next.due_us - (int64_t)s_draw_us > now) return false;
+    Ready newer;
+    while (xQueuePeek(s_ready, &newer, 0) == pdTRUE &&
+           (!newer.due_us || newer.due_us - kLateDropUs <= now)) {
+        xQueueReceive(s_ready, &newer, 0);
+        drop_next();
+        s_next = newer;
+        s_have_next = true;
+    }
+    *out = s_next;
+    s_have_next = false;
+    return true;
+}
+
 static void worker(void *) {
     while (s_running.load()) {
-        xSemaphoreTake(s_wake, pdMS_TO_TICKS(kOverlayPeriodMs));
-
-        Job job = {};
-        const bool has_job = xQueueReceive(s_queue, &job, 0) == pdTRUE;
-        if (!has_job && !s_running.load()) break;
+        const TickType_t wait = s_pipelined.load() ? pending_wait() : pdMS_TO_TICKS(kOverlayPeriodMs);
+        if (wait) xSemaphoreTake(s_wake, wait);
 
         xSemaphoreTake(s_idle, portMAX_DELAY);
+        Job job = {};
+        bool has_job = xQueueReceive(s_queue, &job, 0) == pdTRUE;
+        Ready ready = {};
+        const bool has_ready = !has_job && s_pipelined.load() && (pending_wait(), take_due(&ready));
+        if (!has_job && !has_ready && !s_running.load()) {
+            xSemaphoreGive(s_idle);
+            break;
+        }
         consume_requests();
-        if (has_job) {
-            if (s_running.load()) {
+        if (has_job || has_ready) {
+            if (!s_running.load()) {
+                if (has_job) release_job(job);
+                if (has_ready && s_renderer) s_renderer->drop(&ready.frame);
+            } else if (has_job) {
                 draw(job);
-            } else if (job.release) {
-                job.release(job.ctx);
+            } else {
+                show_frame(&ready.frame);
             }
             s_overlay_dirty.store(false);
             s_repaint.store(false);
@@ -273,7 +363,62 @@ static void worker(void *) {
 
     s_task = nullptr;
     xSemaphoreGive(s_done);
+#ifdef ESP_PLATFORM
+    vTaskDeleteWithCaps(nullptr);
+#else
     vTaskDelete(nullptr);
+#endif
+}
+
+static void push_ready(const Ready &ready) {
+    while (xQueueSend(s_ready, &ready, pdMS_TO_TICKS(kOverlayPeriodMs)) != pdTRUE) {
+        if (s_flushing.load() || !s_running.load()) {
+            Ready copy = ready;
+            if (s_renderer) s_renderer->drop(&copy.frame);
+            return;
+        }
+    }
+    xSemaphoreGive(s_wake);
+}
+
+static void decoder(void *) {
+    int64_t rested_us = esp_timer_get_time();
+    while (s_running.load()) {
+        if (esp_timer_get_time() - rested_us > kDecoderBusyUs) {
+            vTaskDelay(pdMS_TO_TICKS(kDecoderRestMs));
+            rested_us = esp_timer_get_time();
+        }
+        Job job = {};
+        if (xQueueReceive(s_decode_queue, &job, 0) != pdTRUE) {
+            if (xQueueReceive(s_decode_queue, &job, pdMS_TO_TICKS(kOverlayPeriodMs)) != pdTRUE) {
+                rested_us = esp_timer_get_time();
+                continue;
+            }
+            rested_us = esp_timer_get_time();
+        }
+        xSemaphoreTake(s_decode_idle, portMAX_DELAY);
+        if (!s_running.load() || s_flushing.load() || !s_renderer) {
+            release_job(job);
+        } else {
+            std::string failure;
+            Ready ready = {};
+            ready.due_us = job.due_us;
+            const DecodeResult result = s_renderer->decode(job.data, job.len, job.release, job.ctx,
+                                                           job.present, &ready.frame, &failure);
+            if (result == DecodeResult::Failed) {
+                set_error(failure);
+            } else if (result == DecodeResult::Ready) {
+                push_ready(ready);
+            }
+        }
+        xSemaphoreGive(s_decode_idle);
+    }
+    xSemaphoreGive(s_decode_done);
+#ifdef ESP_PLATFORM
+    vTaskDeleteWithCaps(nullptr);
+#else
+    vTaskDelete(nullptr);
+#endif
 }
 
 static void hand_back_framebuffer() {
@@ -292,8 +437,16 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
         if (s_idle) xSemaphoreGive(s_idle);
     }
     if (!s_done) s_done = xSemaphoreCreateBinary();
+    if (!s_decode_done) s_decode_done = xSemaphoreCreateBinary();
+    if (!s_decode_idle) {
+        s_decode_idle = xSemaphoreCreateBinary();
+        if (s_decode_idle) xSemaphoreGive(s_decode_idle);
+    }
     if (!s_queue) s_queue = xQueueCreate(1, sizeof(Job));
-    if (!s_lock || !s_wake || !s_idle || !s_done || !s_queue) {
+    if (!s_decode_queue) s_decode_queue = xQueueCreate(1, sizeof(Job));
+    if (!s_ready) s_ready = xQueueCreate(kReadyFrames, sizeof(Ready));
+    if (!s_lock || !s_wake || !s_idle || !s_done || !s_queue || !s_decode_done ||
+        !s_decode_idle || !s_decode_queue || !s_ready) {
         ESP_LOGE(TAG, "allocation failed");
         return false;
     }
@@ -310,11 +463,9 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
         set_error("no framebuffers for video output");
         return false;
     }
-    std::string failure;
-    if (!s_renderer.open(sram, format, &failure)) {
-        set_error(failure);
-        return false;
-    }
+    s_sram = sram;
+    s_format = format;
+    s_renderer.reset();
 
     s_overlay = nullptr;
     s_rotation = rotation;
@@ -330,14 +481,26 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     s_repaint.store(true);
     s_fps = 0.0f;
     s_last_us = 0;
+    s_draw_us = 0.0f;
+    s_have_next = false;
+    s_pipelined.store(false);
+    s_flushing.store(false);
     set_error({});
 
     xSemaphoreTake(s_done, 0);
+    xSemaphoreTake(s_decode_done, 0);
     s_running.store(true);
-    if (xTaskCreatePinnedToCore(worker, "video_presenter", 4096, nullptr, 5, &s_task, 0) != pdPASS) {
+    if (h264_create_task(worker, "video_presenter", kStackBytes, nullptr, 6, 0, &s_task) != pdPASS) {
         s_running.store(false);
-        s_renderer.close();
         set_error("video output task creation failed");
+        return false;
+    }
+    if (h264_create_task(decoder, "video_decoder", kDecodeStackBytes, nullptr, kDecodePriority, 0, nullptr) !=
+        pdPASS) {
+        s_running.store(false);
+        xSemaphoreGive(s_wake);
+        xSemaphoreTake(s_done, pdMS_TO_TICKS(kStopTimeoutMs));
+        set_error("video decoder task creation failed");
         return false;
     }
     xSemaphoreGive(s_wake);
@@ -351,38 +514,98 @@ void video_presenter_end() {
     if (xSemaphoreTake(s_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "presenter did not stop");
     }
+    if (xSemaphoreTake(s_decode_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+        ESP_LOGE(TAG, "decoder did not stop");
+    }
     video_presenter_flush();
     xSemaphoreTake(s_idle, portMAX_DELAY);
-    s_renderer.close();
+    xSemaphoreTake(s_decode_idle, portMAX_DELAY);
+    s_renderer.reset();
     s_overlay = nullptr;
+    xSemaphoreGive(s_decode_idle);
     xSemaphoreGive(s_idle);
     hand_back_framebuffer();
 }
 
+bool video_presenter_open_stream(const TrackInfo &track, std::string *error) {
+    if (!s_running.load() || !s_idle) {
+        *error = "video output is not running";
+        return false;
+    }
+    std::unique_ptr<VideoRenderer> renderer;
+    switch (track.codec) {
+    case CodecId::Mjpeg: renderer = std::make_unique<MjpegRenderer>(); break;
+    case CodecId::H264: renderer = std::make_unique<H264Renderer>(); break;
+    default:
+        *error = "unsupported video codec";
+        return false;
+    }
+    xSemaphoreTake(s_idle, portMAX_DELAY);
+    xSemaphoreTake(s_decode_idle, portMAX_DELAY);
+    s_renderer.reset();
+    s_pipelined.store(false);
+    const bool ok = renderer->open(s_sram, s_format, track, error);
+    if (ok) {
+        s_pipelined.store(renderer->pipelined());
+        s_renderer = std::move(renderer);
+    }
+    xSemaphoreGive(s_decode_idle);
+    xSemaphoreGive(s_idle);
+    return ok;
+}
+
+bool video_presenter_pipelined() {
+    return s_pipelined.load();
+}
+
 bool video_presenter_submit(const uint8_t *data, std::size_t len,
-                            VideoPresenterRelease release, void *ctx) {
+                            VideoPresenterRelease release, void *ctx, bool present,
+                            int64_t due_us) {
     if (!s_running.load() || !s_queue) return false;
-    Job job = { data, len, release, ctx };
-    if (xQueueSend(s_queue, &job, pdMS_TO_TICKS(kSubmitTimeoutMs)) != pdTRUE) return false;
+    Job job = { data, len, release, ctx, present, due_us };
+    const QueueHandle_t queue = s_pipelined.load() ? s_decode_queue : s_queue;
+    if (xQueueSend(queue, &job, pdMS_TO_TICKS(kSubmitTimeoutMs)) != pdTRUE) return false;
     xSemaphoreGive(s_wake);
     return true;
 }
 
+static void drain_jobs(QueueHandle_t queue) {
+    Job job = {};
+    while (xQueueReceive(queue, &job, 0) == pdTRUE) release_job(job);
+}
+
+static void drain_ready() {
+    Ready ready = {};
+    while (xQueueReceive(s_ready, &ready, 0) == pdTRUE) {
+        if (s_renderer) s_renderer->drop(&ready.frame);
+    }
+}
+
 void video_presenter_flush() {
     if (!s_queue) return;
-    Job job = {};
-    while (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
-        if (job.release) job.release(job.ctx);
-    }
+    s_flushing.store(true);
+    drain_jobs(s_decode_queue);
+    drain_jobs(s_queue);
+    drain_ready();
+    const bool decoder_idle = xSemaphoreTake(s_decode_idle, pdMS_TO_TICKS(kStopTimeoutMs)) == pdTRUE;
+    if (!decoder_idle) ESP_LOGE(TAG, "flush: decode in flight did not finish");
     if (!s_idle || xSemaphoreTake(s_idle, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "flush: frame in flight did not finish");
+        if (decoder_idle) xSemaphoreGive(s_decode_idle);
+        s_flushing.store(false);
         return;
     }
-    while (xQueueReceive(s_queue, &job, 0) == pdTRUE) {
-        if (job.release) job.release(job.ctx);
+    drain_jobs(s_decode_queue);
+    drain_jobs(s_queue);
+    drain_ready();
+    drop_next();
+    if (s_renderer) {
+        s_renderer->discard();
+        s_renderer->restart();
     }
-    s_renderer.discard();
     xSemaphoreGive(s_idle);
+    if (decoder_idle) xSemaphoreGive(s_decode_idle);
+    s_flushing.store(false);
 }
 
 void video_presenter_set_overlay(lv_display_t *overlay) {

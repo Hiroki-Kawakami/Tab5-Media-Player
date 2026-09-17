@@ -24,6 +24,11 @@ enum {
     STREAM_AUDIO,
 };
 
+typedef struct {
+    uint32_t frame;
+    uint32_t offset;
+} seek_point_t;
+
 struct avi_demux {
     media_buffer_t *reader;
     media_arena_t arena;
@@ -33,13 +38,16 @@ struct avi_demux {
     off_t idx1_offset;
     uint32_t idx1_size;
     off_t index_base;
-    uint32_t *offsets;
-    uint32_t index_count;
-    uint32_t index_step;
+    seek_point_t *points;
+    uint32_t point_count;
+    uint8_t *key_flags;
+    uint32_t key_flag_count;
     uint32_t next_frame;
     uint8_t stream_kind[AVI_MAX_STREAMS];
     uint8_t stream_count;
+    uint8_t nal_length_size;
     uint8_t *audio_extra;
+    uint8_t *video_extra;
 };
 
 static bool read_exact(media_buffer_t *reader, void *buffer, size_t size) {
@@ -73,6 +81,14 @@ static avi_video_codec_t video_codec_of(uint32_t compression) {
     case AVI_jpeg:
     case AVI_JPEG:
         return AVI_VIDEO_CODEC_MJPEG;
+    case AVI_H264:
+    case AVI_h264:
+    case AVI_X264:
+    case AVI_x264:
+    case AVI_AVC1:
+    case AVI_avc1:
+    case AVI_DAVC:
+        return AVI_VIDEO_CODEC_H264;
     default:
         return AVI_VIDEO_CODEC_UNSUPPORTED;
     }
@@ -131,6 +147,28 @@ static void read_wave_extra(avi_demux_t *demux, uint32_t available) {
     demux->info.audio.codec_private_size = extra_size;
 }
 
+static void read_bitmap_extra(avi_demux_t *demux, uint32_t available) {
+    heap_caps_free(demux->video_extra);
+    demux->video_extra = NULL;
+    demux->info.video.codec_private = NULL;
+    demux->info.video.codec_private_size = 0;
+    demux->nal_length_size = 0;
+    if (available == 0 || available > AVI_BITMAP_EXTRA_LIMIT) return;
+
+    uint8_t *extra = heap_caps_malloc(available, MALLOC_CAP_DEFAULT);
+    if (!extra) return;
+    if (!read_exact(demux->reader, extra, available)) {
+        heap_caps_free(extra);
+        return;
+    }
+    demux->video_extra = extra;
+    demux->info.video.codec_private = extra;
+    demux->info.video.codec_private_size = available;
+    if (available >= 7 && extra[0] == 1 && (extra[4] & 0x03) != 2) {
+        demux->nal_length_size = (uint8_t)((extra[4] & 0x03) + 1);
+    }
+}
+
 static void parse_stream(avi_demux_t *demux, off_t list_end) {
     avi_stream_header_t strh;
     memset(&strh, 0, sizeof(strh));
@@ -159,6 +197,13 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
                         (uint32_t)((uint64_t)strh.scale * 1000000ull / strh.rate);
                 }
                 if (strh.length) demux->info.video.frame_count = strh.length;
+                if (demux->info.video.codec == AVI_VIDEO_CODEC_H264) {
+                    uint32_t extra = chunk.size - sizeof(bitmap);
+                    if (bitmap.size > sizeof(bitmap) && bitmap.size - sizeof(bitmap) < extra) {
+                        extra = bitmap.size - sizeof(bitmap);
+                    }
+                    read_bitmap_extra(demux, extra);
+                }
             } else if (strh.fourcc_type == AVI_auds && chunk.size >= sizeof(avi_wave_format_t)) {
                 avi_wave_format_t wave;
                 if (!read_exact(demux->reader, &wave, sizeof(wave))) return;
@@ -211,25 +256,33 @@ static bool index_base_valid(avi_demux_t *demux, off_t base, uint32_t first_offs
     return stream_of(demux, chunk.fourcc, &kind) >= 0;
 }
 
+static void *alloc_index(size_t bytes) {
+    void *data = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM);
+    return data ? data : heap_caps_calloc(1, bytes, MALLOC_CAP_DEFAULT);
+}
+
 static void build_index(avi_demux_t *demux) {
     if (!demux->idx1_size) return;
 
     const uint32_t entries = demux->idx1_size / sizeof(avi_index_entry_t);
     if (!entries) return;
 
-    uint32_t step = 1;
-    uint32_t capacity = entries;
-    while (capacity > AVI_MAX_INDEX_ENTRIES) {
-        step++;
-        capacity = (entries + step - 1) / step;
+    const bool all_key = demux->info.video.codec == AVI_VIDEO_CODEC_MJPEG;
+    const uint32_t capacity = entries < AVI_MAX_INDEX_ENTRIES ? entries : AVI_MAX_INDEX_ENTRIES;
+    seek_point_t *points = alloc_index(capacity * sizeof(seek_point_t));
+    uint8_t *flags = all_key ? NULL : alloc_index((entries + 7) / 8);
+    if (!points || (!all_key && !flags)) {
+        ESP_LOGW(TAG, "no memory for the frame index; seeking disabled");
+        heap_caps_free(points);
+        heap_caps_free(flags);
+        points = NULL;
+        flags = NULL;
     }
 
-    uint32_t *offsets = heap_caps_malloc(capacity * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
-    if (!offsets) offsets = heap_caps_malloc(capacity * sizeof(uint32_t), MALLOC_CAP_DEFAULT);
-    if (!offsets) ESP_LOGW(TAG, "no memory for the frame index; seeking disabled");
-
     uint32_t video_frames = 0;
+    uint32_t keyframes = 0;
     uint32_t stored = 0;
+    uint32_t step = 1;
     uint32_t max_video = 0;
     uint32_t max_audio = 0;
     uint32_t first_video_offset = 0;
@@ -251,35 +304,45 @@ static void build_index(avi_demux_t *demux) {
             have_first = true;
         }
         if (entry.size > max_video) max_video = entry.size;
-        if (offsets && video_frames % step == 0 && stored < capacity) {
-            offsets[stored++] = entry.offset;
+        const uint32_t frame = video_frames++;
+        if (!points || (!all_key && !(entry.flags & AVI_INDEX_KEYFRAME))) continue;
+        if (flags) flags[frame >> 3] |= (uint8_t)(1u << (frame & 7));
+        if (keyframes++ % step != 0) continue;
+        if (stored == capacity) {
+            for (uint32_t k = 0; k < stored / 2; k++) points[k] = points[k * 2];
+            stored /= 2;
+            step *= 2;
+            if ((keyframes - 1) % step != 0) continue;
         }
-        video_frames++;
+        points[stored].frame = frame;
+        points[stored].offset = entry.offset;
+        stored++;
     }
 
     if (max_video) demux->info.video.max_frame_bytes = max_video;
     if (max_audio) demux->info.audio.max_frame_bytes = max_audio;
     if (video_frames) demux->info.video.frame_count = video_frames;
 
-    if (!offsets) return;
-    if (!have_first || !stored) {
-        heap_caps_free(offsets);
+    if (!keyframes || !have_first) {
+        heap_caps_free(points);
+        heap_caps_free(flags);
         return;
     }
+    demux->key_flags = flags;
+    demux->key_flag_count = flags ? video_frames : 0;
 
     off_t base = demux->movi_start - 4;
     if (!index_base_valid(demux, base, first_video_offset)) {
         base = 0;
         if (!index_base_valid(demux, base, first_video_offset)) {
-            heap_caps_free(offsets);
+            heap_caps_free(points);
             return;
         }
     }
 
     demux->index_base = base;
-    demux->offsets = offsets;
-    demux->index_count = stored;
-    demux->index_step = step;
+    demux->points = points;
+    demux->point_count = stored;
     demux->info.seekable = true;
 }
 
@@ -341,8 +404,9 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
         avi_demux_close(demux);
         return NULL;
     }
-    if (demux->info.video.codec != AVI_VIDEO_CODEC_MJPEG) {
-        *error = "not an MJPEG AVI";
+    if (demux->info.video.codec != AVI_VIDEO_CODEC_MJPEG &&
+        demux->info.video.codec != AVI_VIDEO_CODEC_H264) {
+        *error = "not an MJPEG or H.264 AVI";
         avi_demux_close(demux);
         return NULL;
     }
@@ -361,8 +425,9 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
         return NULL;
     }
 
-    ESP_LOGI(TAG, "%s: %ux%u, %u frames, %u us/frame, video <= %u B, audio %s %u Hz x%u",
-             path, (unsigned)demux->info.video.width, (unsigned)demux->info.video.height,
+    ESP_LOGI(TAG, "%s: %s %ux%u, %u frames, %u us/frame, video <= %u B, audio %s %u Hz x%u",
+             path, demux->info.video.codec == AVI_VIDEO_CODEC_H264 ? "H.264" : "MJPEG",
+             (unsigned)demux->info.video.width, (unsigned)demux->info.video.height,
              (unsigned)demux->info.video.frame_count,
              (unsigned)demux->info.video.frame_interval_us,
              (unsigned)demux->info.video.max_frame_bytes,
@@ -377,8 +442,10 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
 void avi_demux_close(avi_demux_t *demux) {
     if (!demux) return;
     if (demux->reader) mb_close(demux->reader);
-    heap_caps_free(demux->offsets);
+    heap_caps_free(demux->points);
+    heap_caps_free(demux->key_flags);
     heap_caps_free(demux->audio_extra);
+    heap_caps_free(demux->video_extra);
     heap_caps_free(demux);
 }
 
@@ -388,6 +455,35 @@ const avi_info_t *avi_demux_info(const avi_demux_t *demux) {
 
 media_buffer_t *avi_demux_buffer(avi_demux_t *demux) {
     return demux ? demux->reader : NULL;
+}
+
+static bool starts_idr(const uint8_t *data, uint32_t size, uint8_t length_size) {
+    uint32_t pos = 0;
+    while (pos < size) {
+        uint32_t nal = 0;
+        uint32_t nal_size = 0;
+        if (length_size) {
+            if (size - pos <= length_size) return false;
+            for (uint8_t i = 0; i < length_size; i++) nal_size = (nal_size << 8) | data[pos + i];
+            nal = pos + length_size;
+            pos = nal_size > size - nal ? size : nal + nal_size;
+            if (nal_size == 0) continue;
+        } else {
+            while (pos + 3 < size && !(data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1)) pos++;
+            if (pos + 3 >= size) return false;
+            nal = pos + 3;
+            pos = nal;
+        }
+        const uint8_t type = data[nal] & 0x1F;
+        if (type >= 1 && type <= 5) return type == 5;
+    }
+    return false;
+}
+
+static bool keyframe_of(const avi_demux_t *demux, uint32_t frame, const uint8_t *data, uint32_t size) {
+    if (demux->info.video.codec != AVI_VIDEO_CODEC_H264) return true;
+    if (frame < demux->key_flag_count) return (demux->key_flags[frame >> 3] >> (frame & 7)) & 1;
+    return starts_idr(data, size, demux->nal_length_size);
 }
 
 bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio) {
@@ -431,24 +527,35 @@ bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio) {
         packet->size = chunk.size;
         packet->ref = ref;
         packet->frame_index = video ? demux->next_frame++ : 0;
+        packet->keyframe = video ? keyframe_of(demux, packet->frame_index, data, chunk.size) : true;
         return true;
     }
     return false;
 }
 
-bool avi_demux_seek(avi_demux_t *demux, uint32_t frame) {
+bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame) {
     if (!demux) return false;
-    if (frame == 0) {
-        mb_seek(demux->reader, demux->movi_start);
-        demux->next_frame = 0;
-        return true;
+    uint32_t landed = 0;
+    off_t position = demux->movi_start;
+    if (frame > 0) {
+        if (!demux->points || frame >= demux->info.video.frame_count) return false;
+        uint32_t low = 0;
+        uint32_t high = demux->point_count;
+        while (high - low > 1) {
+            const uint32_t middle = low + (high - low) / 2;
+            if (demux->points[middle].frame <= frame) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        if (demux->points[low].frame <= frame) {
+            landed = demux->points[low].frame;
+            position = demux->index_base + demux->points[low].offset;
+        }
     }
-    if (!demux->offsets || !demux->index_count) return false;
-
-    const uint32_t entry = frame / demux->index_step;
-    if (entry >= demux->index_count) return false;
-
-    mb_seek(demux->reader, demux->index_base + demux->offsets[entry]);
-    demux->next_frame = entry * demux->index_step;
+    mb_seek(demux->reader, position);
+    demux->next_frame = landed;
+    if (landed_frame) *landed_frame = landed;
     return true;
 }

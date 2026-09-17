@@ -10,7 +10,7 @@
 #include <string>
 
 void audio_out_start();
-bool audio_out_open(const TrackInfo &track, std::string *note);
+bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note);
 void audio_out_close();
 void audio_out_write(const uint8_t *data, std::size_t len);
 void audio_out_flush();

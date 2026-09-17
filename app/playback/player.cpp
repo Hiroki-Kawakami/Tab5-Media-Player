@@ -7,12 +7,14 @@
 #include "audio/audio_out.hpp"
 #include "media/demuxer.hpp"
 #include "video/video_presenter.hpp"
+#include "h264_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <algorithm>
 #include <atomic>
 #include <memory>
 
@@ -23,6 +25,11 @@ static constexpr int kAudioSlots = 8;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
 static constexpr uint32_t kAudioStackBytes = 20 * 1024;
+static constexpr int64_t kKeyframeSkipUs = 500000;
+static constexpr int kKeyframeSkipIntervals = 5;
+static constexpr int kBacklogSkipIntervals = 3;
+static constexpr int64_t kDecodeLeadUs = 120000;
+static constexpr int64_t kLateRefreshUs = 200000;
 
 enum class Command {
     Open,
@@ -46,6 +53,8 @@ struct VideoSlot {
     int64_t pts_us;
     uint32_t ref;
     int refs;
+    bool keyframe;
+    bool droppable;
 };
 
 struct AudioSlot {
@@ -80,6 +89,10 @@ static PlayerState s_state = PlayerState::Idle;
 static std::string s_error;
 static std::string s_audio_note;
 static CodecId s_audio_codec = CodecId::None;
+static CodecId s_video_codec = CodecId::None;
+static uint8_t s_nal_length_size;
+static bool s_skip_to_keyframe;
+static int64_t s_last_show_us;
 static bool s_seekable;
 static int64_t s_shown_us;
 static int64_t s_next_us;
@@ -161,7 +174,7 @@ static void reader_task(void *) {
                     set_state(PlayerState::Failed, s_demuxer->error());
                     break;
                 }
-                if (!s_loop || !produced || !s_demuxer->seek(0)) {
+                if (!s_loop || !produced || !s_demuxer->seek(0, nullptr)) {
                     s_reader_eof = true;
                     break;
                 }
@@ -176,7 +189,10 @@ static void reader_task(void *) {
                 break;
             }
             if (video) {
-                s_video[slot] = { packet.data, packet.len, packet.pts_us, packet.ref, 0 };
+                const bool droppable = s_video_codec == CodecId::H264 &&
+                    h264_dec_droppable(packet.data, packet.len, s_nal_length_size);
+                s_video[slot] = { packet.data, packet.len, packet.pts_us, packet.ref, 0,
+                                  packet.keyframe, droppable };
                 produced = true;
                 xQueueSend(s_video_ready, &slot, portMAX_DELAY);
             } else {
@@ -252,7 +268,8 @@ static void reader_start() {
 static int64_t media_clock_us() {
     const int64_t now = esp_timer_get_time();
     int64_t elapsed = now - s_origin_us;
-    if (s_have_audio && audio_out_running()) {
+    const bool video_backlog = uxQueueMessagesWaiting(s_video_free) == 0;
+    if (s_have_audio && audio_out_running() && !video_backlog) {
         const int64_t audio = (int64_t)audio_out_position_us() - (int64_t)s_audio_origin_us;
         if (audio < elapsed - kAudioResyncUs) {
             s_origin_us = now - audio;
@@ -266,18 +283,26 @@ static bool before(int64_t pts_us, int64_t mark_us) {
     return pts_us + s_interval_us / 2 < mark_us;
 }
 
-static void show(int slot) {
+static void submit(int slot, bool present, int64_t due_us) {
+    slot_acquire(slot);
+    if (!video_presenter_submit(s_video[slot].data, s_video[slot].len, presented,
+                                (void *)(intptr_t)slot, present, due_us)) {
+        slot_release(slot);
+    }
+}
+
+static void show(int slot, int64_t due_us = 0) {
+    s_last_show_us = esp_timer_get_time();
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_shown_us = s_video[slot].pts_us;
     s_next_us = s_video[slot].pts_us + s_interval_us;
     xSemaphoreGive(s_lock);
-
-    slot_acquire(slot);
-    if (!video_presenter_submit(s_video[slot].data, s_video[slot].len, presented,
-                                (void *)(intptr_t)slot)) {
-        slot_release(slot);
-    }
+    submit(slot, true, due_us);
     s_want_poster = false;
+}
+
+static bool interframe_codec() {
+    return s_video_codec == CodecId::H264;
 }
 
 static void close_source() {
@@ -293,6 +318,7 @@ static void reset_timeline() {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_audio_note.clear();
     s_audio_codec = CodecId::None;
+    s_video_codec = CodecId::None;
     s_seekable = false;
     s_duration_us = 0;
     s_interval_us = 0;
@@ -325,7 +351,7 @@ static void handle_open(const std::string &path) {
     }
 
     const MediaInfo &info = s_demuxer->info();
-    if (info.video.codec != CodecId::Mjpeg) {
+    if (info.video.codec != CodecId::Mjpeg && info.video.codec != CodecId::H264) {
         fail_open("unsupported video codec");
         return;
     }
@@ -333,17 +359,25 @@ static void handle_open(const std::string &path) {
         fail_open("video has no timeline");
         return;
     }
+    std::string video_error;
+    if (!video_presenter_open_stream(info.video, &video_error)) {
+        fail_open(video_error);
+        return;
+    }
+    s_nal_length_size = info.video.nal_length_size;
+    s_skip_to_keyframe = false;
 
     video_presenter_set_source_rotation(info.video.rotation);
 
     std::string note;
-    s_have_audio = audio_out_open(info.audio, &note);
+    s_have_audio = audio_out_open(info.audio, info.video.codec != CodecId::H264, &note);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_duration_us = info.duration_us;
     s_interval_us = info.frame_interval_us;
     s_seekable = info.seekable;
     s_audio_codec = info.audio.codec;
+    s_video_codec = info.video.codec;
     s_audio_note = note;
     xSemaphoreGive(s_lock);
 
@@ -364,14 +398,16 @@ static void handle_close() {
 static bool rewind_to(int64_t position_us) {
     if (!s_demuxer || !s_demuxer->isOpen()) return false;
     reader_stop();
-    if (!s_demuxer->seek(position_us)) {
+    int64_t landed_us = position_us;
+    if (!s_demuxer->seek(position_us, &landed_us)) {
         reader_start();
         return false;
     }
     audio_out_flush();
+    s_skip_to_keyframe = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_shown_us = position_us;
-    s_next_us = position_us;
+    s_shown_us = landed_us;
+    s_next_us = landed_us;
     xSemaphoreGive(s_lock);
     s_want_poster = true;
     reader_start();
@@ -420,7 +456,7 @@ static void handle_loop(bool loop) {
     if (!loop || !s_demuxer || !s_demuxer->isOpen()) return;
     if (s_state != PlayerState::Playing && s_state != PlayerState::Paused) return;
     if (xSemaphoreTake(s_reader_idle, 0) != pdTRUE) return;
-    if (s_reader_active && s_demuxer->seek(0)) {
+    if (s_reader_active && s_demuxer->seek(0, nullptr)) {
         s_reader_eof = false;
         xSemaphoreGive(s_reader_wake);
     } else {
@@ -467,6 +503,7 @@ static void step_playing() {
     if (before(pts, s_origin_pts_us)) {
         if (!s_loop) {
             s_have_pending = false;
+            if (interframe_codec()) submit(s_pending_slot, false, 0);
             slot_release(s_pending_slot);
             return;
         }
@@ -477,24 +514,50 @@ static void step_playing() {
     }
     const int64_t due = pts - s_origin_pts_us;
     const int64_t now = media_clock_us();
-    if (now < due) {
-        const TickType_t ticks = pdMS_TO_TICKS((due - now) / 1000);
-        vTaskDelay(ticks ? ticks : 1);
-        return;
-    }
-
     const int slot = s_pending_slot;
-    s_have_pending = false;
-    const bool last = pts + s_interval_us >= s_duration_us;
-    if (!last && now > due + s_interval_us) {
+    const VideoSlot &frame = s_video[slot];
+    if (s_skip_to_keyframe && !frame.keyframe) {
+        s_have_pending = false;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_next_us = pts + s_interval_us;
         xSemaphoreGive(s_lock);
         slot_release(slot);
         return;
     }
+    const int64_t lead = video_presenter_pipelined() ? kDecodeLeadUs : 0;
+    if (now < due - lead) {
+        const TickType_t ticks = pdMS_TO_TICKS((due - lead - now) / 1000);
+        vTaskDelay(ticks ? ticks : 1);
+        return;
+    }
+    const int64_t due_at = lead ? esp_timer_get_time() + (due - now) : 0;
 
-    show(slot);
+    s_have_pending = false;
+    const bool last = pts + s_interval_us >= s_duration_us;
+    const bool resuming = s_skip_to_keyframe;
+    s_skip_to_keyframe = false;
+    if (!last && now > due + s_interval_us) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        s_next_us = pts + s_interval_us;
+        xSemaphoreGive(s_lock);
+        if (interframe_codec() && !frame.droppable) {
+            const int64_t late = now - due;
+            const bool backlog = uxQueueMessagesWaiting(s_video_free) == 0;
+            const int64_t limit = backlog ? s_interval_us * kBacklogSkipIntervals
+                                          : std::max(kKeyframeSkipUs, s_interval_us * kKeyframeSkipIntervals);
+            if (!resuming && !frame.keyframe && late > limit) {
+                s_skip_to_keyframe = true;
+            } else if (resuming || esp_timer_get_time() - s_last_show_us > kLateRefreshUs) {
+                show(slot);
+            } else {
+                submit(slot, false, 0);
+            }
+        }
+        slot_release(slot);
+        return;
+    }
+
+    show(slot, due_at);
     slot_release(slot);
     if (last && !s_loop) {
         audio_stop();
@@ -565,6 +628,7 @@ PlayerStatus player_status() {
     status.seekable = s_seekable;
     status.loop = s_loop;
     status.audio_codec = s_audio_codec;
+    status.video_codec = s_video_codec;
     status.audio_note = s_audio_note;
     status.error = s_error;
     xSemaphoreGive(s_lock);

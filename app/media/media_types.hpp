@@ -12,6 +12,7 @@
 enum class CodecId {
     None,
     Mjpeg,
+    H264,
     Pcm,
     Mp3,
     AdpcmIma,
@@ -34,6 +35,7 @@ struct TrackInfo {
     uint8_t bits = 0;
     uint16_t block_align = 0;
     std::vector<uint8_t> codec_private;
+    uint8_t nal_length_size = 0;
     uint32_t max_packet_bytes = 0;
     bsp_rotation_t rotation = BSP_ROTATION_0;
 };
@@ -58,6 +60,7 @@ struct Packet {
 inline const char *codec_name(CodecId codec) {
     switch (codec) {
     case CodecId::Mjpeg: return "MJPEG";
+    case CodecId::H264: return "H.264";
     case CodecId::Pcm: return "PCM";
     case CodecId::Mp3: return "MP3";
     case CodecId::AdpcmIma: return "IMA ADPCM";

@@ -10,6 +10,8 @@
 inline constexpr std::size_t kSharedSramBytes = 245760;
 
 struct SharedSram {
+    void *base;
+    std::size_t bytes;
     void *halves[2];
     std::size_t half_bytes;
 };

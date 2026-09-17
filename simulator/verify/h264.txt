@@ -1,0 +1,66 @@
+settle
+tap 360 163
+settle
+tap 360 252
+settle
+tap 360 720
+wait 1500
+capture h264_avi_poster.jpg
+imu rot90
+wait 800
+tap 612 1060
+wait 2000
+capture h264_avi_playing.jpg
+tap 612 1060
+wait 400
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 640
+wait 300
+up
+wait 1200
+capture h264_avi_seek.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 800
+wait 1500
+imu rot90
+wait 800
+capture h264_mkv_poster.jpg
+tap 612 800
+wait 300
+tap 612 1060
+wait 2500
+capture h264_mkv_playing.jpg
+down 663 1200
+wait 200
+move 663 900
+wait 200
+move 663 540
+wait 300
+up
+wait 1500
+capture h264_mkv_seek.jpg
+wait 4500
+capture h264_mkv_looped.jpg
+tap 612 1213
+settle
+imu rot0
+wait 800
+settle
+tap 360 880
+wait 1500
+capture h264_720p_portrait.jpg
+imu rot270
+wait 800
+tap 108 220
+wait 2500
+capture h264_720p_playing.jpg
+tap 108 67
+settle
+imu release

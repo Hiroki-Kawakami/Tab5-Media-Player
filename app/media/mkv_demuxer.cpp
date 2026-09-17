@@ -5,12 +5,16 @@
 
 #include "demuxer.hpp"
 #include "mkv_demux.h"
+#include "esp_log.h"
+
+static const char *TAG = "mkv_demuxer";
 
 namespace {
 
 CodecId map_video(mkv_video_codec_t codec) {
     switch (codec) {
     case MKV_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
+    case MKV_VIDEO_CODEC_H264: return CodecId::H264;
     case MKV_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -45,7 +49,7 @@ public:
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
-    bool seek(int64_t pts_us) override;
+    bool seek(int64_t pts_us, int64_t *landed_us) override;
 
 private:
     mkv_demux_t *demux_ = nullptr;
@@ -68,6 +72,12 @@ bool MkvDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.video.width = mkv->video.width;
     info_.video.height = mkv->video.height;
     info_.video.rotation = map_rotation(mkv->video.rotation_ccw);
+    if (info_.video.codec == CodecId::H264 &&
+        !h264_config_to_annexb(mkv->video.codec_private, mkv->video.codec_private_size,
+                               &info_.video.codec_private, &info_.video.nal_length_size)) {
+        ESP_LOGW(TAG, "no usable avcC in CodecPrivate; assuming 4-byte NAL lengths");
+        info_.video.nal_length_size = 4;
+    }
 
     info_.audio.codec = map_audio(mkv->audio.codec);
     info_.audio.sample_rate = mkv->audio.sample_rate;
@@ -106,8 +116,8 @@ bool MkvDemuxer::read(bool want_audio, Packet *out) {
     return true;
 }
 
-bool MkvDemuxer::seek(int64_t pts_us) {
-    return demux_ && mkv_demux_seek(demux_, pts_us);
+bool MkvDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
+    return demux_ && mkv_demux_seek(demux_, pts_us, landed_us);
 }
 
 }

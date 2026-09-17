@@ -10,13 +10,18 @@
 
 #include "render_target.hpp"
 #include "media_player.hpp"
+#include "media/media_types.hpp"
 #include "lvgl.h"
 
 bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation);
 void video_presenter_end();
 
+bool video_presenter_open_stream(const TrackInfo &track, std::string *error);
+
+bool video_presenter_pipelined();
 bool video_presenter_submit(const uint8_t *data, std::size_t len,
-                            VideoPresenterRelease release, void *ctx);
+                            VideoPresenterRelease release, void *ctx, bool present,
+                            int64_t due_us);
 void video_presenter_flush();
 
 void video_presenter_set_overlay(lv_display_t *overlay);

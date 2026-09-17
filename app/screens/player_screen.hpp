@@ -26,6 +26,7 @@ private:
     void buildOverlay(lv_obj_t *parent, bool portrait);
     void setLoopIndicator(bool on);
     void refresh();
+    void showStartError(const std::string &message);
 
     std::string name_;
     std::string path_;

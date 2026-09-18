@@ -18,7 +18,13 @@
       in {
         devShells.default = pkgs.mkShell {
           inputsFrom = [ esp-devkit.devShells.${system}.default ];
-          packages = [ pkgs.ffmpeg ];
+          packages = [
+            pkgs.ffmpeg
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.clippy
+            pkgs.rustfmt
+          ];
         };
       }
     );

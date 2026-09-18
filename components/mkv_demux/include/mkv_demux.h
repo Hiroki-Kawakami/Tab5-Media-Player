@@ -78,6 +78,7 @@ media_buffer_t *mkv_demux_buffer(mkv_demux_t *demux);
 
 bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio);
 bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us);
+bool mkv_demux_keyframe_before(const mkv_demux_t *demux, int64_t pts_us, int64_t *key_us);
 
 #ifdef __cplusplus
 }

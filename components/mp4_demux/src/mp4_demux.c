@@ -1060,3 +1060,13 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     if (landed_us) *landed_us = landed;
     return true;
 }
+
+bool mp4_demux_keyframe_before(const mp4_demux_t *demux, int64_t pts_us, int64_t *key_us) {
+    if (!demux || !demux->have_video || demux->video.codec != MP4_VIDEO_CODEC_H264) return false;
+    const track_t *video = &demux->video;
+    cursor_t cursor;
+    cursor_seek(video, &cursor, sync_at_or_before(video, sample_at_us(video, pts_us, false)));
+    if (!cursor.valid) return false;
+    *key_us = cursor_pts_us(video, &cursor);
+    return true;
+}

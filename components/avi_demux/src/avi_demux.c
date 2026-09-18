@@ -533,22 +533,27 @@ bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio) {
     return false;
 }
 
+static uint32_t point_at_or_before(const avi_demux_t *demux, uint32_t frame) {
+    uint32_t low = 0;
+    uint32_t high = demux->point_count;
+    while (high - low > 1) {
+        const uint32_t middle = low + (high - low) / 2;
+        if (demux->points[middle].frame <= frame) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
 bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame) {
     if (!demux) return false;
     uint32_t landed = 0;
     off_t position = demux->movi_start;
     if (frame > 0) {
         if (!demux->points || frame >= demux->info.video.frame_count) return false;
-        uint32_t low = 0;
-        uint32_t high = demux->point_count;
-        while (high - low > 1) {
-            const uint32_t middle = low + (high - low) / 2;
-            if (demux->points[middle].frame <= frame) {
-                low = middle;
-            } else {
-                high = middle;
-            }
-        }
+        const uint32_t low = point_at_or_before(demux, frame);
         if (demux->points[low].frame <= frame) {
             landed = demux->points[low].frame;
             position = demux->index_base + demux->points[low].offset;
@@ -557,5 +562,13 @@ bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame) 
     mb_seek(demux->reader, position);
     demux->next_frame = landed;
     if (landed_frame) *landed_frame = landed;
+    return true;
+}
+
+bool avi_demux_keyframe_before(const avi_demux_t *demux, uint32_t frame, uint32_t *key_frame) {
+    if (!demux || !demux->points || demux->info.video.codec != AVI_VIDEO_CODEC_H264) return false;
+    const uint32_t key = demux->points[point_at_or_before(demux, frame)].frame;
+    if (key > frame) return false;
+    *key_frame = key;
     return true;
 }

@@ -46,6 +46,7 @@ void h264_window_fill(struct h264_dec *dec) {
     while (h264_window_fill_one(dec, atomic_load(&dec->win_goal), &dec->win_busy)) {
         if (dec->threaded) t->sem_give(t->ctx, dec->sem_window);
     }
+    if (dec->threaded) t->sem_give(t->ctx, dec->sem_window);
     PROF_STOP(dec, H264_PROF_WINDOW);
 }
 

@@ -80,6 +80,7 @@ media_buffer_t *avi_demux_buffer(avi_demux_t *demux);
 bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio);
 
 bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame);
+bool avi_demux_keyframe_before(const avi_demux_t *demux, uint32_t frame, uint32_t *key_frame);
 
 #ifdef __cplusplus
 }

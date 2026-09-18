@@ -76,6 +76,7 @@ media_buffer_t *mp4_demux_buffer(mp4_demux_t *demux);
 
 bool mp4_demux_read(mp4_demux_t *demux, mp4_packet_t *packet, bool want_audio);
 bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us);
+bool mp4_demux_keyframe_before(const mp4_demux_t *demux, int64_t pts_us, int64_t *key_us);
 
 #ifdef __cplusplus
 }

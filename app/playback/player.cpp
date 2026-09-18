@@ -20,7 +20,8 @@
 
 static const char *TAG = "player";
 
-static constexpr int kVideoSlots = 4;
+static constexpr int kVideoSlots = 64;
+static constexpr int kMjpegVideoSlots = 4;
 static constexpr int kAudioSlots = 8;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
@@ -29,7 +30,8 @@ static constexpr int64_t kKeyframeSkipUs = 500000;
 static constexpr int kKeyframeSkipIntervals = 5;
 static constexpr int kBacklogSkipIntervals = 3;
 static constexpr int64_t kDecodeLeadUs = 120000;
-static constexpr int64_t kLateRefreshUs = 200000;
+static constexpr int64_t kKeyframeCheckUs = 100000;
+static constexpr int64_t kKeyframeJumpUs = 200000;
 static constexpr int kMaxReorderFrames = 16;
 
 enum class Command {
@@ -93,7 +95,9 @@ static CodecId s_audio_codec = CodecId::None;
 static CodecId s_video_codec = CodecId::None;
 static uint8_t s_nal_length_size;
 static bool s_skip_to_keyframe;
-static int64_t s_last_show_us;
+static int64_t s_skip_until_us;
+static bool s_keyframe_index;
+static int64_t s_keyframe_checked_us;
 static bool s_seekable;
 static int64_t s_shown_us;
 static int64_t s_next_us;
@@ -147,9 +151,10 @@ static void refill_free_queues() {
     while (xQueueReceive(s_audio_ready, &slot, 0) == pdTRUE) {
     }
     if (s_demuxer) s_demuxer->releaseAll();
+    const int video_slots = s_video_codec == CodecId::Mjpeg ? kMjpegVideoSlots : kVideoSlots;
     for (int i = 0; i < kVideoSlots; i++) {
         s_video[i] = {};
-        xQueueSend(s_video_free, &i, 0);
+        if (i < video_slots) xQueueSend(s_video_free, &i, 0);
     }
     for (int i = 0; i < kAudioSlots; i++) {
         s_audio[i] = {};
@@ -295,7 +300,6 @@ static void submit(int slot, bool present, int64_t due_us) {
 }
 
 static void show(int slot, int64_t due_us = 0) {
-    s_last_show_us = esp_timer_get_time();
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_video[slot].pts_us > s_shown_us || !s_reorder_lead_us) s_shown_us = s_video[slot].pts_us;
     s_next_us = s_video[slot].pts_us + s_interval_us;
@@ -306,6 +310,23 @@ static void show(int slot, int64_t due_us = 0) {
 
 static bool interframe_codec() {
     return s_video_codec == CodecId::H264;
+}
+
+static void skip_to_keyframe(int64_t until_us) {
+    s_skip_to_keyframe = true;
+    s_skip_until_us = until_us;
+}
+
+static void cancel_skip() {
+    s_skip_to_keyframe = false;
+    s_skip_until_us = INT64_MIN;
+}
+
+static bool due_keyframe_after(int64_t pts, int64_t now, int64_t *key_us) {
+    const int64_t wall = esp_timer_get_time();
+    if (wall - s_keyframe_checked_us < kKeyframeCheckUs) return false;
+    s_keyframe_checked_us = wall;
+    return s_demuxer->keyframeBefore(now + s_origin_pts_us, key_us) && before(pts, *key_us);
 }
 
 static void close_source() {
@@ -370,7 +391,9 @@ static void handle_open(const std::string &path) {
         return;
     }
     s_nal_length_size = info.video.nal_length_size;
-    s_skip_to_keyframe = false;
+    cancel_skip();
+    int64_t key_us = 0;
+    s_keyframe_index = s_demuxer->keyframeBefore(info.duration_us, &key_us);
 
     video_presenter_set_source_rotation(info.video.rotation);
 
@@ -409,7 +432,7 @@ static bool rewind_to(int64_t position_us) {
         return false;
     }
     audio_out_flush();
-    s_skip_to_keyframe = false;
+    cancel_skip();
     s_max_pts_us = INT64_MIN;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_shown_us = landed_us;
@@ -524,6 +547,7 @@ static void step_playing() {
         }
         s_origin_us += s_next_us - s_origin_pts_us;
         s_origin_pts_us = pts;
+        s_skip_until_us = INT64_MIN;
         s_audio_origin_us = (uint64_t)((int64_t)audio_out_position_us() -
                                        (esp_timer_get_time() - s_origin_us));
     }
@@ -531,7 +555,7 @@ static void step_playing() {
     const int64_t now = media_clock_us();
     const int slot = s_pending_slot;
     const VideoSlot &frame = s_video[slot];
-    if (s_skip_to_keyframe && !frame.keyframe) {
+    if (s_skip_to_keyframe && (!frame.keyframe || before(pts, s_skip_until_us))) {
         s_have_pending = false;
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_next_us = pts + s_interval_us;
@@ -551,7 +575,7 @@ static void step_playing() {
     s_have_pending = false;
     const bool last = pts + s_interval_us >= s_duration_us;
     const bool resuming = s_skip_to_keyframe;
-    s_skip_to_keyframe = false;
+    cancel_skip();
     if (!last && now > due + s_interval_us) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_next_us = pts + s_interval_us;
@@ -561,12 +585,15 @@ static void step_playing() {
             const bool backlog = uxQueueMessagesWaiting(s_video_free) == 0;
             const int64_t limit = backlog ? s_interval_us * kBacklogSkipIntervals
                                           : std::max(kKeyframeSkipUs, s_interval_us * kKeyframeSkipIntervals);
-            if (!resuming && !frame.keyframe && late > limit) {
-                s_skip_to_keyframe = true;
-            } else if (resuming || esp_timer_get_time() - s_last_show_us > kLateRefreshUs) {
-                show(slot);
+            int64_t key_us = 0;
+            if (!resuming && s_keyframe_index && late > kKeyframeJumpUs &&
+                due_keyframe_after(pts, now, &key_us)) {
+                skip_to_keyframe(key_us);
+            } else if (!resuming && !frame.keyframe && (backlog || !s_keyframe_index) &&
+                       late > limit) {
+                skip_to_keyframe(INT64_MIN);
             } else {
-                submit(slot, false, 0);
+                show(slot);
             }
         }
         slot_release(slot);

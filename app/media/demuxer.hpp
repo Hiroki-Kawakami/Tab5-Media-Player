@@ -18,6 +18,7 @@ public:
     virtual bool isOpen() const = 0;
     virtual bool read(bool want_audio, Packet *out) = 0;
     virtual bool seek(int64_t pts_us, int64_t *landed_us) = 0;
+    virtual bool keyframeBefore(int64_t, int64_t *) const { return false; }
 
     void release(uint32_t ref) { mb_release(buffer_, ref); }
     void releaseAll() { mb_release_all(buffer_); }

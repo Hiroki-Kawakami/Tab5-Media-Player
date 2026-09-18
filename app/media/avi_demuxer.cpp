@@ -40,6 +40,7 @@ public:
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
     bool seek(int64_t pts_us, int64_t *landed_us) override;
+    bool keyframeBefore(int64_t pts_us, int64_t *key_us) const override;
 
 private:
     avi_demux_t *demux_ = nullptr;
@@ -135,6 +136,14 @@ bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
     }
     next_video_pts_us_ = (int64_t)landed * interval_us_;
     if (landed_us) *landed_us = next_video_pts_us_;
+    return true;
+}
+
+bool AviDemuxer::keyframeBefore(int64_t pts_us, int64_t *key_us) const {
+    if (!demux_ || interval_us_ <= 0 || pts_us < 0) return false;
+    uint32_t key = 0;
+    if (!avi_demux_keyframe_before(demux_, (uint32_t)(pts_us / interval_us_), &key)) return false;
+    *key_us = (int64_t)key * interval_us_;
     return true;
 }
 

@@ -156,19 +156,38 @@ the presenter drive it.
   `esp_timer` terms. The poster and anything submitted while paused carry a due
   time of 0, which means "now". Pausing therefore still shows the few frames
   already in the pipeline.
-- **Late frames are decoded, not skipped.** A frame more than one interval late
-  is still decoded (`present = false`) because later frames reference it,
-  unless its NAL header says nothing references it (`nal_ref_idc == 0`,
-  checked by the reader). A late frame is still shown if nothing has been
-  shown for 200 ms, so a stream that runs just behind keeps moving on screen.
-- **Too late means skipping to the next keyframe.** Past
-  `max(500 ms, 5 intervals)` of lateness, or three intervals while the video
-  ring is full, the player drops everything up to the next keyframe and shows
-  that one whatever its lateness. The full-ring rule is what keeps audio
-  going: the reader takes packets in file order, so a full video ring also
-  stops audio, and the audio-corrected clock then slows down with it, which
-  hid the lateness. A 720p clip that decodes at 10 fps played in slow motion
-  before this.
+- **Late frames are still decoded and shown.** A frame more than one interval
+  late goes to the decoder with its due time of "now", unless its NAL header
+  says nothing references it (`nal_ref_idc == 0`, checked by the reader); those
+  are skipped undecoded. When the decoder falls behind the picture plays in slow
+  motion instead of freezing. The presenter only draws the newest due frame, so
+  showing every late frame does not queue up draws. Decoding late frames without
+  drawing them, as before, left one refresh every 200 ms and looked frozen.
+- **Resync by jumping to a keyframe that is already due.** Once a frame is
+  more than 200 ms late, the player asks `Demuxer::keyframeBefore()` for the
+  last indexed keyframe at or before the clock, at most every 100 ms. If that
+  keyframe comes after the current frame, everything up to it is dropped and
+  decoding resumes there. Its due time has already passed, so nothing freezes.
+  Skipping to the *next* keyframe froze the picture until that keyframe's time
+  came, which is a few seconds with long GOPs. Where there is a keyframe index
+  (MP4 `stss`, MKV cues, AVI `idx1`), the lag is bounded by the gap between
+  indexed keyframes. MKV cues and the AVI index may be thinned, so an indexed
+  keyframe is not always the nearest one.
+- **The H.264 video ring is 64 slots, so audio keeps flowing while video
+  lags.** The reader takes packets in file order, so a full video ring also
+  stops audio. With 4 slots (about 130 ms), any lag stalled the reader and the
+  sound cut out in busy scenes. A slot only points into the read buffer, so
+  64 slots cost no packet memory, and in steady state the audio ring (not the
+  video ring) keeps the reader in step. MJPEG stays at 4, because 64 of its
+  30-45 KB frames would pin most of the 3 MB read ring.
+- **A full video ring, or no index, falls back to the next keyframe.** A full
+  ring drops everything up to the next keyframe after three intervals of
+  lateness, even when that keyframe is in the future and the picture freezes
+  until it: keeping audio going comes first. Without an index (MKV without
+  cues, or an index that did not fit in memory), the same happens past
+  `max(500 ms, 5 intervals)`. Before the full-ring rule, the stalled audio
+  pulled the clock down with it and hid the lateness, so a 720p clip that
+  decodes at 10 fps played in slow motion.
 - **The clock ignores audio while the video ring is full.** Same reason: that
   audio gap is caused by the video, so pulling the clock back to it would only
   make the video look on time.
@@ -412,8 +431,9 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 
 - **Due times are absolute.** A frame is due at
   `origin + (pts - origin_pts)`, so one slow frame does not delay the rest. A
-  frame more than one interval late is dropped instead of shown, except the
-  last frame, which is always shown.
+  frame more than one interval late is handled by the late-frame rules in
+  [H.264 playback](#h264-playback); for MJPEG it is dropped, except the last
+  frame, which is always shown.
 - **The clock is wall time, corrected only downwards by audio.** `bsp_audio_write`
   blocks when the device buffer is full, so the written position runs ahead of
   what is audible by one buffer. Slaving video to it would show a burst of

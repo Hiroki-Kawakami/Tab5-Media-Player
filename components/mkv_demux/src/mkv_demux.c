@@ -977,6 +977,21 @@ bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio) {
     }
 }
 
+static uint32_t cue_at_or_before(const mkv_demux_t *demux, int64_t pts_us) {
+    const int64_t target_ms = pts_us / 1000;
+    uint32_t low = 0;
+    uint32_t high = demux->cue_count;
+    while (high - low > 1) {
+        const uint32_t middle = low + (high - low) / 2;
+        if ((int64_t)demux->cues[middle].time_ms <= target_ms) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
+}
+
 bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     if (!demux) return false;
     if (landed_us) *landed_us = 0;
@@ -992,17 +1007,7 @@ bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     }
     if (!demux->cue_count) return false;
 
-    const int64_t target_ms = pts_us / 1000;
-    uint32_t low = 0;
-    uint32_t high = demux->cue_count;
-    while (high - low > 1) {
-        const uint32_t middle = low + (high - low) / 2;
-        if ((int64_t)demux->cues[middle].time_ms <= target_ms) {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
+    const uint32_t low = cue_at_or_before(demux, pts_us);
     mb_seek(demux->reader, demux->segment_start + (off_t)demux->cues[low].position);
     demux->lace_count = 0;
     demux->lace_next = 0;
@@ -1017,5 +1022,13 @@ bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
         demux->need_keyframe = true;
         if (landed_us) *landed_us = demux->skip_before_us;
     }
+    return true;
+}
+
+bool mkv_demux_keyframe_before(const mkv_demux_t *demux, int64_t pts_us, int64_t *key_us) {
+    if (!demux || !demux->cue_count || demux->info.video.codec == MKV_VIDEO_CODEC_MJPEG) return false;
+    const int64_t key = (int64_t)demux->cues[cue_at_or_before(demux, pts_us)].time_ms * 1000;
+    if (key > pts_us) return false;
+    *key_us = key;
     return true;
 }

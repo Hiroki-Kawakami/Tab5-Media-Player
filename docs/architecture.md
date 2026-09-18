@@ -5,7 +5,7 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
-| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`, `mp4_demux`, `h264_dec`) |
+| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`, `mp4_demux`, `h264_dec`, `usb_msc`) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
@@ -100,14 +100,63 @@ on FAT every `stat` is another directory scan, which adds up on a folder of
 hundreds of files. Entries starting with `.` are skipped, which also hides the
 `._*` AppleDouble files macOS leaves on cards.
 
+The card is mounted with `psram_bounce_buffer`. Reads into a buffer that is not
+cache-line aligned (an MP4 index at an arbitrary file offset, for one) go
+through a bounce buffer, which IDF otherwise mallocs from internal DMA memory
+per read; during playback there is less than a sector of it left, and the read
+fails with `allocate_dma_buf: not enough mem`. The P4's SDMMC can DMA into
+PSRAM, so the BSP hands it one PSRAM buffer for the whole mount instead.
+
 On the simulator `bsp_sd_mount` redirects `/sdcard` to a host directory
-(`esp-devkit/bsp/simulator/sd_redirect.c`). Its default is relative to the
+through esp-devkit's `simulator/path_redirect.h`. Its default is relative to the
 process cwd, and the harness launches the simulator from wherever `run.sh` was
 invoked, so `run.sh` pins `SIMULATOR_SDCARD_PATH` to `simulator/sdcard`
 (gitignored — put test media there).
 
 Row labels use the Montserrat fonts, which have no CJK glyphs: non-ASCII file
 names render as missing-glyph boxes until a font covering them is loaded.
+
+## USB drive
+
+`components/usb_msc` wraps the USB host library and `usb_host_msc` for one
+drive on the Tab5's USB-A port, mounted at `/usb` by the Home screen's USB Drive
+button like the SD card. It lives here rather than in esp-devkit because a
+shared USB host library there should cover more than MSC.
+
+The host stack is installed at boot so a drive plugged in later is seen. The
+driver is installed as soon as the drive enumerates, not at mount time:
+`usb_host_msc` only reports `MSC_DEVICE_DISCONNECTED` for installed devices, so
+an unmounted drive pulled out would otherwise go unnoticed. The install runs on
+the component's own task because `msc_host_install_device` needs the MSC
+background task to process events and would deadlock inside its callback.
+
+Pulling a mounted drive does not unmount it. The player may still hold a file
+open, and FAT must not be unregistered under an open fd; the disconnect only
+sends `player_eject("/usb")`, which stops playback with "storage removed". The
+stale mount is released by the next `usb_msc_mount`, which runs from Home after
+the player and browser are gone. A drive plugged in while a stale mount is held
+is installed at that point too.
+
+`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` puts the USB transfer buffers in
+PSRAM. `usb_host_msc` grows its single transfer buffer to the largest read FAT
+asks for (64 KB chunks from `media_buffer`, more for an MP4 index), which
+internal DMA memory cannot supply during playback. When that allocation fails,
+`msc_bulk_transfer` has already freed the old buffer and leaves the dangling
+pointer in place; the next command frees it again and the heap asserts
+(`usb_host_msc` 1.3.0).
+
+The host stack, its two tasks here and the MSC driver's task take about
+12.5 KB of internal RAM at boot.
+
+On the simulator the drive is `SIMULATOR_USB_PATH` (`run.sh` pins it to
+`simulator/usb`, gitignored), attached at boot when that directory exists.
+Harness scripts plug and pull it with `usb-attach [dir]` / `usb-detach`; see
+`simulator/verify/usb.txt`. Those commands exist only on the simulator.
+
+Adding `usb_host_msc` made the component manager re-solve
+`esp32p4/dependencies.lock`, which moved LVGL to a 9.6 pre-release whose
+`lv_conf_internal.h` fails the build with `-Werror`. The lock keeps LVGL at
+9.5.0; watch for that bump whenever a managed dependency is added.
 
 ## Harness
 

@@ -13,4 +13,6 @@ public:
 
 private:
     void open_sd_card();
+    void open_usb_drive();
+    void show_mount_error(const char *title, const char *message, esp_err_t err);
 };

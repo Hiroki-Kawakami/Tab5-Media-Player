@@ -8,6 +8,8 @@
 #include "bsp.h"
 
 inline constexpr std::size_t kSharedSramBytes = 245760;
+inline constexpr const char *kSdMountPoint = "/sdcard";
+inline constexpr const char *kUsbMountPoint = "/usb";
 
 struct SharedSram {
     void *base;

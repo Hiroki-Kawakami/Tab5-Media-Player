@@ -42,6 +42,7 @@ enum class Command {
     Restart,
     Seek,
     Loop,
+    Eject,
 };
 
 struct CommandItem {
@@ -80,6 +81,7 @@ static SemaphoreHandle_t s_audio_idle;
 static VideoSlot s_video[kVideoSlots];
 static AudioSlot s_audio[kAudioSlots];
 static std::unique_ptr<Demuxer> s_demuxer;
+static std::string s_path;
 static media_arena_t s_arena;
 
 static bool s_reader_active;
@@ -366,6 +368,7 @@ static void handle_open(const std::string &path) {
     reset_timeline();
     set_state(PlayerState::Loading);
 
+    s_path = path;
     s_demuxer = demuxer_create(path);
     if (!s_demuxer) {
         set_state(PlayerState::Failed, "unsupported file");
@@ -421,6 +424,15 @@ static void handle_close() {
     reset_timeline();
     s_want_poster = false;
     set_state(PlayerState::Idle);
+}
+
+static void handle_eject(const std::string &mount_point) {
+    if (!s_demuxer || s_path.compare(0, mount_point.size(), mount_point) != 0) return;
+    if (s_path.size() > mount_point.size() && s_path[mount_point.size()] != '/') return;
+    reader_stop();
+    close_source();
+    s_want_poster = false;
+    set_state(PlayerState::Failed, "storage removed");
 }
 
 static bool rewind_to(int64_t position_us) {
@@ -502,6 +514,7 @@ static void handle_command(const CommandItem &item) {
     case Command::Restart: handle_restart(); break;
     case Command::Seek:    handle_seek(item.value); break;
     case Command::Loop:    handle_loop(item.value != 0); break;
+    case Command::Eject:   handle_eject(*item.path); break;
     }
     delete item.path;
 }
@@ -655,6 +668,7 @@ void player_pause() { send_command(Command::Pause); }
 void player_restart() { send_command(Command::Restart); }
 void player_seek(int64_t position_us) { send_command(Command::Seek, nullptr, position_us); }
 void player_set_loop(bool loop) { send_command(Command::Loop, nullptr, loop ? 1 : 0); }
+void player_eject(const std::string &mount_point) { send_command(Command::Eject, &mount_point); }
 
 PlayerStatus player_status() {
     PlayerStatus status = {};

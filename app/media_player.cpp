@@ -12,6 +12,7 @@
 #include "playback/player.hpp"
 #include "screens/home_screen.hpp"
 #include "ui_orientation.hpp"
+#include "usb_msc.h"
 
 static const char *TAG = "media_player";
 
@@ -59,7 +60,7 @@ void media_player_release_sram() {
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.display.fb_num = 3;
-    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB888;
+    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
     bsp_init(&bsp_config);
@@ -83,6 +84,15 @@ void app_entry() {
     }
     player_start(arena);
     h264_bench_register();
+
+    err = usb_msc_init([](usb_msc_event_t event, void *) {
+        if (event == USB_MSC_EVENT_DISCONNECTED) player_eject(kUsbMountPoint);
+    }, nullptr);
+    if (err != ESP_OK) ESP_LOGE(TAG, "usb msc init: %s", esp_err_to_name(err));
+#ifdef ESP_PLATFORM
+    ESP_LOGI(TAG, "internal heap free after usb init: %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+#endif
 
     lv_async_call([] {
         ui_orientation_start(s_main);

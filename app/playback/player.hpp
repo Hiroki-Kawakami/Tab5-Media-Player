@@ -38,4 +38,5 @@ void player_pause();
 void player_restart();
 void player_seek(int64_t position_us);
 void player_set_loop(bool loop);
+void player_eject(const std::string &mount_point);
 PlayerStatus player_status();

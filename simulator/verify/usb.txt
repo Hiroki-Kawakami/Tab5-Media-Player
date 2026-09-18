@@ -1,0 +1,26 @@
+settle
+usb-detach
+tap 360 225
+settle
+capture usb_not_connected.jpg
+tap 360 690
+settle
+usb-attach
+tap 360 225
+settle
+capture usb_browser.jpg
+tap 360 240
+wait 1500
+tap 220 1113
+wait 1000
+usb-detach
+wait 800
+capture usb_removed_playing.jpg
+usb-attach
+tap 66 1113
+settle
+tap 50 60
+settle
+tap 360 225
+settle
+capture usb_remounted.jpg

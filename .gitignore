@@ -10,3 +10,4 @@ sdkconfig.old
 captures
 __pycache__
 simulator/sdcard
+simulator/usb

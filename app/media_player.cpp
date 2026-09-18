@@ -63,6 +63,7 @@ void app_entry() {
     bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
+    bsp_config.audio.speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO;
     bsp_init(&bsp_config);
 
     esp_err_t err = display_init();

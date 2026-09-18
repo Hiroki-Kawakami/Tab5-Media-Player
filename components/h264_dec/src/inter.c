@@ -131,13 +131,7 @@ static void hpel_hv(struct h264_dec *dec, const uint8_t *src, ptrdiff_t ss, int 
                     ptrdiff_t stride) {
     int16_t *mid = dec->mc_mid;
     h264_k_tap6_s16(src, mid, h + 5, ss);
-    for (int y = 0; y < h; y++, dst += stride) {
-        const int16_t *m = mid + y * 16;
-        for (int x = 0; x < 16; x++) {
-            const int v = m[x] + m[x + 80] - 5 * (m[x + 16] + m[x + 64]) + 20 * (m[x + 32] + m[x + 48]);
-            dst[x] = clip_u8((v + 512) >> 10);
-        }
-    }
+    h264_k_tap6v_s16(mid, dst, h, stride);
 }
 
 static void interpolate(struct h264_dec *dec, const uint8_t *r0, ptrdiff_t ss, int frac, int h,
@@ -205,31 +199,14 @@ static void interpolate(struct h264_dec *dec, const uint8_t *r0, ptrdiff_t ss, i
     }
 }
 
-void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int w, int h, int weight, int offset,
-                       int denom) {
-    if (denom == 0) {
-        for (int y = 0; y < h; y++, dst += stride) {
-            for (int x = 0; x < w; x++) dst[x] = clip_u8(dst[x] * weight + offset);
-        }
-        return;
-    }
-    const int round = 1 << (denom - 1);
-    for (int y = 0; y < h; y++, dst += stride) {
-        for (int x = 0; x < w; x++) {
-            dst[x] = clip_u8(((dst[x] * weight + round) >> denom) + offset);
-        }
-    }
+void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int h, int weight, int offset, int denom) {
+    const int round = denom ? 1 << (denom - 1) : 0;
+    h264_k_weight_u8(dst, stride, h, weight, round, denom, offset);
 }
 
 void h264_avg_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
-                    ptrdiff_t src_stride, int w, int h) {
-    if (w == 16) {
-        h264_k_avg_u8(a, b, dst, h, src_stride, src_stride, stride);
-        return;
-    }
-    for (int y = 0; y < h; y++, a += src_stride, b += src_stride, dst += stride) {
-        for (int x = 0; x < w; x++) dst[x] = (uint8_t)((a[x] + b[x] + 1) >> 1);
-    }
+                    ptrdiff_t src_stride, int h) {
+    h264_k_avg_u8(a, b, dst, h, src_stride, src_stride, stride);
 }
 
 void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
@@ -242,6 +219,11 @@ void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, cons
             dst[x] = clip_u8(((a[x] * w0 + b[x] * w1 + round) >> shift) + offset);
         }
     }
+}
+
+void h264_weight_bi_implicit(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                             ptrdiff_t src_stride, int h, int w1) {
+    h264_k_weight_bi_u8(a, b, dst, h, src_stride, stride, w1);
 }
 
 void h264_mc_luma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst, ptrdiff_t stride,
@@ -257,12 +239,12 @@ void h264_mc_luma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst, ptrdif
             const uint8_t *src = h264_window_luma(dec, ref, yi, h);
             if (src) {
                 src += xi;
-                for (int r = 0; r < h; r++, src += ws, dst += stride) memcpy(dst, src, (size_t)w);
+                h264_k_copy(src, ws, dst, stride, h);
                 return;
             }
             if (xi & 1) {
                 fetch_luma_inside(dec, ref, xi, yi, h, dec->mc_src, TS);
-                for (int r = 0; r < h; r++) memcpy(dst + r * stride, dec->mc_src + r * TS, (size_t)w);
+                h264_k_copy(dec->mc_src, TS, dst, stride, h);
             } else {
                 fetch_luma_inside(dec, ref, xi, yi, h, dst, stride);
             }
@@ -293,20 +275,21 @@ void h264_mc_chroma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst_u, ui
     const int fx = mvx & 7;
     const int fy = mvy & 7;
     const int CW = dec->width / 2, CH = dec->height / 2;
-    const bool inside = xi >= 0 && xi + w + 1 <= CW && yi >= 0 && yi + h + 1 <= CH;
+    const int m = (fx | fy) ? 1 : 0;
+    const bool inside = xi >= 0 && xi + w + m <= CW && yi >= 0 && yi + h + m <= CH;
     for (int comp = 0; comp < 2; comp++) {
         uint8_t *dst = comp ? dst_v : dst_u;
-        const uint8_t *src = inside ? h264_window_chroma(dec, ref, comp, yi, h + 1) : NULL;
+        const uint8_t *src = inside ? h264_window_chroma(dec, ref, comp, yi, h + m) : NULL;
         ptrdiff_t ss = dec->win_cstride;
         if (src) {
             src += xi;
         } else {
-            fetch_chroma(dec, ref, comp, xi, yi, w + 1, h + 1, dec->mc_chroma, 16);
+            fetch_chroma(dec, ref, comp, xi, yi, w + m, h + m, dec->mc_chroma, 16);
             src = dec->mc_chroma;
             ss = 16;
         }
         if (!fx && !fy) {
-            for (int r = 0; r < h; r++) memcpy(dst + r * stride, src + r * ss, (size_t)w);
+            h264_k_copy(src, ss, dst, stride, h);
         } else {
             h264_k_bilinear(src, ss, dst, stride, h, fx, fy);
         }

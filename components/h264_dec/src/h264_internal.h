@@ -579,13 +579,14 @@ void h264_chroma_dc_dequant(int16_t *dc, int qp, int scale);
 
 void h264_intra8x8(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail);
 
-void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int w, int h, int weight, int offset,
-                       int denom);
+void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int h, int weight, int offset, int denom);
 void h264_avg_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
-                    ptrdiff_t src_stride, int w, int h);
+                    ptrdiff_t src_stride, int h);
 void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
                           ptrdiff_t src_stride, int w, int h, int w0, int w1, int offset,
                           int denom);
+void h264_weight_bi_implicit(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                             ptrdiff_t src_stride, int h, int w1);
 
 void h264_mc_luma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst, ptrdiff_t stride,
                   int x, int y, int w, int h, int mvx, int mvy);

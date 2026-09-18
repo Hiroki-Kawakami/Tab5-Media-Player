@@ -876,18 +876,18 @@ static void mc_part(mbctx_t *c, const frame_t *f, int x4, int y4, int w4, int h4
 }
 
 static void weight_single(const slice_t *s, int list, int ref, uint8_t *dy, ptrdiff_t ystride,
-                          uint8_t *du, uint8_t *dv, ptrdiff_t cstride, int w4, int h4) {
+                          uint8_t *du, uint8_t *dv, ptrdiff_t cstride, int h4) {
     if (!s->weighted || ref >= MAX_REFS) return;
     const weight_t *w = s->weights[list][ref];
     if (w[0].weight != (1 << s->luma_denom) || w[0].offset) {
-        h264_weight_block(dy, ystride, w4 * 4, h4 * 4, w[0].weight, w[0].offset, s->luma_denom);
+        h264_weight_block(dy, ystride, h4 * 4, w[0].weight, w[0].offset, s->luma_denom);
     }
     const int16_t unit = (int16_t)(1 << s->chroma_denom);
     if (w[1].weight != unit || w[1].offset) {
-        h264_weight_block(du, cstride, w4 * 2, h4 * 2, w[1].weight, w[1].offset, s->chroma_denom);
+        h264_weight_block(du, cstride, h4 * 2, w[1].weight, w[1].offset, s->chroma_denom);
     }
     if (w[2].weight != unit || w[2].offset) {
-        h264_weight_block(dv, cstride, w4 * 2, h4 * 2, w[2].weight, w[2].offset, s->chroma_denom);
+        h264_weight_block(dv, cstride, h4 * 2, w[2].weight, w[2].offset, s->chroma_denom);
     }
 }
 
@@ -897,7 +897,7 @@ static void combine_bi(mbctx_t *c, const int ref[2], uint8_t *dy, ptrdiff_t ystr
     const slice_t *s = &dec->slice;
     const uint8_t idc = dec->cur_pps->weighted_bipred_idc;
     const int lw = w4 * 4, lh = h4 * 4, cw = w4 * 2, ch = h4 * 2;
-    int w0 = 0, w1 = 0, oy = 0, ou = 0, ov = 0, ldenom = 0, cdenom = 0;
+    int w1 = 0, oy = 0, ou = 0, ov = 0, ldenom = 0, cdenom = 0;
     bool weighted = false;
     if (idc == 1 && s->weighted && ref[0] < MAX_REFS && ref[1] < MAX_REFS) {
         weighted = true;
@@ -905,14 +905,12 @@ static void combine_bi(mbctx_t *c, const int ref[2], uint8_t *dy, ptrdiff_t ystr
         cdenom = s->chroma_denom;
     } else if (idc == 2 && ref[0] < MAX_REFS && ref[1] < MAX_REFS) {
         w1 = dec->implicit_w[ref[0]][ref[1]];
-        w0 = 64 - w1;
         weighted = w1 != 32;
-        ldenom = cdenom = 5;
     }
     if (!weighted) {
-        h264_avg_block(dy, ystride, dec->bi_y[0], dec->bi_y[1], 16, lw, lh);
-        h264_avg_block(du, cstride, dec->bi_u[0], dec->bi_u[1], 16, cw, ch);
-        h264_avg_block(dv, cstride, dec->bi_v[0], dec->bi_v[1], 16, cw, ch);
+        h264_avg_block(dy, ystride, dec->bi_y[0], dec->bi_y[1], 16, lh);
+        h264_avg_block(du, cstride, dec->bi_u[0], dec->bi_u[1], 16, ch);
+        h264_avg_block(dv, cstride, dec->bi_v[0], dec->bi_v[1], 16, ch);
         return;
     }
     if (idc == 1) {
@@ -929,9 +927,9 @@ static void combine_bi(mbctx_t *c, const int ref[2], uint8_t *dy, ptrdiff_t ystr
     (void)oy;
     (void)ou;
     (void)ov;
-    h264_weight_bi_block(dy, ystride, dec->bi_y[0], dec->bi_y[1], 16, lw, lh, w0, w1, 0, ldenom);
-    h264_weight_bi_block(du, cstride, dec->bi_u[0], dec->bi_u[1], 16, cw, ch, w0, w1, 0, cdenom);
-    h264_weight_bi_block(dv, cstride, dec->bi_v[0], dec->bi_v[1], 16, cw, ch, w0, w1, 0, cdenom);
+    h264_weight_bi_implicit(dy, ystride, dec->bi_y[0], dec->bi_y[1], 16, lh, w1);
+    h264_weight_bi_implicit(du, cstride, dec->bi_u[0], dec->bi_u[1], 16, ch, w1);
+    h264_weight_bi_implicit(dv, cstride, dec->bi_v[0], dec->bi_v[1], 16, ch, w1);
 }
 
 static void predict_part(mbctx_t *c, int x4, int y4, int w4, int h4, int pred, const int ref[2],
@@ -966,7 +964,7 @@ static void predict_part(mbctx_t *c, int x4, int y4, int w4, int h4, int pred, c
     }
     const int list = pred == 2 ? 1 : 0;
     mc_part(c, frames[list], x4, y4, w4, h4, mv[list][0], mv[list][1], dy, ls, du, dv, cs);
-    if (frames[list]) weight_single(&dec->slice, list, ref[list], dy, ls, du, dv, cs, w4, h4);
+    if (frames[list]) weight_single(&dec->slice, list, ref[list], dy, ls, du, dv, cs, h4);
 }
 
 static void predict_l0(mbctx_t *c, int x4, int y4, int w4, int h4, int ref, int mvx, int mvy) {

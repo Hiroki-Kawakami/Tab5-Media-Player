@@ -13,10 +13,14 @@
 #include <cstring>
 #include <vector>
 
+#include "esp_async_memcpy.h"
+#include "esp_cache.h"
 #include "esp_cpu.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
+#include "hal/cache_ll.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -313,6 +317,369 @@ static void run(BenchArgs *args) {
     heap_caps_free(clip);
 }
 
+static uint32_t s_ticks_per_us;
+
+static void psram_report(const char *name, std::vector<uint32_t> &v, size_t bytes) {
+    std::sort(v.begin(), v.end());
+    const uint32_t m = v[v.size() / 2];
+    const double us = (double)m / s_ticks_per_us;
+    ESP_LOGI(TAG, "psram %s: %u cyc median, %.2f us, %.1f MB/s", name, m, us, bytes / us);
+}
+
+static void psram_invalidate(const volatile uint8_t *base, size_t bytes) {
+    esp_cache_msync((void *)base, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+}
+
+static bool psram_wait_preload(uint32_t max_cycles) {
+    const uint32_t t0 = cycles_now();
+    while (!Cache_L2_Cache_Preload_Done()) {
+        if (cycles_now() - t0 > max_cycles) return false;
+    }
+    return true;
+}
+
+static uint32_t psram_read_rows(const volatile uint8_t *base, int rows, size_t stride, size_t row_bytes) {
+    uint32_t sum = 0;
+    for (int r = 0; r < rows; r++) {
+        const volatile uint8_t *p = base + (size_t)r * stride;
+        for (size_t b = 0; b < row_bytes; b++) sum += p[b];
+    }
+    return sum;
+}
+
+static uint32_t a1_independent(const volatile uint8_t *base, int rows, size_t stride) {
+    uint8_t v[32];
+    for (int r = 0; r < rows; r++) v[r] = base[(size_t)r * stride];
+    uint32_t sum = 0;
+    for (int r = 0; r < rows; r++) sum += v[r];
+    return sum;
+}
+
+static uint32_t a1_dependent(const volatile uint8_t *base, int rows, size_t stride) {
+    size_t idx = 0;
+    uint32_t sum = 0;
+    for (int r = 0; r < rows; r++) {
+        const uint8_t v = base[idx];
+        sum += v;
+        idx = (size_t)(r + 1) * stride + (v & 63u);
+    }
+    return sum;
+}
+
+static void phase_a1(volatile uint8_t *rows0) {
+    constexpr int kIters = 100;
+    constexpr int kRows = 21;
+    constexpr size_t kStride = 960;
+    std::vector<uint32_t> indep(kIters), dep(kIters);
+    for (int i = 0; i < kIters; i++) {
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        const uint32_t t0 = cycles_now();
+        a1_independent(rows0, kRows, kStride);
+        indep[i] = cycles_now() - t0;
+
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        const uint32_t t1 = cycles_now();
+        a1_dependent(rows0, kRows, kStride);
+        dep[i] = cycles_now() - t1;
+    }
+    psram_report("a1-independent-21x960", indep, kRows);
+    psram_report("a1-dependent-21x960", dep, kRows);
+}
+
+static void phase_a2(volatile uint8_t *rows0) {
+    constexpr int kIters = 100;
+    constexpr int kRows = 21;
+    constexpr size_t kStride = 960;
+    std::vector<uint32_t> issue_wait(kIters), read_wait(kIters);
+    std::vector<uint32_t> issue_burst(kIters), read_burst(kIters);
+    std::vector<uint32_t> issue_wait128(kIters), read_wait128(kIters);
+    int hangs = 0;
+    for (int i = 0; i < kIters; i++) {
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        uint32_t t0 = cycles_now();
+        for (int r = 0; r < kRows; r++) {
+            cache_ll_l2_preload(CACHE_LL_ID_ALL, (uint32_t)(uintptr_t)(rows0 + (size_t)r * kStride), 64,
+                                CACHE_PRELOAD_ORDER_ASCENDING);
+            psram_wait_preload(200000);
+        }
+        issue_wait[i] = cycles_now() - t0;
+        uint32_t t1 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 32);
+        read_wait[i] = cycles_now() - t1;
+
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        uint32_t t2 = cycles_now();
+        for (int r = 0; r < kRows; r++) {
+            cache_ll_l2_preload(CACHE_LL_ID_ALL, (uint32_t)(uintptr_t)(rows0 + (size_t)r * kStride), 64,
+                                CACHE_PRELOAD_ORDER_ASCENDING);
+        }
+        const bool ok = psram_wait_preload(2000000);
+        issue_burst[i] = cycles_now() - t2;
+        if (!ok) hangs++;
+        uint32_t t3 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 32);
+        read_burst[i] = cycles_now() - t3;
+
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        uint32_t t4 = cycles_now();
+        for (int r = 0; r < kRows; r++) {
+            cache_ll_l2_preload(CACHE_LL_ID_ALL, (uint32_t)(uintptr_t)(rows0 + (size_t)r * kStride), 128,
+                                CACHE_PRELOAD_ORDER_ASCENDING);
+            psram_wait_preload(200000);
+        }
+        issue_wait128[i] = cycles_now() - t4;
+        uint32_t t5 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 32);
+        read_wait128[i] = cycles_now() - t5;
+    }
+    psram_report("a2-issue-64B-wait-each", issue_wait, kRows);
+    psram_report("a2-read-after-64B-wait-each", read_wait, kRows);
+    psram_report("a2-issue-64B-burst", issue_burst, kRows);
+    psram_report("a2-read-after-64B-burst", read_burst, kRows);
+    psram_report("a2-issue-128B-wait-each", issue_wait128, kRows);
+    psram_report("a2-read-after-128B-wait-each", read_wait128, kRows);
+    ESP_LOGI(TAG, "a2-burst-wait-timeouts: %d/%d", hangs, kIters);
+}
+
+static void phase_a3(volatile uint8_t *rows0) {
+    constexpr int kIters = 100;
+    constexpr int kRows = 9;
+    constexpr size_t kStride = 1920;
+    std::vector<uint32_t> issue_wait(kIters), read_wait(kIters);
+    std::vector<uint32_t> issue_burst(kIters), read_burst(kIters);
+    int hangs = 0;
+    for (int i = 0; i < kIters; i++) {
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        uint32_t t0 = cycles_now();
+        for (int r = 0; r < kRows; r++) {
+            cache_ll_l2_preload(CACHE_LL_ID_ALL, (uint32_t)(uintptr_t)(rows0 + (size_t)r * kStride), 64,
+                                CACHE_PRELOAD_ORDER_ASCENDING);
+            psram_wait_preload(200000);
+        }
+        issue_wait[i] = cycles_now() - t0;
+        uint32_t t1 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 16);
+        read_wait[i] = cycles_now() - t1;
+
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        uint32_t t2 = cycles_now();
+        for (int r = 0; r < kRows; r++) {
+            cache_ll_l2_preload(CACHE_LL_ID_ALL, (uint32_t)(uintptr_t)(rows0 + (size_t)r * kStride), 64,
+                                CACHE_PRELOAD_ORDER_ASCENDING);
+        }
+        const bool ok = psram_wait_preload(2000000);
+        issue_burst[i] = cycles_now() - t2;
+        if (!ok) hangs++;
+        uint32_t t3 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 16);
+        read_burst[i] = cycles_now() - t3;
+    }
+    psram_report("a3-chroma-issue-64B-wait-each", issue_wait, kRows);
+    psram_report("a3-chroma-read-after-wait-each", read_wait, kRows);
+    psram_report("a3-chroma-issue-64B-burst", issue_burst, kRows);
+    psram_report("a3-chroma-read-after-burst", read_burst, kRows);
+    ESP_LOGI(TAG, "a3-burst-wait-timeouts: %d/%d", hangs, kIters);
+}
+
+static std::atomic<bool> s_a4_go{ false };
+static std::atomic<bool> s_a4_done{ false };
+static std::atomic<bool> s_a4_stop{ false };
+static volatile uint8_t *s_a4_region;
+
+static void a4_worker(void *) {
+    while (!s_a4_stop.load(std::memory_order_relaxed)) {
+        if (!s_a4_go.load(std::memory_order_acquire)) continue;
+        s_a4_go.store(false, std::memory_order_relaxed);
+        volatile uint8_t sink = 0;
+        for (int r = 0; r < 21; r++) sink ^= s_a4_region[(size_t)r * 960];
+        (void)sink;
+        s_a4_done.store(true, std::memory_order_release);
+    }
+    vTaskDeleteWithCaps(nullptr);
+}
+
+static void phase_a4(volatile uint8_t *rows0) {
+    constexpr int kIters = 100;
+    constexpr int kRows = 21;
+    constexpr size_t kStride = 960;
+    s_a4_stop.store(false);
+    s_a4_region = rows0;
+    if (h264_create_task(a4_worker, "h264_a4", 2048, nullptr, 5, 1, nullptr) != pdPASS) {
+        ESP_LOGE(TAG, "a4: worker spawn failed");
+        return;
+    }
+    std::vector<uint32_t> cross(kIters);
+    for (int i = 0; i < kIters; i++) {
+        psram_invalidate(rows0, (size_t)kRows * kStride);
+        s_a4_done.store(false, std::memory_order_relaxed);
+        s_a4_go.store(true, std::memory_order_release);
+        while (!s_a4_done.load(std::memory_order_acquire)) {}
+        uint32_t t0 = cycles_now();
+        psram_read_rows(rows0, kRows, kStride, 32);
+        cross[i] = cycles_now() - t0;
+    }
+    s_a4_stop.store(true);
+    psram_report("a4-core0-after-core1-touch", cross, kRows);
+}
+
+static void pattern_fill(uint8_t *p, size_t n, uint8_t seed) {
+    for (size_t i = 0; i < n; i++) p[i] = (uint8_t)(seed + i * 131u);
+}
+
+static bool pattern_check(const uint8_t *p, size_t n, uint8_t seed) {
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] != (uint8_t)(seed + i * 131u)) return false;
+    }
+    return true;
+}
+
+static void flush_and_invalidate(void *p, size_t n) {
+    esp_cache_msync(p, n, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
+}
+
+static std::atomic<bool> s_dma_done{ false };
+
+static bool dma_done_cb(async_memcpy_handle_t, async_memcpy_event_t *, void *) {
+    s_dma_done.store(true, std::memory_order_release);
+    return false;
+}
+
+static bool dma_copy_timed(async_memcpy_handle_t mcp, void *dst, void *src, size_t n,
+                           uint32_t *issue_cyc, uint32_t *total_cyc) {
+    s_dma_done.store(false, std::memory_order_relaxed);
+    const uint32_t t0 = cycles_now();
+    const esp_err_t err = esp_async_memcpy(mcp, dst, src, n, dma_done_cb, nullptr);
+    const uint32_t t1 = cycles_now();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_async_memcpy(%u bytes) failed: %d", (unsigned)n, (int)err);
+        return false;
+    }
+    uint32_t spins = 0;
+    while (!s_dma_done.load(std::memory_order_acquire)) {
+        if (++spins > 20000000u) {
+            ESP_LOGE(TAG, "dma: timed out waiting for completion");
+            return false;
+        }
+    }
+    const uint32_t t2 = cycles_now();
+    *issue_cyc = t1 - t0;
+    *total_cyc = t2 - t0;
+    return true;
+}
+
+static void dma_measure(async_memcpy_handle_t mcp, const char *dir, uint8_t *dst, uint8_t *src,
+                        size_t n) {
+    constexpr int kIters = 100;
+    std::vector<uint32_t> issue(kIters), total(kIters);
+    int mismatches = 0;
+    for (int i = 0; i < kIters; i++) {
+        const uint8_t seed = (uint8_t)(i * 37 + 1);
+        pattern_fill(src, n, seed);
+        memset(dst, 0, n);
+        if (!dma_copy_timed(mcp, dst, src, n, &issue[i], &total[i])) return;
+        psram_invalidate(dst, n);
+        if (!pattern_check(dst, n, seed)) mismatches++;
+    }
+    char label[48];
+    snprintf(label, sizeof(label), "dma-%s-%uB-issue", dir, (unsigned)n);
+    psram_report(label, issue, n);
+    snprintf(label, sizeof(label), "dma-%s-%uB-total", dir, (unsigned)n);
+    psram_report(label, total, n);
+    ESP_LOGI(TAG, "dma-%s-%uB mismatches: %d/%d", dir, (unsigned)n, mismatches, kIters);
+}
+
+static void cpu_measure(const char *dir, uint8_t *dst, uint8_t *src, size_t n, bool cold_src) {
+    constexpr int kIters = 100;
+    std::vector<uint32_t> cyc(kIters);
+    int mismatches = 0;
+    for (int i = 0; i < kIters; i++) {
+        const uint8_t seed = (uint8_t)(i * 37 + 1);
+        pattern_fill(src, n, seed);
+        memset(dst, 0, n);
+        if (cold_src) flush_and_invalidate(src, n);
+        const uint32_t t0 = cycles_now();
+        memcpy(dst, src, n);
+        esp_cache_msync(dst, n, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        cyc[i] = cycles_now() - t0;
+        psram_invalidate(dst, n);
+        if (!pattern_check(dst, n, seed)) mismatches++;
+    }
+    char label[48];
+    snprintf(label, sizeof(label), "cpu-%s-%uB", dir, (unsigned)n);
+    psram_report(label, cyc, n);
+    ESP_LOGI(TAG, "cpu-%s-%uB mismatches: %d/%d", dir, (unsigned)n, mismatches, kIters);
+}
+
+static void phase_b(uint8_t *psram_buf, uint8_t *sram_buf) {
+    static const size_t kSizes[] = { 8640, 15360, 47104 };
+    async_memcpy_config_t cfg = ASYNC_MEMCPY_DEFAULT_CONFIG();
+    async_memcpy_handle_t mcp = nullptr;
+    const esp_err_t err = esp_async_memcpy_install_gdma_axi(&cfg, &mcp);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "phase_b: install failed: %d", (int)err);
+        return;
+    }
+    for (size_t n : kSizes) {
+        dma_measure(mcp, "p2s", sram_buf, psram_buf, n);
+        dma_measure(mcp, "s2p", psram_buf, sram_buf, n);
+        cpu_measure("p2s", sram_buf, psram_buf, n, true);
+        cpu_measure("s2p", psram_buf, sram_buf, n, false);
+    }
+    esp_async_memcpy_uninstall(mcp);
+}
+
+static void psram_bench_run() {
+    constexpr size_t kFrameBytes = 400 * 1024;
+    constexpr size_t kDmaMaxBytes = 47104;
+    auto *frame = static_cast<uint8_t *>(heap_caps_aligned_alloc(64, kFrameBytes, MALLOC_CAP_SPIRAM));
+    auto *dma_psram = static_cast<uint8_t *>(heap_caps_aligned_alloc(64, kDmaMaxBytes, MALLOC_CAP_SPIRAM));
+    if (frame) {
+        memset(frame, 0x5a, kFrameBytes);
+        s_ticks_per_us = esp_rom_get_cpu_ticks_per_us();
+        volatile uint8_t *rows0 = frame + 4096;
+        phase_a1(rows0);
+        phase_a2(rows0);
+        phase_a3(rows0);
+        phase_a4(rows0);
+    } else {
+        ESP_LOGE(TAG, "psram bench: no memory");
+    }
+    if (dma_psram) {
+        lv_lock();
+        const SharedSram sram = media_player_acquire_sram();
+        lv_unlock();
+        if (sram.base && sram.bytes >= kDmaMaxBytes) {
+            phase_b(dma_psram, static_cast<uint8_t *>(sram.base));
+        } else {
+            ESP_LOGE(TAG, "psram bench: shared sram unavailable for dma phase");
+        }
+        lv_lock();
+        media_player_release_sram();
+        lv_unlock();
+    } else {
+        ESP_LOGE(TAG, "psram bench: no memory for dma psram buffer");
+    }
+    heap_caps_free(frame);
+    heap_caps_free(dma_psram);
+}
+
+static void psram_bench_task(void *) {
+    psram_bench_run();
+    ESP_LOGI(TAG, "psram bench done");
+    s_busy.store(false);
+    vTaskDeleteWithCaps(nullptr);
+}
+
+static bool psram_bench_command(int, const char *const *, void *) {
+    if (s_busy.exchange(true)) return false;
+    if (h264_create_task(psram_bench_task, "h264_psram", kBenchStackBytes, nullptr, 5, 0, nullptr) !=
+        pdPASS) {
+        s_busy.store(false);
+        return false;
+    }
+    return true;
+}
+
 static void bench_task(void *arg) {
     auto *args = static_cast<BenchArgs *>(arg);
     run(args);
@@ -349,6 +716,7 @@ static bool bench_command(int argc, const char *const *argv, void *) {
 
 void h264_bench_register() {
     harness_register("h264bench", bench_command, nullptr);
+    harness_register("h264psrambench", psram_bench_command, nullptr);
 }
 
 #else

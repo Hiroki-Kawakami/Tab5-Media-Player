@@ -58,6 +58,7 @@ typedef struct {
     size_t work_bytes;
     uint32_t max_mbs;
     uint32_t max_side;
+    size_t frame_budget_bytes;
     uint8_t held_pictures;
     uint32_t (*clock)(void);
     const h264_dec_threads_t *threads;
@@ -81,6 +82,7 @@ typedef struct {
     const uint8_t *packed;
     size_t packed_bytes;
     h264_dec_stream_info_t info;
+    int64_t tag;
     uint8_t id;
     bool reference;
     bool concealed;
@@ -90,7 +92,9 @@ h264_dec_t *h264_dec_create(const h264_dec_config_t *config);
 void h264_dec_destroy(h264_dec_t *dec);
 
 h264_dec_result_t h264_dec_decode(h264_dec_t *dec, const uint8_t *data, size_t len,
-                                  uint8_t nal_length_size, h264_dec_picture_t *picture);
+                                  uint8_t nal_length_size, int64_t tag);
+bool h264_dec_output(h264_dec_t *dec, h264_dec_picture_t *picture);
+void h264_dec_drain(h264_dec_t *dec);
 
 bool h264_dec_stream_info(const h264_dec_t *dec, h264_dec_stream_info_t *info);
 bool h264_dec_probe(const uint8_t *data, size_t len, uint8_t nal_length_size,

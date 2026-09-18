@@ -188,16 +188,31 @@ the presenter drive it.
   input is Espressif's packed `O_UYY_E_VYY`, which is why the decoder stores
   pictures in that layout.
 
+- **Decoded pictures come out in display order, so the player schedules by two
+  clocks.** The decoder holds pictures back until their output order is settled
+  (see [`h264.md`](h264.md#output-order)), which means a packet's presentation
+  time is no longer the time it must be decoded. `step_playing()` hands a packet
+  over `s_reorder_lead_us` before its own presentation time and passes that time
+  along as the frame's due time; the decoder returns it with whichever picture
+  comes out. The lead is learned from the stream: it is the largest amount by
+  which a packet's presentation time falls behind the highest one seen so far,
+  capped at 16 frame intervals. Containers do not have to carry decode
+  timestamps for this, which matters because MKV does not.
+- **The tag is how a due time survives reordering.** `H264Renderer` passes the
+  due time as the decoder's per-access-unit tag and reads it back off the
+  picture; a frame the player asked not to show carries `INT64_MIN` instead and
+  is dropped when it comes out.
+- **End of stream needs a drain.** The last pictures of a file are still inside
+  the decoder when the reader runs out, so the player calls
+  `video_presenter_drain()` (a null job on the decode queue) before it reports
+  `Finished`. The poster path drains as well, so a paused picture appears
+  without waiting for the reorder window to fill.
+
 ## Deliberately not done yet
 
-- **No output reordering.** Pictures are shown in decoding order. Baseline
-  streams whose picture order count differs from it (the JVT `MR4/MR5_TANDBERG`
-  streams do) decode correctly but show frames out of order. x264's baseline
-  output never does this.
 - **No fragmented MP4.** Files with `mvex`/`moof` are rejected.
-- **No CABAC, B slices, interlace, weighted prediction or 8x8 transform.**
-  They are rejected with "re-encode with -profile:v baseline"; see
-  [`h264.md`](h264.md).
+- **No interlace, MBAFF, FMO, SP/SI slices, 4:2:2/4:4:4 or 10-bit.** See
+  [`h264.md`](h264.md#scope).
 
 ## Reading: one buffer from the card to the decoder
 

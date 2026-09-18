@@ -34,7 +34,10 @@ public:
     virtual bool pipelined() const { return false; }
 
     virtual DecodeResult decode(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
-                                void *ctx, bool present, VideoFrame *frame, std::string *error) = 0;
+                                void *ctx, bool present, int64_t due_us, VideoFrame *frame,
+                                std::string *error) = 0;
+    virtual bool take(VideoFrame *frame, int64_t *due_us) { (void)frame; (void)due_us; return false; }
+    virtual void drain() {}
     virtual bool draw(VideoFrame *frame, const RenderTarget &target, std::string *error) = 0;
     virtual void drop(VideoFrame *frame) = 0;
     virtual void discard() = 0;

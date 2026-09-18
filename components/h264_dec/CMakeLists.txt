@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "src/bits.c"
+        "src/cabac.c"
+        "src/cabac_tables.c"
         "src/deblock.c"
         "src/decoder.c"
         "src/inter.c"

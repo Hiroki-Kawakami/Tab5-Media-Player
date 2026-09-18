@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include <cstdint>
 #include "video_renderer.hpp"
 #include "driver/ppa.h"
 #include "h264_dec.h"
@@ -18,7 +19,10 @@ public:
     bool pipelined() const override { return true; }
 
     DecodeResult decode(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
-                        void *ctx, bool present, VideoFrame *frame, std::string *error) override;
+                        void *ctx, bool present, int64_t due_us, VideoFrame *frame,
+                        std::string *error) override;
+    bool take(VideoFrame *frame, int64_t *due_us) override;
+    void drain() override;
     bool draw(VideoFrame *frame, const RenderTarget &target, std::string *error) override;
     void drop(VideoFrame *frame) override;
     void discard() override;
@@ -27,6 +31,7 @@ public:
 
 private:
     static constexpr int kPictureSlots = 32;
+    static constexpr int64_t kHiddenTag = INT64_MIN;
 
     h264_dec_t *decoder_ = nullptr;
     ppa_client_handle_t ppa_ = nullptr;

@@ -40,6 +40,7 @@
 #define NAL_PPS 8
 
 #define SLICE_P 0
+#define SLICE_B 1
 #define SLICE_I 2
 
 typedef enum {
@@ -132,11 +133,53 @@ static inline bool bits_overrun(const bits_t *b) {
     return b->pos > b->len * 8 || (b->exhausted && b->pos > b->end_bits);
 }
 
+static inline bool bits_past_buffer(const bits_t *b) {
+    return b->pos > (b->len + BITS_PADDING) * 8;
+}
+
 static inline bool bits_more_data(const bits_t *b) {
     return !b->exhausted || b->pos < b->end_bits;
 }
 
 static inline bool bits_aligned(const bits_t *b) { return (b->pos & 7) == 0; }
+
+#define CABAC_CONTEXTS 460
+
+typedef struct {
+    bits_t *bits;
+    uint32_t range;
+    uint32_t offset;
+    uint8_t state[CABAC_CONTEXTS];
+} cabac_t;
+
+extern const int8_t h264_cabac_init_i[CABAC_CONTEXTS][2];
+extern const int8_t h264_cabac_init_pb[3][CABAC_CONTEXTS][2];
+extern const uint8_t h264_cabac_range_lps[64][4];
+extern const uint8_t h264_cabac_trans_mps[64];
+extern const uint8_t h264_cabac_trans_lps[64];
+extern const uint8_t h264_sig_coeff_offset_8x8[63];
+extern const uint8_t h264_last_coeff_offset_8x8[63];
+
+void h264_cabac_init(cabac_t *c, bits_t *b, int qp, int model);
+void h264_cabac_reinit(cabac_t *c);
+int h264_cabac_decision(cabac_t *c, int ctx);
+int h264_cabac_bypass(cabac_t *c);
+int h264_cabac_terminate(cabac_t *c);
+int h264_cabac_mb_type_i(cabac_t *c, int base, int inc, bool intra_slice);
+int h264_cabac_mb_type_p(cabac_t *c);
+int h264_cabac_mb_type_b(cabac_t *c, int inc);
+int h264_cabac_sub_type_p(cabac_t *c);
+int h264_cabac_sub_type_b(cabac_t *c);
+int h264_cabac_ref(cabac_t *c, int inc);
+int h264_cabac_mvd(cabac_t *c, int base, int amvd);
+int h264_cabac_intra_pred_mode(cabac_t *c, int pred);
+int h264_cabac_chroma_mode(cabac_t *c, int inc);
+int h264_cabac_cbp_luma(cabac_t *c, int left, int top);
+int h264_cabac_cbp_chroma(cabac_t *c, int left, int top);
+int h264_cabac_qp_delta(cabac_t *c, bool prev_nonzero);
+int h264_cabac_transform8x8(cabac_t *c, int inc);
+int h264_cabac_cbf(cabac_t *c, int cat, int inc);
+int h264_cabac_residual(cabac_t *c, int cat, int max_coeff, int16_t *levels, uint8_t *positions);
 
 typedef struct {
     int16_t *table;
@@ -157,6 +200,8 @@ static inline int vlc_read(bits_t *b, const vlc_t *vlc) {
     return e >> 5;
 }
 
+#define MAX_POC_CYCLE 256
+
 typedef struct {
     bool valid;
     uint8_t profile_idc;
@@ -166,8 +211,17 @@ typedef struct {
     uint8_t poc_type;
     uint8_t log2_max_poc_lsb;
     bool delta_pic_order_always_zero;
+    int32_t offset_for_non_ref_pic;
+    int32_t offset_for_top_to_bottom;
+    uint16_t poc_cycle_length;
+    int32_t poc_cycle_sum;
+    int32_t offset_for_ref_frame[MAX_POC_CYCLE];
     uint8_t max_num_ref_frames;
     bool gaps_allowed;
+    bool direct_8x8_inference;
+    bool has_bitstream_restriction;
+    uint8_t num_reorder_frames;
+    uint8_t max_dec_frame_buffering;
     uint16_t mb_width;
     uint16_t mb_height;
     uint16_t crop_left;
@@ -176,20 +230,30 @@ typedef struct {
     uint16_t crop_bottom;
     bool full_range;
     uint8_t matrix;
+    bool has_scaling;
+    uint8_t scaling4[6][16];
+    uint8_t scaling8[2][64];
     const char *unsupported;
 } sps_t;
 
 typedef struct {
     bool valid;
+    bool cabac;
     uint8_t sps_id;
     bool bottom_field_pic_order_present;
     uint8_t num_ref_idx_default;
+    uint8_t num_ref_idx_l1_default;
     bool weighted_pred;
+    uint8_t weighted_bipred_idc;
     int8_t pic_init_qp;
     int8_t chroma_qp_offset[2];
     bool deblocking_control;
     bool constrained_intra_pred;
     bool redundant_pic_cnt_present;
+    bool transform_8x8_mode;
+    bool has_scaling;
+    uint8_t scaling4[6][16];
+    uint8_t scaling8[2][64];
     const char *unsupported;
 } pps_t;
 
@@ -202,21 +266,37 @@ typedef struct {
 #define MAX_REORDER 33
 
 typedef struct {
+    int16_t weight;
+    int16_t offset;
+} weight_t;
+
+typedef struct {
     uint32_t first_mb;
     uint8_t type;
     uint8_t nal_ref_idc;
     bool idr;
     uint8_t pps_id;
     uint16_t frame_num;
+    uint32_t poc_lsb;
+    int32_t delta_poc_bottom;
+    int32_t delta_poc[2];
+    bool no_output_of_prior_pics;
     uint32_t redundant_pic_cnt;
     uint8_t num_ref_idx_active;
+    uint8_t num_ref_idx_l1;
+    bool direct_spatial;
+    uint8_t cabac_init_idc;
     int8_t qp;
     uint8_t disable_deblock;
     int8_t alpha_offset;
     int8_t beta_offset;
-    uint8_t reorder_count;
-    uint8_t reorder_idc[MAX_REORDER];
-    uint32_t reorder_value[MAX_REORDER];
+    uint8_t reorder_count[2];
+    uint8_t reorder_idc[2][MAX_REORDER];
+    uint32_t reorder_value[2][MAX_REORDER];
+    bool weighted;
+    uint8_t luma_denom;
+    uint8_t chroma_denom;
+    weight_t weights[2][MAX_REFS][3];
     bool long_term_reference;
     bool adaptive_marking;
     uint8_t mmco_count;
@@ -224,34 +304,55 @@ typedef struct {
 } slice_t;
 
 typedef struct {
+    int8_t ref[4];
+    uint8_t refpic[4];
+    int16_t mv[16][2];
+    uint8_t mvd_right[4][2];
+    uint8_t mvd_bottom[4][2];
+} mbmotion_t;
+
+typedef struct {
     uint16_t slice;
     uint16_t nzmask;
     uint8_t uniform;
     uint8_t kind;
+    uint8_t t8x8;
     int8_t qp;
     uint8_t filter;
     int8_t alpha;
     int8_t beta;
     uint8_t cqp[2];
-    int8_t ref[4];
-    uint8_t refpic[4];
+    uint8_t cflags;
+    uint8_t direct8;
+    uint16_t cbf;
     int8_t modes[16];
     uint8_t nnz[24];
-    int16_t mv[16][2];
+    mbmotion_t m[2];
 } mbinfo_t;
 
 typedef struct {
     uint8_t *y;
     uint8_t *u;
     uint8_t *v;
-    mbinfo_t *mb;
+    uint8_t *mb;
 } rowbuf_t;
+
+static inline mbinfo_t *mb_at(const rowbuf_t *row, uint32_t x, uint32_t stride) {
+    return (mbinfo_t *)(row->mb + (size_t)x * stride);
+}
 
 #define JOB_ROW 0
 #define JOB_STOP 1
 
 typedef struct {
+    int16_t mv[2];
+    int8_t ref;
+    uint8_t pic;
+} colblk_t;
+
+typedef struct {
     uint8_t *frame;
+    uint8_t *col;
     uint16_t mb_y;
     int8_t slot;
     int8_t prev;
@@ -273,15 +374,22 @@ typedef struct {
 
 typedef struct frame {
     uint8_t *data;
+    uint8_t *col;
     int32_t frame_num_wrap;
+    int32_t poc;
+    int64_t tag;
     uint16_t frame_num;
     uint8_t long_term_idx;
     uint8_t ref;
     bool non_existing;
     bool concealed;
-    bool output;
+    bool needed_for_output;
+    uint32_t epoch;
     atomic_uchar holds;
 } frame_t;
+
+#define MB_CF_CHROMA 1
+#define MB_CF_DIRECT 2
 
 #define REF_NONE 0
 #define REF_SHORT 1
@@ -312,6 +420,8 @@ struct h264_dec {
 
     uint16_t mb_w;
     uint16_t mb_h;
+    uint16_t mb_stride;
+    bool has_l1;
     uint16_t width;
     uint16_t height;
     uint32_t packed_stride;
@@ -322,9 +432,28 @@ struct h264_dec {
     uint8_t *frame_block;
     frame_t frames[MAX_POOL];
     uint8_t pool_size;
+    uint8_t dpb_size;
+    uint8_t reorder_frames;
     uint8_t max_long_term_plus1;
     uint16_t prev_ref_frame_num;
     bool need_keyframe;
+
+    int32_t prev_poc_msb;
+    int32_t prev_poc_lsb;
+    int32_t prev_frame_num_offset;
+    uint16_t prev_frame_num;
+    int32_t cur_poc;
+    int32_t cur_poc_top;
+    bool cur_mmco5;
+    bool skip_leading;
+    int32_t leading_poc;
+    int64_t cur_tag;
+    uint32_t epoch;
+    bool draining;
+    bool have_out_poc;
+    uint32_t out_epoch;
+    int32_t out_poc;
+    int32_t poc_step;
 
     frame_t *cur;
     const pps_t *cur_pps;
@@ -336,10 +465,17 @@ struct h264_dec {
     slice_t slice;
     frame_t *last_ref;
 
-    frame_t *ref_list[MAX_REFS + 1];
-    uint8_t ref_count;
+    frame_t *ref_list[2][MAX_REFS + 1];
+    uint8_t ref_count[2];
+    int16_t implicit_w[MAX_REFS][MAX_REFS];
+    uint8_t *col_block;
+    size_t col_bytes;
+    uint8_t col_blocks;
 
     bits_t bits;
+    cabac_t *cabac;
+    bool cabac_on;
+    bool last_qp_delta_nonzero;
     uint8_t *bits_buf;
     uint32_t bits_cap;
 
@@ -377,6 +513,9 @@ struct h264_dec {
     uint8_t *mc_a;
     uint8_t *mc_b;
     uint8_t *mc_chroma;
+    uint8_t *bi_y[2];
+    uint8_t *bi_u[2];
+    uint8_t *bi_v[2];
     uint8_t *mc_scratch;
     int16_t *mc_mid;
     int16_t *coeff;
@@ -387,6 +526,10 @@ struct h264_dec {
     vlc_t total_zeros[15];
     vlc_t total_zeros_dc[3];
     vlc_t run_before[7];
+
+    int16_t *ls4;
+    int16_t *ls8;
+    const pps_t *ls_pps;
 
     uint8_t *work_base;
     size_t work_used;
@@ -403,9 +546,13 @@ bool h264_parse_sps_standalone(bits_t *b, sps_t *out, uint8_t *id);
 int h264_parse_slice_header(struct h264_dec *dec, bits_t *b, uint8_t nal_type, uint8_t nal_ref_idc,
                             slice_t *s);
 bool h264_build_ref_list(struct h264_dec *dec, const slice_t *s);
+void h264_build_implicit_weights(struct h264_dec *dec);
 frame_t *h264_free_frame(struct h264_dec *dec);
+int h264_gap_frames_left(const struct h264_dec *dec);
 void h264_mark_references(struct h264_dec *dec);
 void h264_handle_frame_num_gap(struct h264_dec *dec, uint16_t frame_num);
+int32_t h264_compute_poc(struct h264_dec *dec, const slice_t *s, bool commit);
+void h264_discard_waiting(struct h264_dec *dec);
 
 bool h264_decode_slice_data(struct h264_dec *dec);
 void h264_conceal_mb(struct h264_dec *dec, uint32_t mb_addr);
@@ -426,8 +573,19 @@ void h264_intra16x16(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail);
 void h264_intra_chroma(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail);
 
 void h264_idct4x4_add(uint8_t *dst, ptrdiff_t stride, int16_t *block);
-void h264_luma_dc_dequant(int16_t *dc, int qp);
-void h264_chroma_dc_dequant(int16_t *dc, int qp);
+void h264_idct8x8_add(uint8_t *dst, ptrdiff_t stride, const int16_t *block);
+void h264_luma_dc_dequant(int16_t *dc, int qp, int scale);
+void h264_chroma_dc_dequant(int16_t *dc, int qp, int scale);
+
+void h264_intra8x8(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail);
+
+void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int w, int h, int weight, int offset,
+                       int denom);
+void h264_avg_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                    ptrdiff_t src_stride, int w, int h);
+void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                          ptrdiff_t src_stride, int w, int h, int w0, int w1, int offset,
+                          int denom);
 
 void h264_mc_luma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst, ptrdiff_t stride,
                   int x, int y, int w, int h, int mvx, int mvy);
@@ -455,10 +613,19 @@ static inline const uint8_t *h264_window_chroma(const struct h264_dec *dec, cons
 
 void h264_deblock_row(struct h264_dec *dec, rowbuf_t *cur, rowbuf_t *above, uint32_t mb_y);
 
+void h264_store_col_row(struct h264_dec *dec, const rowbuf_t *row, uint8_t *col, uint32_t mb_y);
+
 void h264_pack_rows(uint8_t *dst, uint32_t dst_stride, const uint8_t *y, uint32_t y_stride,
                     const uint8_t *u, const uint8_t *v, uint32_t c_stride, uint32_t width,
                     uint32_t rows);
 
 extern const uint8_t h264_zigzag4x4[16];
+extern const uint8_t h264_zigzag8x8[64];
+extern const uint8_t h264_col_corner[4];
+extern const uint8_t h264_dequant8[6][64];
+extern const uint8_t h264_default_scaling4[2][16];
+extern const uint8_t h264_default_scaling8[2][64];
+
+void h264_build_level_scales(struct h264_dec *dec);
 extern const uint8_t h264_chroma_qp[52];
 extern const uint8_t h264_dequant4[6][16];

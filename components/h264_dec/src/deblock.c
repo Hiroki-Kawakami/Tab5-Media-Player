@@ -35,19 +35,49 @@ static inline bool mb_intra(const mbinfo_t *m) {
     return m->kind != MB_INTER && m->kind != MB_SKIP;
 }
 
-static inline bool motion_differs(const mbinfo_t *p, int pb, const mbinfo_t *q, int qb) {
+static inline bool mv_far(const int16_t a[2], const int16_t b[2]) {
+    return iabs(a[0] - b[0]) >= 4 || iabs(a[1] - b[1]) >= 4;
+}
+
+static bool motion_differs(const mbinfo_t *p, int pb, const mbinfo_t *q, int qb, bool bi) {
     const int p8 = ((pb >> 3) << 1) | ((pb & 3) >> 1);
     const int q8 = ((qb >> 3) << 1) | ((qb & 3) >> 1);
-    return p->refpic[p8] != q->refpic[q8] || iabs(p->mv[pb][0] - q->mv[qb][0]) >= 4 ||
-           iabs(p->mv[pb][1] - q->mv[qb][1]) >= 4;
+    if (!bi) {
+        return p->m[0].refpic[p8] != q->m[0].refpic[q8] || mv_far(p->m[0].mv[pb], q->m[0].mv[qb]);
+    }
+    const uint8_t p0 = p->m[0].refpic[p8], p1 = p->m[1].refpic[p8];
+    const uint8_t q0 = q->m[0].refpic[q8], q1 = q->m[1].refpic[q8];
+    const int pn = (p0 != NO_PIC) + (p1 != NO_PIC);
+    const int qn = (q0 != NO_PIC) + (q1 != NO_PIC);
+    if (pn != qn) return true;
+    if (pn == 0) return false;
+    if (pn == 1) {
+        const mbmotion_t *pm = p0 != NO_PIC ? &p->m[0] : &p->m[1];
+        const mbmotion_t *qm = q0 != NO_PIC ? &q->m[0] : &q->m[1];
+        const uint8_t pp = p0 != NO_PIC ? p0 : p1;
+        const uint8_t qq = q0 != NO_PIC ? q0 : q1;
+        return pp != qq || mv_far(pm->mv[pb], qm->mv[qb]);
+    }
+    if (!((p0 == q0 && p1 == q1) || (p0 == q1 && p1 == q0))) return true;
+    if (p0 != p1) {
+        if (p0 == q0) {
+            return mv_far(p->m[0].mv[pb], q->m[0].mv[qb]) || mv_far(p->m[1].mv[pb], q->m[1].mv[qb]);
+        }
+        return mv_far(p->m[0].mv[pb], q->m[1].mv[qb]) || mv_far(p->m[1].mv[pb], q->m[0].mv[qb]);
+    }
+    const bool straight =
+        !mv_far(p->m[0].mv[pb], q->m[0].mv[qb]) && !mv_far(p->m[1].mv[pb], q->m[1].mv[qb]);
+    const bool crossed =
+        !mv_far(p->m[0].mv[pb], q->m[1].mv[qb]) && !mv_far(p->m[1].mv[pb], q->m[0].mv[qb]);
+    return !(straight || crossed);
 }
 
-static uint8_t strength(const mbinfo_t *p, int pb, const mbinfo_t *q, int qb) {
+static uint8_t strength(const mbinfo_t *p, int pb, const mbinfo_t *q, int qb, bool bi) {
     if (((p->nzmask >> pb) | (q->nzmask >> qb)) & 1) return 2;
-    return motion_differs(p, pb, q, qb);
+    return motion_differs(p, pb, q, qb, bi);
 }
 
-static bool edge_strengths(const mbinfo_t *p, const mbinfo_t *q, int e, bool vertical,
+static bool edge_strengths(const mbinfo_t *p, const mbinfo_t *q, int e, bool vertical, bool bi,
                            uint8_t *bs) {
     const bool mb_edge = e == 0;
     if (mb_intra(p) || mb_intra(q)) {
@@ -58,7 +88,7 @@ static bool edge_strengths(const mbinfo_t *p, const mbinfo_t *q, int e, bool ver
     uint8_t any = 0;
     if (p->uniform && q->uniform && !p->nzmask && !q->nzmask) {
         if (!mb_edge) return false;
-        const uint8_t v = motion_differs(p, 0, q, 0);
+        const uint8_t v = motion_differs(p, 0, q, 0, bi);
         bs[0] = bs[1] = bs[2] = bs[3] = v;
         return v != 0;
     }
@@ -71,7 +101,7 @@ static bool edge_strengths(const mbinfo_t *p, const mbinfo_t *q, int e, bool ver
             qb = e * 4 + k;
             pb = mb_edge ? 12 + k : qb - 4;
         }
-        bs[k] = strength(p, pb, q, qb);
+        bs[k] = strength(p, pb, q, qb, bi);
         any |= bs[k];
     }
     return any != 0;
@@ -171,35 +201,38 @@ static void edge(uint8_t *luma, uint8_t *cb, uint8_t *cr, ptrdiff_t l_across, pt
 void h264_deblock_row(struct h264_dec *dec, rowbuf_t *cur, rowbuf_t *above, uint32_t mb_y) {
     const ptrdiff_t ls = dec->luma_stride;
     const ptrdiff_t cs = dec->chroma_stride;
+    const bool bi = dec->has_l1;
     uint8_t bs[4];
     for (uint32_t mb_x = 0; mb_x < dec->mb_w; mb_x++) {
-        const mbinfo_t *q = &cur->mb[mb_x];
+        const mbinfo_t *q = mb_at(cur, mb_x, dec->mb_stride);
         if (q->filter == 1) continue;
         uint8_t *y = cur->y + mb_x * 16;
         uint8_t *u = cur->u + mb_x * 8;
         uint8_t *v = cur->v + mb_x * 8;
-        const mbinfo_t *left = mb_x > 0 ? &cur->mb[mb_x - 1] : NULL;
-        const mbinfo_t *top = mb_y > 0 && above ? &above->mb[mb_x] : NULL;
+        const mbinfo_t *left = mb_x > 0 ? mb_at(cur, mb_x - 1, dec->mb_stride) : NULL;
+        const mbinfo_t *top = mb_y > 0 && above ? mb_at(above, mb_x, dec->mb_stride) : NULL;
         if (left && q->filter == 2 && left->slice != q->slice) left = NULL;
         if (top && q->filter == 2 && top->slice != q->slice) top = NULL;
         const bool internal = mb_intra(q) || !q->uniform || q->nzmask;
 
-        if (left && edge_strengths(left, q, 0, true, bs)) {
+        if (left && edge_strengths(left, q, 0, true, bi, bs)) {
             edge(y, u, v, 1, ls, 1, cs, bs, 1, left, q);
         }
         if (internal) {
             for (int e = 1; e < 4; e++) {
-                if (edge_strengths(q, q, e, true, bs)) {
+                if (q->t8x8 && (e & 1)) continue;
+                if (edge_strengths(q, q, e, true, bi, bs)) {
                     edge(y + e * 4, u + e * 2, v + e * 2, 1, ls, 1, cs, bs, !(e & 1), q, q);
                 }
             }
         }
-        if (top && edge_strengths(top, q, 0, false, bs)) {
+        if (top && edge_strengths(top, q, 0, false, bi, bs)) {
             edge(y, u, v, ls, 1, cs, 1, bs, 1, top, q);
         }
         if (internal) {
             for (int e = 1; e < 4; e++) {
-                if (edge_strengths(q, q, e, false, bs)) {
+                if (q->t8x8 && (e & 1)) continue;
+                if (edge_strengths(q, q, e, false, bi, bs)) {
                     edge(y + e * 4 * ls, u + e * 2 * cs, v + e * 2 * cs, ls, 1, cs, 1, bs, !(e & 1),
                          q, q);
                 }

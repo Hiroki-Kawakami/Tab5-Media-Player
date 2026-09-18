@@ -212,3 +212,135 @@ void h264_intra_chroma(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail)
         break;
     }
 }
+
+void h264_intra8x8(uint8_t *dst, ptrdiff_t stride, int mode, unsigned avail) {
+    const uint8_t *above = dst - stride;
+    uint8_t raw_top[17];
+    uint8_t raw_left[9];
+    for (int i = 0; i < 8; i++) {
+        raw_top[1 + i] = above[i];
+        raw_left[1 + i] = dst[i * stride - 1];
+    }
+    for (int i = 8; i < 16; i++) raw_top[1 + i] = (avail & AVAIL_TOP_RIGHT) ? above[i] : above[7];
+    raw_top[0] = raw_left[0] = above[-1];
+
+    uint8_t top_buf[17];
+    uint8_t left_buf[9];
+    uint8_t *T = top_buf + 1;
+    uint8_t *L = left_buf + 1;
+    const bool corner = (avail & AVAIL_TOP_LEFT) != 0;
+    const bool has_top = (avail & AVAIL_TOP) != 0;
+    const bool has_left = (avail & AVAIL_LEFT) != 0;
+
+    if (corner) {
+        if (has_top && has_left) top_buf[0] = AVG3(raw_left[1], raw_top[0], raw_top[1]);
+        else if (has_top) top_buf[0] = AVG3(raw_top[0], raw_top[0], raw_top[1]);
+        else top_buf[0] = AVG3(raw_left[1], raw_top[0], raw_top[0]);
+    } else {
+        top_buf[0] = raw_top[0];
+    }
+    left_buf[0] = top_buf[0];
+
+    T[0] = corner ? AVG3(raw_top[0], raw_top[1], raw_top[2])
+                  : (uint8_t)((3 * raw_top[1] + raw_top[2] + 2) >> 2);
+    for (int x = 1; x < 15; x++) T[x] = AVG3(raw_top[x], raw_top[x + 1], raw_top[x + 2]);
+    T[15] = (uint8_t)((raw_top[15] + 3 * raw_top[16] + 2) >> 2);
+
+    L[0] = corner ? AVG3(raw_top[0], raw_left[1], raw_left[2])
+                  : (uint8_t)((3 * raw_left[1] + raw_left[2] + 2) >> 2);
+    for (int y = 1; y < 7; y++) L[y] = AVG3(raw_left[y], raw_left[y + 1], raw_left[y + 2]);
+    L[7] = (uint8_t)((raw_left[7] + 3 * raw_left[8] + 2) >> 2);
+
+    uint8_t p[64];
+    switch (mode) {
+    case 0:
+        for (int y = 0; y < 8; y++) memcpy(p + y * 8, T, 8);
+        break;
+    case 1:
+        for (int y = 0; y < 8; y++) memset(p + y * 8, L[y], 8);
+        break;
+    case 2: {
+        int dc;
+        int st = 0, sl = 0;
+        for (int i = 0; i < 8; i++) {
+            st += T[i];
+            sl += L[i];
+        }
+        if (has_left && has_top) dc = (st + sl + 8) >> 4;
+        else if (has_left) dc = (sl + 4) >> 3;
+        else if (has_top) dc = (st + 4) >> 3;
+        else dc = 128;
+        memset(p, (uint8_t)dc, sizeof(p));
+        break;
+    }
+    case 3:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                p[y * 8 + x] = (x == 7 && y == 7)
+                                   ? (uint8_t)((T[14] + 3 * T[15] + 2) >> 2)
+                                   : AVG3(T[x + y], T[x + y + 1], T[x + y + 2]);
+            }
+        }
+        break;
+    case 4:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                if (x > y) p[y * 8 + x] = AVG3(T[x - y - 2], T[x - y - 1], T[x - y]);
+                else if (x < y) p[y * 8 + x] = AVG3(L[y - x - 2], L[y - x - 1], L[y - x]);
+                else p[y * 8 + x] = AVG3(T[0], T[-1], L[0]);
+            }
+        }
+        break;
+    case 5:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                const int z = 2 * x - y;
+                const int i = x - (y >> 1);
+                uint8_t v;
+                if (z >= 0 && !(z & 1)) v = AVG2(T[i - 1], T[i]);
+                else if (z >= 0) v = AVG3(T[i - 2], T[i - 1], T[i]);
+                else if (z == -1) v = AVG3(L[0], L[-1], T[0]);
+                else v = AVG3(L[y - 2 * x - 1], L[y - 2 * x - 2], L[y - 2 * x - 3]);
+                p[y * 8 + x] = v;
+            }
+        }
+        break;
+    case 6:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                const int z = 2 * y - x;
+                const int i = y - (x >> 1);
+                uint8_t v;
+                if (z >= 0 && !(z & 1)) v = AVG2(L[i - 1], L[i]);
+                else if (z >= 0) v = AVG3(L[i - 2], L[i - 1], L[i]);
+                else if (z == -1) v = AVG3(L[0], L[-1], T[0]);
+                else v = AVG3(T[x - 2 * y - 1], T[x - 2 * y - 2], T[x - 2 * y - 3]);
+                p[y * 8 + x] = v;
+            }
+        }
+        break;
+    case 7:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                const int i = x + (y >> 1);
+                p[y * 8 + x] = (y & 1) ? AVG3(T[i], T[i + 1], T[i + 2]) : AVG2(T[i], T[i + 1]);
+            }
+        }
+        break;
+    default:
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                const int z = x + 2 * y;
+                const int i = y + (x >> 1);
+                uint8_t v;
+                if (z > 13) v = L[7];
+                else if (z == 13) v = (uint8_t)((L[6] + 3 * L[7] + 2) >> 2);
+                else if (z & 1) v = AVG3(L[i], L[i + 1], L[i + 2]);
+                else v = AVG2(L[i], L[i + 1]);
+                p[y * 8 + x] = v;
+            }
+        }
+        break;
+    }
+    for (int y = 0; y < 8; y++) memcpy(dst + y * stride, p + y * 8, 8);
+}

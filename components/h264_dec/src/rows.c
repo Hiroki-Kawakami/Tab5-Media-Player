@@ -44,6 +44,31 @@ static int8_t slots_pop(slot_queue_t *q) {
     return slot;
 }
 
+void h264_store_col_row(struct h264_dec *dec, const rowbuf_t *row, uint8_t *col, uint32_t mb_y) {
+    const int blocks = dec->col_blocks;
+    colblk_t *out = (colblk_t *)col + (size_t)mb_y * dec->mb_w * blocks;
+    for (uint32_t x = 0; x < dec->mb_w; x++, out += blocks) {
+        const mbinfo_t *m = mb_at(row, x, dec->mb_stride);
+        const bool inter = m->kind == MB_INTER || m->kind == MB_SKIP;
+        for (int b = 0; b < blocks; b++) {
+            const int r = blocks == 4 ? h264_col_corner[b] : b;
+            const int blk8 = ((r >> 3) << 1) | ((r & 3) >> 1);
+            if (!inter) {
+                out[b].mv[0] = out[b].mv[1] = 0;
+                out[b].ref = -1;
+                out[b].pic = NO_PIC;
+                continue;
+            }
+            const int list = m->m[0].ref[blk8] >= 0 ? 0 : 1;
+            const mbmotion_t *mm = &m->m[list];
+            out[b].mv[0] = mm->mv[r][0];
+            out[b].mv[1] = mm->mv[r][1];
+            out[b].ref = mm->ref[blk8];
+            out[b].pic = mm->refpic[blk8];
+        }
+    }
+}
+
 static void flush_row(struct h264_dec *dec, const rowbuf_t *row, uint8_t *frame, uint32_t mb_y) {
     {
         PROF_START(dec);
@@ -91,10 +116,12 @@ static void process_job(struct h264_dec *dec, const row_job_t *job) {
         memcpy(prev->u + 7 * cs, cur->u - cs, cw);
         memcpy(prev->v + 7 * cs, cur->v - cs, cw);
         flush_row(dec, prev, job->frame, job->mb_y - 1u);
+        if (job->col) h264_store_col_row(dec, prev, job->col, job->mb_y - 1u);
         release_slot(dec, job->prev);
     }
     if (job->last) {
         flush_row(dec, cur, job->frame, job->mb_y);
+        if (job->col) h264_store_col_row(dec, cur, job->col, job->mb_y);
         release_slot(dec, job->slot);
         if (dec->threaded) dec->config.threads->sem_give(dec->config.threads->ctx, dec->sem_done);
     }
@@ -228,6 +255,7 @@ void h264_row_done(struct h264_dec *dec, uint32_t mb_y) {
     }
     const row_job_t job = {
         .frame = dec->cur->data,
+        .col = dec->col_blocks && dec->first_slice.nal_ref_idc ? dec->cur->col : NULL,
         .mb_y = (uint16_t)mb_y,
         .slot = dec->cur_slot,
         .prev = dec->above_slot,

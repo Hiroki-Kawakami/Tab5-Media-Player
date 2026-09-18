@@ -16,7 +16,8 @@ public:
     void close() override;
 
     DecodeResult decode(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
-                        void *ctx, bool present, VideoFrame *frame, std::string *error) override;
+                        void *ctx, bool present, int64_t due_us, VideoFrame *frame,
+                        std::string *error) override;
     bool draw(VideoFrame *frame, const RenderTarget &target, std::string *error) override;
     void drop(VideoFrame *frame) override;
     void discard() override;

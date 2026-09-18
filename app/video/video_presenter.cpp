@@ -264,7 +264,7 @@ static void draw(const Job &job) {
     std::string failure;
     VideoFrame frame;
     const DecodeResult result = s_renderer->decode(job.data, job.len, job.release, job.ctx,
-                                                   job.present, &frame, &failure);
+                                                   job.present, job.due_us, &frame, &failure);
     if (result == DecodeResult::Failed) {
         set_error(failure);
         return;
@@ -381,6 +381,14 @@ static void push_ready(const Ready &ready) {
     xSemaphoreGive(s_wake);
 }
 
+static void take_ready() {
+    Ready ready = {};
+    while (s_renderer->take(&ready.frame, &ready.due_us)) {
+        push_ready(ready);
+        ready = {};
+    }
+}
+
 static void decoder(void *) {
     int64_t rested_us = esp_timer_get_time();
     while (s_running.load()) {
@@ -399,17 +407,22 @@ static void decoder(void *) {
         xSemaphoreTake(s_decode_idle, portMAX_DELAY);
         if (!s_running.load() || s_flushing.load() || !s_renderer) {
             release_job(job);
+        } else if (!job.data) {
+            s_renderer->drain();
+            take_ready();
         } else {
             std::string failure;
             Ready ready = {};
             ready.due_us = job.due_us;
             const DecodeResult result = s_renderer->decode(job.data, job.len, job.release, job.ctx,
-                                                           job.present, &ready.frame, &failure);
+                                                           job.present, job.due_us, &ready.frame,
+                                                           &failure);
             if (result == DecodeResult::Failed) {
                 set_error(failure);
             } else if (result == DecodeResult::Ready) {
                 push_ready(ready);
             }
+            take_ready();
         }
         xSemaphoreGive(s_decode_idle);
     }
@@ -579,6 +592,13 @@ static void drain_ready() {
     while (xQueueReceive(s_ready, &ready, 0) == pdTRUE) {
         if (s_renderer) s_renderer->drop(&ready.frame);
     }
+}
+
+void video_presenter_drain() {
+    if (!s_running.load() || !s_decode_queue || !s_pipelined.load()) return;
+    Job job = {};
+    if (xQueueSend(s_decode_queue, &job, pdMS_TO_TICKS(kSubmitTimeoutMs)) != pdTRUE) return;
+    xSemaphoreGive(s_wake);
 }
 
 void video_presenter_flush() {

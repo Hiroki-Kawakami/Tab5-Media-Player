@@ -23,6 +23,7 @@ bool video_presenter_submit(const uint8_t *data, std::size_t len,
                             VideoPresenterRelease release, void *ctx, bool present,
                             int64_t due_us);
 void video_presenter_flush();
+void video_presenter_drain();
 
 void video_presenter_set_overlay(lv_display_t *overlay);
 void video_presenter_set_rotation(bsp_rotation_t rotation);

@@ -30,7 +30,46 @@ void h264_idct4x4_add(uint8_t *dst, ptrdiff_t stride, int16_t *block) {
     }
 }
 
-void h264_luma_dc_dequant(int16_t *dc, int qp) {
+static void idct8_pass(int32_t *d, int step) {
+    const int32_t a0 = d[0] + d[4 * step];
+    const int32_t a2 = d[0] - d[4 * step];
+    const int32_t a4 = (d[2 * step] >> 1) - d[6 * step];
+    const int32_t a6 = (d[6 * step] >> 1) + d[2 * step];
+    const int32_t b0 = a0 + a6;
+    const int32_t b2 = a2 + a4;
+    const int32_t b4 = a2 - a4;
+    const int32_t b6 = a0 - a6;
+    const int32_t a1 = -d[3 * step] + d[5 * step] - d[7 * step] - (d[7 * step] >> 1);
+    const int32_t a3 = d[step] + d[7 * step] - d[3 * step] - (d[3 * step] >> 1);
+    const int32_t a5 = -d[step] + d[7 * step] + d[5 * step] + (d[5 * step] >> 1);
+    const int32_t a7 = d[3 * step] + d[5 * step] + d[step] + (d[step] >> 1);
+    const int32_t b1 = (a7 >> 2) + a1;
+    const int32_t b3 = a3 + (a5 >> 2);
+    const int32_t b5 = (a3 >> 2) - a5;
+    const int32_t b7 = a7 - (a1 >> 2);
+    d[0] = b0 + b7;
+    d[7 * step] = b0 - b7;
+    d[step] = b2 + b5;
+    d[6 * step] = b2 - b5;
+    d[2 * step] = b4 + b3;
+    d[5 * step] = b4 - b3;
+    d[3 * step] = b6 + b1;
+    d[4 * step] = b6 - b1;
+}
+
+void h264_idct8x8_add(uint8_t *dst, ptrdiff_t stride, const int16_t *block) {
+    int32_t tmp[64];
+    for (int i = 0; i < 64; i++) tmp[i] = block[i];
+    for (int y = 0; y < 8; y++) idct8_pass(tmp + y * 8, 1);
+    for (int x = 0; x < 8; x++) idct8_pass(tmp + x, 8);
+    for (int y = 0; y < 8; y++) {
+        uint8_t *out = dst + y * stride;
+        const int32_t *row = tmp + y * 8;
+        for (int x = 0; x < 8; x++) out[x] = clip_u8(out[x] + ((row[x] + 32) >> 6));
+    }
+}
+
+void h264_luma_dc_dequant(int16_t *dc, int qp, int scale) {
     int tmp[16];
     for (int i = 0; i < 4; i++) {
         const int a = dc[i * 4 + 0], b = dc[i * 4 + 1], c = dc[i * 4 + 2], d = dc[i * 4 + 3];
@@ -39,7 +78,6 @@ void h264_luma_dc_dequant(int16_t *dc, int qp) {
         tmp[i * 4 + 2] = a - b - c + d;
         tmp[i * 4 + 3] = a - b + c - d;
     }
-    const int scale = 16 * h264_dequant4[qp % 6][0];
     const int q6 = qp / 6;
     for (int j = 0; j < 4; j++) {
         const int a = tmp[j], b = tmp[4 + j], c = tmp[8 + j], d = tmp[12 + j];
@@ -53,10 +91,9 @@ void h264_luma_dc_dequant(int16_t *dc, int qp) {
     }
 }
 
-void h264_chroma_dc_dequant(int16_t *dc, int qp) {
+void h264_chroma_dc_dequant(int16_t *dc, int qp, int scale) {
     const int a = dc[0], b = dc[1], c = dc[2], d = dc[3];
     const int f[4] = { a + b + c + d, a - b + c - d, a + b - c - d, a - b - c + d };
-    const int scale = 16 * h264_dequant4[qp % 6][0];
     const int q6 = qp / 6;
     for (int i = 0; i < 4; i++) dc[i] = (int16_t)(((f[i] * scale) * (1 << q6)) >> 5);
 }

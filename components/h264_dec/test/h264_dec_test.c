@@ -129,6 +129,23 @@ static void write_picture(FILE *out, const h264_dec_picture_t *pic, uint8_t *pla
     }
 }
 
+static void emit(h264_dec_t *dec, FILE *out, uint8_t *plane, bool hash, bool verbose, int *frames,
+                 int *errors) {
+    h264_dec_picture_t pic;
+    while (h264_dec_output(dec, &pic)) {
+        if (verbose) fprintf(stderr, "out frame %d tag %lld\n", *frames, (long long)pic.tag);
+        if (out) write_picture(out, &pic, plane);
+        if (hash) {
+            uint32_t h = 2166136261u;
+            for (size_t i = 0; i < pic.packed_bytes; i++) h = (h ^ pic.packed[i]) * 16777619u;
+            printf("[H264V] f=%d h=%08x\n", *frames, h);
+        }
+        if (pic.concealed) (*errors)++;
+        h264_dec_release(dec, pic.id);
+        (*frames)++;
+    }
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: %s input.h264 [output.yuv]\n", argv[0]);
@@ -185,30 +202,20 @@ restart:;
             boundary = first_slice_of_picture(nal, end) || (type >= 6 && type <= 9);
         }
         if (boundary && au < p) {
-            h264_dec_picture_t pic;
-            const h264_dec_result_t r = h264_dec_decode(dec, au, (size_t)(p - au), 0, &pic);
+            const h264_dec_result_t r = h264_dec_decode(dec, au, (size_t)(p - au), 0, aus);
             if (verbose) {
                 const char *e = h264_dec_error(dec);
                 fprintf(stderr, "au %d bytes %d result %d%s%s\n", aus, (int)(p - au), (int)r,
                         e ? " " : "", e ? e : "");
             }
             aus++;
-            if (r == H264_DEC_OK) {
-                if (out) write_picture(out, &pic, plane);
-                if (hash) {
-                    uint32_t h = 2166136261u;
-                    for (size_t i = 0; i < pic.packed_bytes; i++) h = (h ^ pic.packed[i]) * 16777619u;
-                    printf("[H264V] f=%d h=%08x\n", frames, h);
-                }
-                if (pic.concealed) errors++;
-                h264_dec_release(dec, pic.id);
-                frames++;
-            } else if (r != H264_DEC_NO_PICTURE) {
+            if (r != H264_DEC_OK && r != H264_DEC_NO_PICTURE) {
                 const char *e = h264_dec_error(dec);
                 fprintf(stderr, "frame %d: result %d %s\n", frames, (int)r, e ? e : "");
                 errors++;
                 if (r == H264_DEC_UNSUPPORTED) break;
             }
+            emit(dec, out, plane, hash, verbose, &frames, &errors);
             au = p;
             au_has_vcl = false;
         }
@@ -217,6 +224,8 @@ restart:;
         if (type == 1 || type == 5) au_has_vcl = true;
         p = next_start(nal, end);
     }
+    h264_dec_drain(dec);
+    emit(dec, out, plane, hash, verbose, &frames, &errors);
     if (--loops > 0) {
         h264_dec_flush(dec);
         goto restart;

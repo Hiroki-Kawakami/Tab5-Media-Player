@@ -51,7 +51,7 @@ void h264_window_fill(struct h264_dec *dec) {
 
 void h264_window_advance(struct h264_dec *dec, uint32_t mb_y) {
     if (!dec->win_y || dec->win_disabled) return;
-    const frame_t *f = dec->ref_count ? dec->ref_list[0] : NULL;
+    const frame_t *f = dec->ref_count[0] ? dec->ref_list[0][0] : NULL;
     if (!f || f->non_existing || (dec->win_frame && f != dec->win_frame)) {
         h264_window_wait(dec, dec->win_target);
         dec->win_disabled = true;
@@ -202,6 +202,45 @@ static void interpolate(struct h264_dec *dec, const uint8_t *r0, ptrdiff_t ss, i
         }
         h264_k_avg_u8(pb, pa, dst, h, 16, 16, stride);
         break;
+    }
+}
+
+void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int w, int h, int weight, int offset,
+                       int denom) {
+    if (denom == 0) {
+        for (int y = 0; y < h; y++, dst += stride) {
+            for (int x = 0; x < w; x++) dst[x] = clip_u8(dst[x] * weight + offset);
+        }
+        return;
+    }
+    const int round = 1 << (denom - 1);
+    for (int y = 0; y < h; y++, dst += stride) {
+        for (int x = 0; x < w; x++) {
+            dst[x] = clip_u8(((dst[x] * weight + round) >> denom) + offset);
+        }
+    }
+}
+
+void h264_avg_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                    ptrdiff_t src_stride, int w, int h) {
+    if (w == 16) {
+        h264_k_avg_u8(a, b, dst, h, src_stride, src_stride, stride);
+        return;
+    }
+    for (int y = 0; y < h; y++, a += src_stride, b += src_stride, dst += stride) {
+        for (int x = 0; x < w; x++) dst[x] = (uint8_t)((a[x] + b[x] + 1) >> 1);
+    }
+}
+
+void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
+                          ptrdiff_t src_stride, int w, int h, int w0, int w1, int offset,
+                          int denom) {
+    const int round = 1 << denom;
+    const int shift = denom + 1;
+    for (int y = 0; y < h; y++, a += src_stride, b += src_stride, dst += stride) {
+        for (int x = 0; x < w; x++) {
+            dst[x] = clip_u8(((a[x] * w0 + b[x] * w1 + round) >> shift) + offset);
+        }
     }
 }
 

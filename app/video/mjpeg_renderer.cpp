@@ -93,7 +93,8 @@ void MjpegRenderer::drop(VideoFrame *frame) {
 
 DecodeResult MjpegRenderer::decode(const uint8_t *data, std::size_t len,
                                    VideoPresenterRelease release, void *ctx, bool present,
-                                   VideoFrame *frame, std::string *error) {
+                                   int64_t due_us, VideoFrame *frame, std::string *error) {
+    (void)due_us;
     VideoFrame packet;
     packet.data = data;
     packet.len = len;

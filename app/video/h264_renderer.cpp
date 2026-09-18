@@ -12,7 +12,8 @@ static const char *TAG = "h264_renderer";
 
 static constexpr uint32_t kMaxMacroblocks = 3600;
 static constexpr uint32_t kMaxSide = 1280;
-static constexpr uint8_t kHeldPictures = 2;
+static constexpr uint8_t kHeldPictures = 4;
+static constexpr std::size_t kFrameBudgetBytes = 14 * 1024 * 1024;
 static constexpr std::size_t kFrameAlignment = 64;
 
 static void *alloc_psram(void *, std::size_t bytes) {
@@ -80,6 +81,7 @@ bool H264Renderer::open(const SharedSram &sram, bsp_pixel_format_t format, const
     config.max_mbs = kMaxMacroblocks;
     config.max_side = kMaxSide;
     config.held_pictures = kHeldPictures;
+    config.frame_budget_bytes = kFrameBudgetBytes;
     config.threads = h264_threads();
     decoder_ = h264_dec_create(&config);
     if (!decoder_) {
@@ -88,8 +90,7 @@ bool H264Renderer::open(const SharedSram &sram, bsp_pixel_format_t format, const
     }
     nal_length_size_ = track.nal_length_size;
     if (!track.codec_private.empty()) {
-        h264_dec_picture_t unused = {};
-        h264_dec_decode(decoder_, track.codec_private.data(), track.codec_private.size(), 0, &unused);
+        h264_dec_decode(decoder_, track.codec_private.data(), track.codec_private.size(), 0, 0);
     }
 
     ppa_client_config_t client = {};
@@ -120,16 +121,16 @@ void H264Renderer::close() {
 
 DecodeResult H264Renderer::decode(const uint8_t *data, std::size_t len,
                                   VideoPresenterRelease release, void *ctx, bool present,
-                                  VideoFrame *frame, std::string *error) {
-    h264_dec_picture_t picture = {};
+                                  int64_t due_us, VideoFrame *frame, std::string *error) {
+    (void)frame;
+    const int64_t tag = present ? due_us : kHiddenTag;
     const h264_dec_result_t result = decoder_
-        ? h264_dec_decode(decoder_, data, len, nal_length_size_, &picture)
+        ? h264_dec_decode(decoder_, data, len, nal_length_size_, tag)
         : H264_DEC_UNSUPPORTED;
     if (release) release(ctx);
 
     switch (result) {
     case H264_DEC_OK:
-        break;
     case H264_DEC_NO_PICTURE:
     case H264_DEC_BAD_DATA:
         return DecodeResult::Hidden;
@@ -137,24 +138,37 @@ DecodeResult H264Renderer::decode(const uint8_t *data, std::size_t len,
         *error = decoder_ ? describe(decoder_, result) : "video decoder is not open";
         return DecodeResult::Failed;
     }
+}
 
-    if (!reported_) {
-        reported_ = true;
-        const h264_dec_stream_info_t &info = picture.info;
-        ESP_LOGI(TAG, "%ux%u (coded %ux%u) profile %u level %u refs %u %s range %s",
-                 info.width, info.height, info.coded_width, info.coded_height, info.profile_idc,
-                 info.level_idc, info.max_ref_frames, info.full_range ? "full" : "limited",
-                 uses_bt709(info) ? "BT.709" : "BT.601");
+bool H264Renderer::take(VideoFrame *frame, int64_t *due_us) {
+    if (!decoder_) return false;
+    h264_dec_picture_t picture = {};
+    while (h264_dec_output(decoder_, &picture)) {
+        if (!reported_) {
+            reported_ = true;
+            const h264_dec_stream_info_t &info = picture.info;
+            ESP_LOGI(TAG, "%ux%u (coded %ux%u) profile %u level %u refs %u %s range %s",
+                     info.width, info.height, info.coded_width, info.coded_height,
+                     info.profile_idc, info.level_idc, info.max_ref_frames,
+                     info.full_range ? "full" : "limited",
+                     uses_bt709(info) ? "BT.709" : "BT.601");
+        }
+        if (picture.tag == kHiddenTag || picture.id >= kPictureSlots) {
+            h264_dec_release(decoder_, picture.id);
+            continue;
+        }
+        pictures_[picture.id] = picture;
+        *frame = {};
+        frame->id = picture.id;
+        frame->size = { picture.info.width, picture.info.height };
+        *due_us = picture.tag;
+        return true;
     }
-    if (!present || picture.id >= kPictureSlots) {
-        h264_dec_release(decoder_, picture.id);
-        return DecodeResult::Hidden;
-    }
-    pictures_[picture.id] = picture;
-    *frame = {};
-    frame->id = picture.id;
-    frame->size = { picture.info.width, picture.info.height };
-    return DecodeResult::Ready;
+    return false;
+}
+
+void H264Renderer::drain() {
+    if (decoder_) h264_dec_drain(decoder_);
 }
 
 bool H264Renderer::draw(VideoFrame *frame, const RenderTarget &target, std::string *error) {

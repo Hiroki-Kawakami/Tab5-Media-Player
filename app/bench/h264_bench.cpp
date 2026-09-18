@@ -135,10 +135,11 @@ static void run_show(BenchArgs *args, const uint8_t *clip, const std::vector<Acc
             VideoFrame frame;
             const int64_t t0 = esp_timer_get_time();
             const DecodeResult r = renderer.decode(clip + au.offset, au.len, nullptr, nullptr, true,
-                                                   &frame, &error);
+                                                   0, &frame, &error);
+            int64_t due = 0;
             const int64_t t1 = esp_timer_get_time();
             decode_us += t1 - t0;
-            if (r != DecodeResult::Ready) continue;
+            if (r == DecodeResult::Failed || !renderer.take(&frame, &due)) continue;
             const int next = (fb + 1) % 3;
             RenderTarget target;
             if (!fit(frame.size, next, &target)) {
@@ -250,24 +251,37 @@ static void run(BenchArgs *args) {
             uint64_t profile[H264_PROF_COUNT];
             h264_dec_take_profile(dec, profile);
             for (const AccessUnit &au : units) {
-                h264_dec_picture_t pic = {};
                 const uint32_t c0 = cycles_now();
                 const int64_t t0 = esp_timer_get_time();
-                const h264_dec_result_t r = h264_dec_decode(dec, clip + au.offset, au.len, 0, &pic);
+                const h264_dec_result_t r = h264_dec_decode(dec, clip + au.offset, au.len, 0, 0);
                 const int64_t t1 = esp_timer_get_time();
                 total_cycles += (uint32_t)(cycles_now() - c0);
                 total_us += t1 - t0;
                 if (t1 - t0 > worst_us) worst_us = t1 - t0;
-                if (r != H264_DEC_OK) {
-                    if (r != H264_DEC_NO_PICTURE) errors++;
-                    continue;
+                if (r != H264_DEC_OK && r != H264_DEC_NO_PICTURE) errors++;
+                h264_dec_picture_t pic = {};
+                while (h264_dec_output(dec, &pic)) {
+                    if (pic.concealed) errors++;
+                    if (args->hash && loop == 0) {
+                        printf("[H264V] f=%d h=%08" PRIx32 "\n", frames,
+                               fnv1a(pic.packed, pic.packed_bytes));
+                    }
+                    h264_dec_release(dec, pic.id);
+                    frames++;
                 }
-                if (pic.concealed) errors++;
-                if (args->hash && loop == 0) {
-                    printf("[H264V] f=%d h=%08" PRIx32 "\n", frames, fnv1a(pic.packed, pic.packed_bytes));
+            }
+            h264_dec_drain(dec);
+            {
+                h264_dec_picture_t pic = {};
+                while (h264_dec_output(dec, &pic)) {
+                    if (pic.concealed) errors++;
+                    if (args->hash && loop == 0) {
+                        printf("[H264V] f=%d h=%08" PRIx32 "\n", frames,
+                               fnv1a(pic.packed, pic.packed_bytes));
+                    }
+                    h264_dec_release(dec, pic.id);
+                    frames++;
                 }
-                h264_dec_release(dec, pic.id);
-                frames++;
             }
             const double ms = frames ? total_us / 1000.0 / frames : 0;
             ESP_LOGI(TAG, "loop %d: %d frames %d errors, %.2f ms/frame (worst %.2f), %.1f fps, %.2f Mcyc/frame",

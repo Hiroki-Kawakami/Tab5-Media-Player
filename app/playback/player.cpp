@@ -30,6 +30,7 @@ static constexpr int kKeyframeSkipIntervals = 5;
 static constexpr int kBacklogSkipIntervals = 3;
 static constexpr int64_t kDecodeLeadUs = 120000;
 static constexpr int64_t kLateRefreshUs = 200000;
+static constexpr int kMaxReorderFrames = 16;
 
 enum class Command {
     Open,
@@ -98,6 +99,8 @@ static int64_t s_shown_us;
 static int64_t s_next_us;
 static int64_t s_duration_us;
 static int64_t s_interval_us;
+static int64_t s_reorder_lead_us;
+static int64_t s_max_pts_us;
 
 static bool s_want_poster;
 static bool s_have_pending;
@@ -294,7 +297,7 @@ static void submit(int slot, bool present, int64_t due_us) {
 static void show(int slot, int64_t due_us = 0) {
     s_last_show_us = esp_timer_get_time();
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_shown_us = s_video[slot].pts_us;
+    if (s_video[slot].pts_us > s_shown_us || !s_reorder_lead_us) s_shown_us = s_video[slot].pts_us;
     s_next_us = s_video[slot].pts_us + s_interval_us;
     xSemaphoreGive(s_lock);
     submit(slot, true, due_us);
@@ -324,6 +327,8 @@ static void reset_timeline() {
     s_interval_us = 0;
     s_shown_us = 0;
     s_next_us = 0;
+    s_reorder_lead_us = 0;
+    s_max_pts_us = INT64_MIN;
     xSemaphoreGive(s_lock);
 }
 
@@ -405,6 +410,7 @@ static bool rewind_to(int64_t position_us) {
     }
     audio_out_flush();
     s_skip_to_keyframe = false;
+    s_max_pts_us = INT64_MIN;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_shown_us = landed_us;
     s_next_us = landed_us;
@@ -481,7 +487,10 @@ static void step_poster() {
     int slot = -1;
     if (xQueueReceive(s_video_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) return;
     slot_acquire(slot);
-    if (!before(s_video[slot].pts_us, s_next_us)) show(slot);
+    if (!before(s_video[slot].pts_us, s_next_us)) {
+        show(slot);
+        video_presenter_drain();
+    }
     slot_release(slot);
 }
 
@@ -489,7 +498,8 @@ static void step_playing() {
     if (!s_have_pending) {
         const bool drained = s_reader_eof;
         if (xQueueReceive(s_video_ready, &s_pending_slot, pdMS_TO_TICKS(20)) != pdTRUE) {
-            if (!s_loop && (drained || s_next_us >= s_duration_us)) {
+            if (!s_loop && drained) {
+                video_presenter_drain();
                 audio_stop();
                 set_state(PlayerState::Finished);
             }
@@ -500,6 +510,11 @@ static void step_playing() {
     }
 
     const int64_t pts = s_video[s_pending_slot].pts_us;
+    if (pts > s_max_pts_us) {
+        s_max_pts_us = pts;
+    } else if (s_max_pts_us - pts > s_reorder_lead_us) {
+        s_reorder_lead_us = std::min(s_max_pts_us - pts, s_interval_us * kMaxReorderFrames);
+    }
     if (before(pts, s_origin_pts_us)) {
         if (!s_loop) {
             s_have_pending = false;
@@ -525,8 +540,9 @@ static void step_playing() {
         return;
     }
     const int64_t lead = video_presenter_pipelined() ? kDecodeLeadUs : 0;
-    if (now < due - lead) {
-        const TickType_t ticks = pdMS_TO_TICKS((due - lead - now) / 1000);
+    const int64_t decode_due = due - s_reorder_lead_us;
+    if (now < decode_due - lead) {
+        const TickType_t ticks = pdMS_TO_TICKS((decode_due - lead - now) / 1000);
         vTaskDelay(ticks ? ticks : 1);
         return;
     }
@@ -559,10 +575,6 @@ static void step_playing() {
 
     show(slot, due_at);
     slot_release(slot);
-    if (last && !s_loop) {
-        audio_stop();
-        set_state(PlayerState::Finished);
-    }
 }
 
 static void player_task(void *) {

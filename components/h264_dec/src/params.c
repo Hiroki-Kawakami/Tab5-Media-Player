@@ -6,7 +6,7 @@
 #include "h264_internal.h"
 
 static const char *kUnsupportedProfile =
-    "unsupported H.264 stream (re-encode with -profile:v baseline)";
+    "unsupported H.264 profile (Baseline, Main and High only)";
 
 static bool is_high_profile(uint8_t profile) {
     switch (profile) {
@@ -18,13 +18,47 @@ static bool is_high_profile(uint8_t profile) {
     }
 }
 
-static void skip_scaling_list(bits_t *b, int size) {
+static void read_scaling_list(bits_t *b, uint8_t *out, int size, const uint8_t *def) {
+    const uint8_t *scan = size == 16 ? h264_zigzag4x4 : h264_zigzag8x8;
     int last = 8;
     int next = 8;
-    for (int i = 0; i < size && next && !bits_overrun(b); i++) {
-        next = (last + bits_se(b) + 256) % 256;
-        last = next ? next : last;
+    uint8_t values[64];
+    for (int i = 0; i < size; i++) {
+        if (next && !bits_overrun(b)) {
+            next = (last + bits_se(b) + 256) % 256;
+            if (i == 0 && !next) {
+                memcpy(out, def, (size_t)size);
+                return;
+            }
+            last = next ? next : last;
+        }
+        values[i] = (uint8_t)last;
     }
+    for (int i = 0; i < size; i++) out[scan[i]] = values[i];
+}
+
+static void scaling_lists(bits_t *b, uint8_t scaling4[6][16], uint8_t scaling8[2][64], int count,
+                          bool pps_fallback) {
+    for (int i = 0; i < count; i++) {
+        uint8_t *dst = i < 6 ? scaling4[i] : scaling8[i - 6];
+        const int size = i < 6 ? 16 : 64;
+        const uint8_t *def = i < 6 ? h264_default_scaling4[i < 3 ? 0 : 1]
+                                   : h264_default_scaling8[(i - 6) & 1];
+        if (bits_u1(b)) {
+            read_scaling_list(b, dst, size, def);
+            continue;
+        }
+        if (i == 0 || i == 3 || i >= 6) {
+            if (!pps_fallback) memcpy(dst, def, (size_t)size);
+        } else {
+            memcpy(dst, scaling4[i - 1], 16);
+        }
+    }
+}
+
+static void flat_scaling(uint8_t scaling4[6][16], uint8_t scaling8[2][64]) {
+    memset(scaling4, 16, 6 * 16);
+    memset(scaling8, 16, 2 * 64);
 }
 
 static void skip_hrd(bits_t *b) {
@@ -64,7 +98,17 @@ static void parse_vui(bits_t *b, sps_t *sps) {
     bits_skip(b, 1);
     if (bits_u1(b)) {
         bits_skip(b, 1);
-        for (int i = 0; i < 6; i++) bits_ue(b);
+        bits_ue(b);
+        bits_ue(b);
+        bits_ue(b);
+        bits_ue(b);
+        const uint32_t reorder = bits_ue(b);
+        const uint32_t buffering = bits_ue(b);
+        if (reorder <= MAX_REFS && buffering <= MAX_REFS && reorder <= buffering) {
+            sps->has_bitstream_restriction = true;
+            sps->num_reorder_frames = (uint8_t)reorder;
+            sps->max_dec_frame_buffering = (uint8_t)buffering;
+        }
     }
 }
 
@@ -78,6 +122,7 @@ bool h264_parse_sps_standalone(bits_t *b, sps_t *out, uint8_t *id) {
     const uint32_t sps_id = bits_ue(b);
     if (sps_id >= MAX_SPS) return false;
 
+    flat_scaling(sps.scaling4, sps.scaling8);
     if (is_high_profile(sps.profile_idc)) {
         const uint32_t chroma_format = bits_ue(b);
         if (chroma_format == 3) bits_skip(b, 1);
@@ -88,11 +133,8 @@ bool h264_parse_sps_standalone(bits_t *b, sps_t *out, uint8_t *id) {
         if (chroma_format != 1) sps.unsupported = "unsupported H.264 chroma format (4:2:0 only)";
         if (luma_depth || chroma_depth) sps.unsupported = "unsupported H.264 bit depth (8-bit only)";
         if (scaling) {
-            sps.unsupported = kUnsupportedProfile;
-            const int lists = chroma_format != 3 ? 8 : 12;
-            for (int i = 0; i < lists; i++) {
-                if (bits_u1(b)) skip_scaling_list(b, i < 6 ? 16 : 64);
-            }
+            sps.has_scaling = true;
+            scaling_lists(b, sps.scaling4, sps.scaling8, chroma_format != 3 ? 8 : 12, false);
         }
     }
 
@@ -108,11 +150,15 @@ bool h264_parse_sps_standalone(bits_t *b, sps_t *out, uint8_t *id) {
         sps.log2_max_poc_lsb = (uint8_t)log2_max_poc;
     } else if (poc_type == 1) {
         sps.delta_pic_order_always_zero = bits_u1(b);
-        bits_se(b);
-        bits_se(b);
+        sps.offset_for_non_ref_pic = bits_se(b);
+        sps.offset_for_top_to_bottom = bits_se(b);
         const uint32_t cycle = bits_ue(b);
-        if (cycle > 255) return false;
-        for (uint32_t i = 0; i < cycle && !bits_overrun(b); i++) bits_se(b);
+        if (cycle >= MAX_POC_CYCLE) return false;
+        sps.poc_cycle_length = (uint16_t)cycle;
+        for (uint32_t i = 0; i < cycle && !bits_overrun(b); i++) {
+            sps.offset_for_ref_frame[i] = bits_se(b);
+            sps.poc_cycle_sum += sps.offset_for_ref_frame[i];
+        }
     }
     const uint32_t refs = bits_ue(b);
     if (refs > MAX_REFS) return false;
@@ -122,7 +168,7 @@ bool h264_parse_sps_standalone(bits_t *b, sps_t *out, uint8_t *id) {
     const uint32_t map_h = bits_ue(b) + 1;
     const bool frame_mbs_only = bits_u1(b);
     if (!frame_mbs_only) bits_skip(b, 1);
-    bits_skip(b, 1);
+    sps.direct_8x8_inference = bits_u1(b);
     if (mb_w > 1024 || map_h > 1024) return false;
     sps.mb_width = (uint16_t)mb_w;
     sps.mb_height = (uint16_t)(frame_mbs_only ? map_h : map_h * 2);
@@ -165,7 +211,7 @@ bool h264_parse_pps(struct h264_dec *dec, bits_t *b) {
     const uint32_t sps_id = bits_ue(b);
     if (pps_id >= MAX_PPS || sps_id >= MAX_SPS) return false;
     pps.sps_id = (uint8_t)sps_id;
-    if (bits_u1(b)) pps.unsupported = kUnsupportedProfile;
+    pps.cabac = bits_u1(b);
     pps.bottom_field_pic_order_present = bits_u1(b);
     const uint32_t groups = bits_ue(b) + 1;
     if (groups > 1) {
@@ -178,9 +224,9 @@ bool h264_parse_pps(struct h264_dec *dec, bits_t *b) {
     const uint32_t ref_l1 = bits_ue(b) + 1;
     if (ref_l0 > 32 || ref_l1 > 32) return false;
     pps.num_ref_idx_default = (uint8_t)ref_l0;
+    pps.num_ref_idx_l1_default = (uint8_t)ref_l1;
     pps.weighted_pred = bits_u1(b);
-    bits_skip(b, 2);
-    if (pps.weighted_pred && !pps.unsupported) pps.unsupported = kUnsupportedProfile;
+    pps.weighted_bipred_idc = (uint8_t)bits_u(b, 2);
     const int32_t qp = 26 + bits_se(b);
     bits_se(b);
     const int32_t cqp = bits_se(b);
@@ -191,17 +237,27 @@ bool h264_parse_pps(struct h264_dec *dec, bits_t *b) {
     pps.deblocking_control = bits_u1(b);
     pps.constrained_intra_pred = bits_u1(b);
     pps.redundant_pic_cnt_present = bits_u1(b);
+    const sps_t *sps = &dec->sps[sps_id];
+    if (sps->valid && sps->has_scaling) {
+        memcpy(pps.scaling4, sps->scaling4, sizeof(pps.scaling4));
+        memcpy(pps.scaling8, sps->scaling8, sizeof(pps.scaling8));
+        pps.has_scaling = true;
+    } else {
+        flat_scaling(pps.scaling4, pps.scaling8);
+    }
     if (bits_more_data(b)) {
-        const bool transform8x8 = bits_u1(b);
+        pps.transform_8x8_mode = bits_u1(b);
         const bool scaling = bits_u1(b);
-        if (transform8x8 || scaling) {
-            if (!pps.unsupported) pps.unsupported = kUnsupportedProfile;
-        }
         if (scaling) {
-            const int lists = 6 + (transform8x8 ? 2 : 0);
-            for (int i = 0; i < lists; i++) {
-                if (bits_u1(b)) skip_scaling_list(b, i < 6 ? 16 : 64);
+            pps.has_scaling = true;
+            if (!sps->valid || !sps->has_scaling) {
+                for (int i = 0; i < 6; i++) {
+                    memcpy(pps.scaling4[i], h264_default_scaling4[i < 3 ? 0 : 1], 16);
+                }
+                for (int i = 0; i < 2; i++) memcpy(pps.scaling8[i], h264_default_scaling8[i], 64);
             }
+            scaling_lists(b, pps.scaling4, pps.scaling8,
+                          6 + (pps.transform_8x8_mode ? 2 : 0), true);
         }
         const int32_t second = bits_se(b);
         if (second < -12 || second > 12) return false;
@@ -210,5 +266,28 @@ bool h264_parse_pps(struct h264_dec *dec, bits_t *b) {
     if (bits_overrun(b)) return false;
     pps.valid = true;
     dec->pps[pps_id] = pps;
+    dec->ls_pps = NULL;
     return true;
+}
+
+void h264_build_level_scales(struct h264_dec *dec) {
+    const pps_t *pps = dec->cur_pps;
+    if (dec->ls_pps == pps) return;
+    dec->ls_pps = pps;
+    for (int list = 0; list < 6; list++) {
+        for (int m = 0; m < 6; m++) {
+            int16_t *out = dec->ls4 + (list * 6 + m) * 16;
+            for (int i = 0; i < 16; i++) {
+                out[i] = (int16_t)(pps->scaling4[list][i] * h264_dequant4[m][i]);
+            }
+        }
+    }
+    for (int list = 0; list < 2; list++) {
+        for (int m = 0; m < 6; m++) {
+            int16_t *out = dec->ls8 + (list * 6 + m) * 64;
+            for (int i = 0; i < 64; i++) {
+                out[i] = (int16_t)(pps->scaling8[list][i] * h264_dequant8[m][i]);
+            }
+        }
+    }
 }

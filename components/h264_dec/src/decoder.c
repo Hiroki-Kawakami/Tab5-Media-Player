@@ -589,7 +589,7 @@ void h264_dec_drain(h264_dec_t *dec) {
 
 static h264_dec_result_t decode_packet(h264_dec_t *dec, const uint8_t *data, size_t len,
                                        uint8_t nal_length_size) {
-    h264_k_prepare();
+    vdec_k_prepare();
     h264_dec_result_t result = H264_DEC_NO_PICTURE;
     bool bad = false;
     nal_iter_t it;

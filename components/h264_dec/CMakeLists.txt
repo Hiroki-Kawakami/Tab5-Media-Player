@@ -14,7 +14,8 @@ idf_component_register(
         "src/slice.c"
         "src/tables.c"
         "src/transform.c"
-    INCLUDE_DIRS "include")
+    INCLUDE_DIRS "include"
+    REQUIRES vdec_common)
 
 if(IDF_TARGET STREQUAL "esp32p4")
     target_sources(${COMPONENT_LIB} PRIVATE "src/kernels_p4.S")

@@ -18,6 +18,7 @@ typedef enum {
     AVI_VIDEO_CODEC_NONE,
     AVI_VIDEO_CODEC_MJPEG,
     AVI_VIDEO_CODEC_H264,
+    AVI_VIDEO_CODEC_MPEG2,
     AVI_VIDEO_CODEC_UNSUPPORTED,
 } avi_video_codec_t;
 

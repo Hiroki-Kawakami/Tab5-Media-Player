@@ -357,8 +357,10 @@ static void use_video_track(mkv_demux_t *demux, const track_t *track) {
     if (!track->encoded) {
         if (strcmp(track->codec, "V_MJPEG") == 0) {
             codec = MKV_VIDEO_CODEC_MJPEG;
-        } else if (strcmp(track->codec, "V_MPEG4/ISO/AVC") == 0) {
-            codec = MKV_VIDEO_CODEC_H264;
+        } else if (strcmp(track->codec, "V_MPEG4/ISO/AVC") == 0 ||
+                   strcmp(track->codec, "V_MPEG2") == 0) {
+            codec = strcmp(track->codec, "V_MPEG2") == 0 ? MKV_VIDEO_CODEC_MPEG2
+                                                         : MKV_VIDEO_CODEC_H264;
             demux->video_private = copy_private(track->codec_private, track->codec_private_size);
             if (demux->video_private) {
                 demux->info.video.codec_private = demux->video_private;

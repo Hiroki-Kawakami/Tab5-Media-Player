@@ -4,9 +4,10 @@ project(h264_dec_test C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-file(GLOB DECODER_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../src/*.c)
+file(GLOB DECODER_SRCS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../src/*.c
+     ${CMAKE_CURRENT_SOURCE_DIR}/../../vdec_common/src/*.c)
 add_executable(h264_dec_test h264_dec_test.c ${DECODER_SRCS})
-target_include_directories(h264_dec_test PRIVATE ../include ../src)
+target_include_directories(h264_dec_test PRIVATE ../include ../src ../../vdec_common/include)
 target_compile_options(h264_dec_test PRIVATE -Wall -Wextra -O2 -g)
 
 option(H264_SANITIZE "Build with UBSan" OFF)

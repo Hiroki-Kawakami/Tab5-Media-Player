@@ -5,6 +5,7 @@
 
 #include "demuxer.hpp"
 #include "avi_demux.h"
+#include "mpeg2_dec.h"
 #include "esp_log.h"
 
 static const char *TAG = "avi_demuxer";
@@ -15,6 +16,7 @@ CodecId map_video(avi_video_codec_t codec) {
     switch (codec) {
     case AVI_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
     case AVI_VIDEO_CODEC_H264: return CodecId::H264;
+    case AVI_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
     case AVI_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -44,8 +46,11 @@ public:
 
 private:
     avi_demux_t *demux_ = nullptr;
+    int64_t video_pts_us(const avi_packet_t &packet);
+
     int64_t interval_us_ = 0;
     int64_t next_video_pts_us_ = 0;
+    int64_t gop_frame_ = -1;
 };
 
 bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
@@ -73,6 +78,10 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
         avi->video.codec_private_size) {
         ESP_LOGW(TAG, "ignoring %u bytes of unrecognised H.264 extradata",
                  (unsigned)avi->video.codec_private_size);
+    }
+    if (info_.video.codec == CodecId::Mpeg2) {
+        info_.video.codec_private.assign(avi->video.codec_private,
+                                         avi->video.codec_private + avi->video.codec_private_size);
     }
 
     info_.audio.codec = map_audio(avi->audio.codec);
@@ -104,6 +113,7 @@ void AviDemuxer::close() {
     info_ = {};
     interval_us_ = 0;
     next_video_pts_us_ = 0;
+    gop_frame_ = -1;
 }
 
 bool AviDemuxer::read(bool want_audio, Packet *out) {
@@ -113,8 +123,8 @@ bool AviDemuxer::read(bool want_audio, Packet *out) {
     if (!avi_demux_read(demux_, &packet, want_audio)) return false;
     if (packet.type == AVI_PACKET_VIDEO) {
         out->track = TrackType::Video;
-        out->pts_us = (int64_t)packet.frame_index * interval_us_;
-        next_video_pts_us_ = out->pts_us + interval_us_;
+        out->pts_us = video_pts_us(packet);
+        next_video_pts_us_ = (int64_t)(packet.frame_index + 1) * interval_us_;
     } else {
         out->track = TrackType::Audio;
         out->pts_us = next_video_pts_us_;
@@ -126,6 +136,16 @@ bool AviDemuxer::read(bool want_audio, Packet *out) {
     return true;
 }
 
+int64_t AviDemuxer::video_pts_us(const avi_packet_t &packet) {
+    const int64_t decode_order = (int64_t)packet.frame_index * interval_us_;
+    if (info_.video.codec != CodecId::Mpeg2) return decode_order;
+    mpeg2_dec_header_t header;
+    if (!mpeg2_dec_header(packet.data, packet.size, &header)) return decode_order;
+    if (header.gop) gop_frame_ = packet.frame_index;
+    if (gop_frame_ < 0) return decode_order;
+    return (gop_frame_ + header.temporal_reference) * interval_us_;
+}
+
 bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
     if (!demux_ || interval_us_ <= 0) return false;
     const uint32_t frame = (uint32_t)(pts_us > 0 ? pts_us / interval_us_ : 0);
@@ -135,6 +155,7 @@ bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
         return false;
     }
     next_video_pts_us_ = (int64_t)landed * interval_us_;
+    gop_frame_ = -1;
     if (landed_us) *landed_us = next_video_pts_us_;
     return true;
 }

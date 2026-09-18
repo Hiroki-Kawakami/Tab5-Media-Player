@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "vdec_threads.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,14 +42,7 @@ typedef enum {
     H264_DEC_NO_FRAME,
 } h264_dec_result_t;
 
-typedef struct {
-    void *(*sem_create)(void *ctx, uint32_t max, uint32_t initial);
-    void (*sem_delete)(void *ctx, void *sem);
-    void (*sem_take)(void *ctx, void *sem);
-    void (*sem_give)(void *ctx, void *sem);
-    bool (*spawn)(void *ctx, void (*entry)(void *arg), void *arg);
-    void *ctx;
-} h264_dec_threads_t;
+typedef vdec_threads_t h264_dec_threads_t;
 
 typedef struct {
     void *(*alloc)(void *ctx, size_t bytes);

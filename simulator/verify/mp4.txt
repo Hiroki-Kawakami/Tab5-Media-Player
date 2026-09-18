@@ -197,7 +197,7 @@ wait 800
 settle
 tap 100 60
 settle
-tap 360 560
+tap 360 640
 wait 1500
 capture mp4_not_mp4.jpg
 imu release

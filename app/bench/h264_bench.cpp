@@ -31,7 +31,7 @@
 #include "display_manager.hpp"
 #include "video/h264_renderer.hpp"
 #include "video/video_presenter.hpp"
-#include "video/h264_threads.hpp"
+#include "video/video_threads.hpp"
 
 static const char *TAG = "H264";
 
@@ -238,7 +238,8 @@ static void run(BenchArgs *args) {
     config.max_side = 1280;
     config.held_pictures = 2;
     config.clock = cycles_now;
-    config.threads = args->threads ? h264_threads() : nullptr;
+    static const vdec_threads_t threads = video_threads("h264_post");
+    config.threads = args->threads ? &threads : nullptr;
     h264_dec_t *dec = h264_dec_create(&config);
     if (!dec) {
         ESP_LOGE(TAG, "decoder create failed");
@@ -504,7 +505,7 @@ static void phase_a4(volatile uint8_t *rows0) {
     constexpr size_t kStride = 960;
     s_a4_stop.store(false);
     s_a4_region = rows0;
-    if (h264_create_task(a4_worker, "h264_a4", 2048, nullptr, 5, 1, nullptr) != pdPASS) {
+    if (video_create_task(a4_worker, "h264_a4", 2048, nullptr, 5, 1, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "a4: worker spawn failed");
         return;
     }
@@ -672,7 +673,7 @@ static void psram_bench_task(void *) {
 
 static bool psram_bench_command(int, const char *const *, void *) {
     if (s_busy.exchange(true)) return false;
-    if (h264_create_task(psram_bench_task, "h264_psram", kBenchStackBytes, nullptr, 5, 0, nullptr) !=
+    if (video_create_task(psram_bench_task, "h264_psram", kBenchStackBytes, nullptr, 5, 0, nullptr) !=
         pdPASS) {
         s_busy.store(false);
         return false;
@@ -706,7 +707,7 @@ static bool bench_command(int argc, const char *const *argv, void *) {
     }
     if (fps <= 0) return false;
     auto *args = new BenchArgs{ loops, hash, threads, show, present, fps };
-    if (h264_create_task(bench_task, "h264_bench", kBenchStackBytes, args, 5, 0, nullptr) != pdPASS) {
+    if (video_create_task(bench_task, "h264_bench", kBenchStackBytes, args, 5, 0, nullptr) != pdPASS) {
         delete args;
         s_busy.store(false);
         return false;

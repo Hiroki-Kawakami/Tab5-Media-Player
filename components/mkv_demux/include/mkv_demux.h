@@ -18,6 +18,7 @@ typedef enum {
     MKV_VIDEO_CODEC_NONE,
     MKV_VIDEO_CODEC_MJPEG,
     MKV_VIDEO_CODEC_H264,
+    MKV_VIDEO_CODEC_MPEG2,
     MKV_VIDEO_CODEC_UNSUPPORTED,
 } mkv_video_codec_t;
 

@@ -18,6 +18,9 @@ submodule.
 - [`docs/h264.md`](docs/h264.md) — the in-house H.264 decoder: memory layout,
   the two-core row pipeline, PIE facts, and how to check it bit-exact against
   ffmpeg on the host and on the board.
+- [`docs/mpeg2.md`](docs/mpeg2.md) — the in-house MPEG-2 decoder: scope, the
+  row-parallel two-core design, the PIE IDCT, and bit-exact checks against
+  `ffmpeg -idct simple`.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button

@@ -36,6 +36,9 @@ enum {
     AVI_AVC1 = AVI_FOURCC('A', 'V', 'C', '1'),
     AVI_avc1 = AVI_FOURCC('a', 'v', 'c', '1'),
     AVI_DAVC = AVI_FOURCC('D', 'A', 'V', 'C'),
+    AVI_mpg2 = AVI_FOURCC('m', 'p', 'g', '2'),
+    AVI_MPG2 = AVI_FOURCC('M', 'P', 'G', '2'),
+    AVI_MPEG = AVI_FOURCC('M', 'P', 'E', 'G'),
 };
 
 #define AVI_WAVE_FORMAT_PCM 0x0001

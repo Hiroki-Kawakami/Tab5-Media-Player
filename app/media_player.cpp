@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "bench/h264_bench.hpp"
+#include "bench/mpeg2_bench.hpp"
 #include "playback/player.hpp"
 #include "screens/home_screen.hpp"
 #include "ui_orientation.hpp"
@@ -60,7 +61,7 @@ void media_player_release_sram() {
 void app_entry() {
     bsp_config_t bsp_config = {};
     bsp_config.display.fb_num = 3;
-    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB565;
+    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB888;
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
     bsp_config.audio.speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO;
@@ -85,6 +86,7 @@ void app_entry() {
     }
     player_start(arena);
     h264_bench_register();
+    mpeg2_bench_register();
 
     err = usb_msc_init([](usb_msc_event_t event, void *) {
         if (event == USB_MSC_EVENT_DISCONNECTED) player_eject(kUsbMountPoint);

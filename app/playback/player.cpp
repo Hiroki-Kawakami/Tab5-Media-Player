@@ -8,6 +8,7 @@
 #include "media/demuxer.hpp"
 #include "video/video_presenter.hpp"
 #include "h264_dec.h"
+#include "mpeg2_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -171,6 +172,14 @@ static bool take_slot(QueueHandle_t queue, int *slot) {
     return false;
 }
 
+static bool video_droppable(const Packet &packet) {
+    switch (s_video_codec) {
+    case CodecId::H264: return h264_dec_droppable(packet.data, packet.len, s_nal_length_size);
+    case CodecId::Mpeg2: return mpeg2_dec_droppable(packet.data, packet.len);
+    default: return false;
+    }
+}
+
 static void reader_task(void *) {
     for (;;) {
         xSemaphoreTake(s_reader_wake, portMAX_DELAY);
@@ -199,8 +208,7 @@ static void reader_task(void *) {
                 break;
             }
             if (video) {
-                const bool droppable = s_video_codec == CodecId::H264 &&
-                    h264_dec_droppable(packet.data, packet.len, s_nal_length_size);
+                const bool droppable = video_droppable(packet);
                 s_video[slot] = { packet.data, packet.len, packet.pts_us, packet.ref, 0,
                                   packet.keyframe, droppable };
                 produced = true;
@@ -311,7 +319,7 @@ static void show(int slot, int64_t due_us = 0) {
 }
 
 static bool interframe_codec() {
-    return s_video_codec == CodecId::H264;
+    return s_video_codec == CodecId::H264 || s_video_codec == CodecId::Mpeg2;
 }
 
 static void skip_to_keyframe(int64_t until_us) {
@@ -380,7 +388,8 @@ static void handle_open(const std::string &path) {
     }
 
     const MediaInfo &info = s_demuxer->info();
-    if (info.video.codec != CodecId::Mjpeg && info.video.codec != CodecId::H264) {
+    if (info.video.codec != CodecId::Mjpeg && info.video.codec != CodecId::H264 &&
+        info.video.codec != CodecId::Mpeg2) {
         fail_open("unsupported video codec");
         return;
     }
@@ -401,7 +410,7 @@ static void handle_open(const std::string &path) {
     video_presenter_set_source_rotation(info.video.rotation);
 
     std::string note;
-    s_have_audio = audio_out_open(info.audio, info.video.codec != CodecId::H264, &note);
+    s_have_audio = audio_out_open(info.audio, info.video.codec == CodecId::Mjpeg, &note);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_duration_us = info.duration_us;

@@ -5,8 +5,9 @@
 
 #include "video_presenter.hpp"
 #include "h264_renderer.hpp"
-#include "h264_threads.hpp"
+#include "video_threads.hpp"
 #include "mjpeg_renderer.hpp"
+#include "mpeg2_renderer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -503,12 +504,12 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     xSemaphoreTake(s_done, 0);
     xSemaphoreTake(s_decode_done, 0);
     s_running.store(true);
-    if (h264_create_task(worker, "video_presenter", kStackBytes, nullptr, 6, 0, &s_task) != pdPASS) {
+    if (video_create_task(worker, "video_presenter", kStackBytes, nullptr, 6, 0, &s_task) != pdPASS) {
         s_running.store(false);
         set_error("video output task creation failed");
         return false;
     }
-    if (h264_create_task(decoder, "video_decoder", kDecodeStackBytes, nullptr, kDecodePriority, 0, nullptr) !=
+    if (video_create_task(decoder, "video_decoder", kDecodeStackBytes, nullptr, kDecodePriority, 0, nullptr) !=
         pdPASS) {
         s_running.store(false);
         xSemaphoreGive(s_wake);
@@ -549,6 +550,7 @@ bool video_presenter_open_stream(const TrackInfo &track, std::string *error) {
     switch (track.codec) {
     case CodecId::Mjpeg: renderer = std::make_unique<MjpegRenderer>(); break;
     case CodecId::H264: renderer = std::make_unique<H264Renderer>(); break;
+    case CodecId::Mpeg2: renderer = std::make_unique<Mpeg2Renderer>(); break;
     default:
         *error = "unsupported video codec";
         return false;

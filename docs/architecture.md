@@ -5,7 +5,7 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
-| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`, `mp4_demux`, `h264_dec`, `usb_msc`) |
+| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`, `mp4_demux`, `vdec_common`, `h264_dec`, `mpeg2_dec`, `usb_msc`) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
@@ -41,8 +41,9 @@ is off). It is split into two halves that serve two owners in turn:
 - the main LVGL display renders in `DisplayRenderMode::Partial` with the halves
   as its two draw buffers;
 - MJPEG playback uses them as `jpeg_decode_enhanced` strip buffers;
-- H.264 playback uses the whole block as the decoder's work arena
-  (`SharedSram::base`/`bytes`, see [`h264.md`](h264.md#memory)).
+- H.264 and MPEG-2 playback use the whole block as the decoder's work arena
+  (`SharedSram::base`/`bytes`, see [`h264.md`](h264.md#memory) and
+  [`mpeg2.md`](mpeg2.md#memory)).
 
 A hidden display does not render, so the halves are free while the main display
 is hidden. `media_player_acquire_sram()` hides it and waits for
@@ -56,7 +57,7 @@ width limit for MJPEG comes from. The same 240 KiB is also what caps H.264 at
 1280 px wide.
 
 Tasks that run PIE code get their stacks from `MALLOC_CAP_SIMD` alone
-(`h264_create_task()`): this build lets the heap use RTC RAM, and a PIE task
+(`video_create_task()`): this build lets the heap use RTC RAM, and a PIE task
 whose stack lands there hangs the chip when FreeRTOS saves its vector
 registers. Adding `MALLOC_CAP_INTERNAL` looks harmless but leaves almost no
 matching memory by the time the player opens (details in

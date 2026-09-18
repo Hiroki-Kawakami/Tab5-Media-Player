@@ -6,7 +6,7 @@
 #pragma once
 #include <cstdint>
 #include "video_renderer.hpp"
-#include "driver/ppa.h"
+#include "packed_yuv_scaler.hpp"
 #include "h264_dec.h"
 
 class H264Renderer : public VideoRenderer {
@@ -34,8 +34,8 @@ private:
     static constexpr int64_t kHiddenTag = INT64_MIN;
 
     h264_dec_t *decoder_ = nullptr;
-    ppa_client_handle_t ppa_ = nullptr;
-    ppa_srm_color_mode_t color_mode_ = PPA_SRM_COLOR_MODE_RGB565;
+    PackedYuvScaler scaler_;
+    vdec_threads_t threads_ = {};
     uint8_t nal_length_size_ = 0;
     h264_dec_picture_t pictures_[kPictureSlots] = {};
     int held_ = -1;

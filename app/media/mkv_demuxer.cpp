@@ -15,6 +15,7 @@ CodecId map_video(mkv_video_codec_t codec) {
     switch (codec) {
     case MKV_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
     case MKV_VIDEO_CODEC_H264: return CodecId::H264;
+    case MKV_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
     case MKV_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
@@ -78,6 +79,10 @@ bool MkvDemuxer::open(const std::string &path, const media_arena_t &arena) {
                                &info_.video.codec_private, &info_.video.nal_length_size)) {
         ESP_LOGW(TAG, "no usable avcC in CodecPrivate; assuming 4-byte NAL lengths");
         info_.video.nal_length_size = 4;
+    }
+    if (info_.video.codec == CodecId::Mpeg2) {
+        info_.video.codec_private.assign(mkv->video.codec_private,
+                                         mkv->video.codec_private + mkv->video.codec_private_size);
     }
 
     info_.audio.codec = map_audio(mkv->audio.codec);

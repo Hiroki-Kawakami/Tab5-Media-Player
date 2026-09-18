@@ -13,6 +13,7 @@ enum class CodecId {
     None,
     Mjpeg,
     H264,
+    Mpeg2,
     Pcm,
     Mp3,
     AdpcmIma,
@@ -61,6 +62,7 @@ inline const char *codec_name(CodecId codec) {
     switch (codec) {
     case CodecId::Mjpeg: return "MJPEG";
     case CodecId::H264: return "H.264";
+    case CodecId::Mpeg2: return "MPEG-2";
     case CodecId::Pcm: return "PCM";
     case CodecId::Mp3: return "MP3";
     case CodecId::AdpcmIma: return "IMA ADPCM";

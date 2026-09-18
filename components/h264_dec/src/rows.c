@@ -12,7 +12,7 @@ void h264_pack_rows(uint8_t *dst, uint32_t dst_stride, const uint8_t *y, uint32_
     const int blocks = (int)((width / 2 + 15) / 16);
     for (uint32_t r = 0; r < rows; r++) {
         const uint8_t *cs = (r & 1 ? v : u) + (r >> 1) * c_stride;
-        h264_k_pack(cs, y + r * y_stride, dst + r * dst_stride, blocks);
+        vdec_k_pack(cs, y + r * y_stride, dst + r * dst_stride, blocks);
     }
 }
 
@@ -130,7 +130,7 @@ static void process_job(struct h264_dec *dec, const row_job_t *job) {
 static void worker(void *arg) {
     struct h264_dec *dec = arg;
     const h264_dec_threads_t *t = dec->config.threads;
-    h264_k_prepare();
+    vdec_k_prepare();
     for (;;) {
         t->sem_take(t->ctx, dec->sem_work);
         if (atomic_load(&dec->win_claimed) < atomic_load(&dec->win_goal)) h264_window_fill(dec);

@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "h264_threads.hpp"
+#include "video_threads.hpp"
 #include "freertos/semphr.h"
 
 #ifdef ESP_PLATFORM
@@ -46,27 +46,23 @@ static void worker_main(void *arg) {
 #endif
 }
 
-static bool spawn(void *, void (*entry)(void *), void *arg) {
+static bool spawn(void *ctx, void (*entry)(void *), void *arg) {
     auto *s = new Spawn{ entry, arg };
-    if (h264_create_task(worker_main, "h264_post", kWorkerStackBytes, s, kWorkerPriority,
-                         kWorkerCore, nullptr) != pdPASS) {
+    if (video_create_task(worker_main, static_cast<const char *>(ctx), kWorkerStackBytes, s,
+                          kWorkerPriority, kWorkerCore, nullptr) != pdPASS) {
         delete s;
         return false;
     }
     return true;
 }
 
-static constexpr h264_dec_threads_t kThreads = {
-    sem_create, sem_delete, sem_take, sem_give, spawn, nullptr,
-};
-
-const h264_dec_threads_t *h264_threads() {
-    return &kThreads;
+vdec_threads_t video_threads(const char *worker_name) {
+    return { sem_create, sem_delete, sem_take, sem_give, spawn, const_cast<char *>(worker_name) };
 }
 
-BaseType_t h264_create_task(TaskFunction_t entry, const char *name, uint32_t stack_bytes,
-                            void *arg, UBaseType_t priority, BaseType_t core,
-                            TaskHandle_t *handle) {
+BaseType_t video_create_task(TaskFunction_t entry, const char *name, uint32_t stack_bytes,
+                             void *arg, UBaseType_t priority, BaseType_t core,
+                             TaskHandle_t *handle) {
 #ifdef ESP_PLATFORM
     return xTaskCreatePinnedToCoreWithCaps(entry, name, stack_bytes, arg, priority, handle, core,
                                            MALLOC_CAP_SIMD);

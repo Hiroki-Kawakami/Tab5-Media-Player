@@ -89,6 +89,10 @@ static avi_video_codec_t video_codec_of(uint32_t compression) {
     case AVI_avc1:
     case AVI_DAVC:
         return AVI_VIDEO_CODEC_H264;
+    case AVI_mpg2:
+    case AVI_MPG2:
+    case AVI_MPEG:
+        return AVI_VIDEO_CODEC_MPEG2;
     default:
         return AVI_VIDEO_CODEC_UNSUPPORTED;
     }
@@ -108,6 +112,15 @@ static avi_audio_codec_t audio_codec_of(uint16_t format_tag) {
         return AVI_AUDIO_CODEC_AAC;
     default:
         return AVI_AUDIO_CODEC_UNSUPPORTED;
+    }
+}
+
+static const char *video_codec_name(avi_video_codec_t codec) {
+    switch (codec) {
+    case AVI_VIDEO_CODEC_MJPEG: return "MJPEG";
+    case AVI_VIDEO_CODEC_H264: return "H.264";
+    case AVI_VIDEO_CODEC_MPEG2: return "MPEG-2";
+    default: return "unsupported";
     }
 }
 
@@ -197,7 +210,8 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
                         (uint32_t)((uint64_t)strh.scale * 1000000ull / strh.rate);
                 }
                 if (strh.length) demux->info.video.frame_count = strh.length;
-                if (demux->info.video.codec == AVI_VIDEO_CODEC_H264) {
+                if (demux->info.video.codec == AVI_VIDEO_CODEC_H264 ||
+                    demux->info.video.codec == AVI_VIDEO_CODEC_MPEG2) {
                     uint32_t extra = chunk.size - sizeof(bitmap);
                     if (bitmap.size > sizeof(bitmap) && bitmap.size - sizeof(bitmap) < extra) {
                         extra = bitmap.size - sizeof(bitmap);
@@ -405,8 +419,9 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
         return NULL;
     }
     if (demux->info.video.codec != AVI_VIDEO_CODEC_MJPEG &&
-        demux->info.video.codec != AVI_VIDEO_CODEC_H264) {
-        *error = "not an MJPEG or H.264 AVI";
+        demux->info.video.codec != AVI_VIDEO_CODEC_H264 &&
+        demux->info.video.codec != AVI_VIDEO_CODEC_MPEG2) {
+        *error = "not an MJPEG, H.264 or MPEG-2 AVI";
         avi_demux_close(demux);
         return NULL;
     }
@@ -426,7 +441,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
     }
 
     ESP_LOGI(TAG, "%s: %s %ux%u, %u frames, %u us/frame, video <= %u B, audio %s %u Hz x%u",
-             path, demux->info.video.codec == AVI_VIDEO_CODEC_H264 ? "H.264" : "MJPEG",
+             path, video_codec_name(demux->info.video.codec),
              (unsigned)demux->info.video.width, (unsigned)demux->info.video.height,
              (unsigned)demux->info.video.frame_count,
              (unsigned)demux->info.video.frame_interval_us,
@@ -480,9 +495,19 @@ static bool starts_idr(const uint8_t *data, uint32_t size, uint8_t length_size) 
     return false;
 }
 
+static bool starts_intra_picture(const uint8_t *data, uint32_t size) {
+    for (uint32_t pos = 0; pos + 6 <= size; pos++) {
+        if (data[pos] == 0 && data[pos + 1] == 0 && data[pos + 2] == 1 && data[pos + 3] == 0) {
+            return ((data[pos + 5] >> 3) & 7) == 1;
+        }
+    }
+    return false;
+}
+
 static bool keyframe_of(const avi_demux_t *demux, uint32_t frame, const uint8_t *data, uint32_t size) {
-    if (demux->info.video.codec != AVI_VIDEO_CODEC_H264) return true;
+    if (demux->info.video.codec == AVI_VIDEO_CODEC_MJPEG) return true;
     if (frame < demux->key_flag_count) return (demux->key_flags[frame >> 3] >> (frame & 7)) & 1;
+    if (demux->info.video.codec == AVI_VIDEO_CODEC_MPEG2) return starts_intra_picture(data, size);
     return starts_idr(data, size, demux->nal_length_size);
 }
 
@@ -566,7 +591,7 @@ bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame) 
 }
 
 bool avi_demux_keyframe_before(const avi_demux_t *demux, uint32_t frame, uint32_t *key_frame) {
-    if (!demux || !demux->points || demux->info.video.codec != AVI_VIDEO_CODEC_H264) return false;
+    if (!demux || !demux->points || demux->info.video.codec == AVI_VIDEO_CODEC_MJPEG) return false;
     const uint32_t key = demux->points[point_at_or_before(demux, frame)].frame;
     if (key > frame) return false;
     *key_frame = key;

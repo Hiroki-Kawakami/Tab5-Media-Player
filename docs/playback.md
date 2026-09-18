@@ -1,10 +1,11 @@
 # Playback
 
-What plays today: MJPEG or H.264 (Constrained Baseline, up to 1280x720) in
+What plays today: MJPEG, H.264 or progressive MPEG-2 (up to 1280x720) in
 `*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
 audio, plus Opus in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
-volume. Picking one in the file browser opens `PlayerScreen`. The H.264 decoder
-itself is described in [`h264.md`](h264.md).
+volume. Picking one in the file browser opens `PlayerScreen`. The H.264 and
+MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
+[`mpeg2.md`](mpeg2.md).
 
 The planned additions are audio-only files, images, playlists and playing
 a directory in order. None of them exist yet.
@@ -20,7 +21,7 @@ Player              command task, state machine, media clock, pacing, loop
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
   (Avi/Mkv/Mp4)       │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
-  │                   │         letterbox,      └─ decoder task ─▶ H264Renderer ─ h264_dec ▶ packed DPB
+  │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         overlay ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 media_buffer          │           └─▶ compose overlay ─▶ present
   (arena)             └──▶ audio_out (PCM / MP3 / ADPCM / AAC / Opus) ──▶ bsp_audio_write
@@ -32,10 +33,12 @@ media_buffer          │           └─▶ compose overlay ─▶ present
 | `components/avi_demux/` | RIFF/AVI parsing, plain C with no app types |
 | `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
 | `components/mp4_demux/` | ISO BMFF/QuickTime parsing, plain C with no app types |
+| `components/vdec_common/` | PIE kernels on the packed picture layout and the thread hooks, shared by both decoders |
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
+| `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, MKV and MP4 adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
-| `app/video/` | `video_presenter` (placement, framebuffers, overlay, decode/present stages), `VideoRenderer` and its MJPEG and H.264 implementations, the FreeRTOS hooks the decoder runs on |
+| `app/video/` | `video_presenter` (placement, framebuffers, overlay, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/player_screen.*` | the full-screen player UI |
 
@@ -227,11 +230,40 @@ the presenter drive it.
   `Finished`. The poster path drains as well, so a paused picture appears
   without waiting for the reorder window to fill.
 
+## MPEG-2
+
+MPEG-2 goes through exactly the H.264 path above: the decode stage, early
+submission with the learned reorder lead, due times as decoder tags, the drain
+at the end and the restart on flush. What differs:
+
+- **B pictures are the droppable ones.** `mpeg2_dec_droppable()` reads the
+  picture coding type, so a late B picture is skipped undecoded, like a
+  `nal_ref_idc == 0` H.264 picture.
+- **AVI timestamps come from `temporal_reference`.** AVI stores packets in
+  decode order and the adapter otherwise numbers them in that order, which
+  would give every anchor the due time of the B picture displayed before it.
+  For MPEG-2 the adapter remembers the frame index of the last packet carrying
+  a GOP header and uses `(that index + temporal_reference) × interval`. That is
+  a permutation of the decode-order numbers for every GOP shape ffmpeg writes
+  (IBBP, three B pictures, closed GOPs). After a seek the times fall back to
+  decode order until the next GOP header, which is the keyframe the seek landed
+  on.
+- **Containers.** AVI `mpg2`/`MPG2`/`MPEG`, MKV `V_MPEG2`, MP4 `mp4v` with
+  object type 0x60-0x65 and QuickTime `m2v1`. The sequence header in the
+  extradata, when there is one, is handed up as `codec_private` unchanged and
+  probed on open, so MPEG-1 and 4:2:2 fail before the first picture. Seeking and
+  the keyframe index are the same as for H.264.
+- **Audio that usually comes with MPEG-2 is not decoded.** MP2 and AC-3 are not
+  in `esp_audio_codec`; such a track is ignored and the video plays silent.
+
 ## Deliberately not done yet
 
 - **No fragmented MP4.** Files with `mvex`/`moof` are rejected.
 - **No interlace, MBAFF, FMO, SP/SI slices, 4:2:2/4:4:4 or 10-bit.** See
   [`h264.md`](h264.md#scope).
+- **No interlaced MPEG-2, no MPEG-1, no MPEG-PS/TS (`.mpg`, `.ts`, `.vob`).**
+  See [`mpeg2.md`](mpeg2.md#scope).
+- **No sample aspect ratio.** Every codec is shown with square pixels.
 
 ## Reading: one buffer from the card to the decoder
 
@@ -276,11 +308,12 @@ Things about AVIs from other tools:
 - **`suggested_buffer_size` is ignored.** Muxers often write 0 there. Ring
   slots are sized from the largest chunk listed in `idx1`, and a chunk that
   does not fit its slot is skipped.
-- **H.264 keyframes come from `idx1` (`AVIIF_KEYFRAME`).** The index keeps
-  only keyframes as seek points, so `avi_demux_seek()` lands on the last
-  keyframe at or before the target and reports that frame; the adapter derives
-  pts from it. Without `idx1` a packet is a keyframe when its first slice NAL
-  is IDR (type 5), and only `seek(0)` works. MJPEG ignores the flags.
+- **H.264 and MPEG-2 keyframes come from `idx1` (`AVIIF_KEYFRAME`).** The
+  index keeps only keyframes as seek points, so `avi_demux_seek()` lands on the
+  last keyframe at or before the target and reports that frame; the adapter
+  derives pts from it. Without `idx1` a packet is a keyframe when its first
+  slice NAL is IDR (type 5) or its picture header says I, and only `seek(0)`
+  works. MJPEG ignores the flags.
 - **Zero-size video chunks are frames.** ffmpeg writes them to keep the frame
   clock (its H.264 AVIs have one right after the first frame), so pts counts
   them, matching ffprobe's dts, and every keyframe there is one frame later
@@ -302,8 +335,9 @@ every other element is skipped by its size. Top-level IDs never collide with
 cluster children, so an unknown-size `Cluster` ends where the next top-level
 element starts without tracking the hierarchy.
 
-- **Tracks.** The first video track must be `V_MJPEG` or `V_MPEG4/ISO/AVC`
-  (its avcC `CodecPrivate` is copied and handed up raw). Audio is
+- **Tracks.** The first video track must be `V_MJPEG`, `V_MPEG4/ISO/AVC` or
+  `V_MPEG2` (their `CodecPrivate`, avcC or a sequence header, is copied and
+  handed up raw). Audio is
   `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, or `A_MS/ACM` whose
   WAVEFORMATEX is IMA ADPCM (`0x0011`); anything else is ignored as
   unsupported. `CodecPrivate` is handed up as-is, except for `A_MS/ACM`, where
@@ -362,8 +396,8 @@ rebuilds it by walking the runs, which are few.
   `mdat` (no faststart) works at the cost of one seek on open.
 - **Tracks.** The best `vide` and `soun` track wins: a supported codec first,
   then the `tkhd` enabled flag. Video is `avc1`/`avc3` (`avcC`), `jpeg`/`mjpa`,
-  or `mp4v` whose esds says MJPEG (object type 0x6C, which is what ffmpeg writes
-  for MJPEG in `.mp4`). Audio is `mp4a` with an AAC or MP3 object type (the esds
+  `m2v1`, or `mp4v` whose esds says MJPEG (object type 0x6C, which is what ffmpeg
+  writes for MJPEG in `.mp4`) or MPEG-2 video (0x60-0x65). Audio is `mp4a` with an AAC or MP3 object type (the esds
   may sit inside a QuickTime `wave`), `.mp3`, `Opus`, or 16-bit `sowt`.
   QuickTime sound descriptions v1/v2 are longer, and their extra header is
   skipped.
@@ -451,8 +485,9 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `media_readahead` | 3 | 64 KB aligned read-ahead into the arena |
 | `player` | 5 | commands, pacing, submit to the presenter |
 | `video_presenter` | 6 | (MJPEG: decode →) PPA → compose overlay → present, core 0 |
-| `video_decoder` | 2 | H.264 decode (parse, prediction, residual), core 0 |
+| `video_decoder` | 2 | H.264 decode (parse, prediction, residual) or half of the MPEG-2 rows, core 0 |
 | `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
+| `mpeg2_rows` | 2 | the other half of the MPEG-2 rows, core 1 |
 | `media_audio` | 6 | audio ring → `audio_out_write` |
 
 Audio has the highest priority because a late audio write is audible and a
@@ -460,7 +495,7 @@ late frame is not. The presenter sits at 6 too, on core 0 with the decoder,
 so it wakes on time while the decoder is busy; it spends most of its time
 waiting for PPA.
 
-The two H.264 workers sit below everything else because they are the only
+The two decoder workers (of either codec) sit below everything else because they are the only
 tasks that use a whole core. At 720p they never block, and above the reader
 (4), the read-ahead (3) and LVGL (4) they would starve all three. The decoder
 also sleeps 20 ms after 500 ms without blocking, which keeps `IDLE0` fed for
@@ -664,7 +699,7 @@ seekable. ffmpeg decodes them to the same samples as the originals.
 sorting after `Test Audio/`), with seeks on the H.264, MP3, MJPEG and
 non-interleaved files, the rotation check on `f_rotated.mp4`, and a loop on
 `h_coarse.mp4`, then opens the empty `.mp4` placeholder at the root, which
-fails. The fixtures are the ffmpeg commands above at `size=640x360` with
+fails (row 640, below the `Test MPEG2/` directory). The fixtures are the ffmpeg commands above at `size=640x360` with
 `.mp4` output:
 
 | file | how |
@@ -699,3 +734,16 @@ nix develop -c ffmpeg -f lavfi -i testsrc=size=640x360:rate=30 \
 ```
 
 The `.avi` is the same command with `-c:a libmp3lame`.
+
+`simulator/verify/mpeg2.txt` plays everything in `Test MPEG2/` (a root
+directory sorting after `Test MP4/`) with a seek and to the end, in landscape.
+The fixtures are `testsrc` at 640x360, 30 fps, 6 s, `-c:v mpeg2video -g 15
+-b:v 1.5M`:
+
+| file | how |
+|---|---|
+| `a_ibbp_mp3.avi` | `-bf 2`, `libmp3lame` |
+| `b_ibbp_aac.mkv` | `-bf 2`, AAC |
+| `c_ibbp_aac.mp4` | `-bf 2`, AAC, `-movflags +faststart` (ffmpeg writes `mp4v`, object type 0x61) |
+| `d_ip_mp3.avi` | `-bf 0`, `libmp3lame` |
+| `e_720p.mkv` | 1280x720, `-bf 2 -b:v 5M`, AAC, 3 s |

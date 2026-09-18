@@ -4,7 +4,7 @@
  */
 
 #include "h264_renderer.hpp"
-#include "h264_threads.hpp"
+#include "video_threads.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
@@ -22,15 +22,6 @@ static void *alloc_psram(void *, std::size_t bytes) {
 
 static void free_psram(void *, void *ptr) {
     heap_caps_free(ptr);
-}
-
-static ppa_srm_rotation_angle_t ppa_rotation(bsp_rotation_t rotation) {
-    switch (rotation) {
-    case BSP_ROTATION_90:  return PPA_SRM_ROTATION_ANGLE_90;
-    case BSP_ROTATION_180: return PPA_SRM_ROTATION_ANGLE_180;
-    case BSP_ROTATION_270: return PPA_SRM_ROTATION_ANGLE_270;
-    default:               return PPA_SRM_ROTATION_ANGLE_0;
-    }
 }
 
 static bool uses_bt709(const h264_dec_stream_info_t &info) {
@@ -55,13 +46,7 @@ static std::string describe(h264_dec_t *decoder, h264_dec_result_t result) {
 bool H264Renderer::open(const SharedSram &sram, bsp_pixel_format_t format, const TrackInfo &track,
                         std::string *error) {
     close();
-    switch (format) {
-    case BSP_PIXEL_FORMAT_RGB565: color_mode_ = PPA_SRM_COLOR_MODE_RGB565; break;
-    case BSP_PIXEL_FORMAT_RGB888: color_mode_ = PPA_SRM_COLOR_MODE_RGB888; break;
-    default:
-        *error = "unsupported panel pixel format for video";
-        return false;
-    }
+    if (!scaler_.open(format, error)) return false;
 
     if (!track.codec_private.empty()) {
         h264_dec_stream_info_t info = {};
@@ -82,9 +67,11 @@ bool H264Renderer::open(const SharedSram &sram, bsp_pixel_format_t format, const
     config.max_side = kMaxSide;
     config.held_pictures = kHeldPictures;
     config.frame_budget_bytes = kFrameBudgetBytes;
-    config.threads = h264_threads();
+    threads_ = video_threads("h264_post");
+    config.threads = &threads_;
     decoder_ = h264_dec_create(&config);
     if (!decoder_) {
+        close();
         *error = "H.264 decoder unavailable";
         return false;
     }
@@ -92,27 +79,13 @@ bool H264Renderer::open(const SharedSram &sram, bsp_pixel_format_t format, const
     if (!track.codec_private.empty()) {
         h264_dec_decode(decoder_, track.codec_private.data(), track.codec_private.size(), 0, 0);
     }
-
-    ppa_client_config_t client = {};
-    client.oper_type = PPA_OPERATION_SRM;
-    client.max_pending_trans_num = 1;
-    const esp_err_t err = ppa_register_client(&client, &ppa_);
-    if (err != ESP_OK) {
-        ppa_ = nullptr;
-        close();
-        *error = std::string("video scaler unavailable: ") + esp_err_to_name(err);
-        return false;
-    }
     reported_ = false;
     return true;
 }
 
 void H264Renderer::close() {
     discard();
-    if (ppa_) {
-        ppa_unregister_client(ppa_);
-        ppa_ = nullptr;
-    }
+    scaler_.close();
     if (decoder_) {
         h264_dec_destroy(decoder_);
         decoder_ = nullptr;
@@ -177,34 +150,17 @@ bool H264Renderer::draw(VideoFrame *frame, const RenderTarget &target, std::stri
     const h264_dec_picture_t &picture = pictures_[id];
     const h264_dec_stream_info_t &info = picture.info;
 
-    ppa_srm_oper_config_t op = {};
-    op.in.buffer = picture.packed;
-    op.in.pic_w = info.coded_width;
-    op.in.pic_h = info.coded_height;
-    op.in.block_w = info.width;
-    op.in.block_h = info.height;
-    op.in.block_offset_x = info.crop_left;
-    op.in.block_offset_y = info.crop_top;
-    op.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;
-    op.in.yuv_range = info.full_range ? PPA_COLOR_RANGE_FULL : PPA_COLOR_RANGE_LIMIT;
-    op.in.yuv_std = uses_bt709(info) ? PPA_COLOR_CONV_STD_RGB_YUV_BT709
-                                     : PPA_COLOR_CONV_STD_RGB_YUV_BT601;
-    op.out.buffer = target.framebuffer;
-    op.out.buffer_size = target.framebuffer_bytes;
-    op.out.pic_w = (uint32_t)target.panel.width;
-    op.out.pic_h = (uint32_t)target.panel.height;
-    op.out.block_offset_x = (uint32_t)target.rect.origin.x;
-    op.out.block_offset_y = (uint32_t)target.rect.origin.y;
-    op.out.srm_cm = color_mode_;
-    op.rotation_angle = ppa_rotation(target.rotation);
-    op.scale_x = (float)target.scale_n / kScaleDenominator;
-    op.scale_y = op.scale_x;
-    op.mode = PPA_TRANS_MODE_BLOCKING;
-
-    const esp_err_t err = ppa_ ? ppa_do_scale_rotate_mirror(ppa_, &op) : ESP_ERR_INVALID_STATE;
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "ppa: %s", esp_err_to_name(err));
-        *error = std::string("video scaling failed: ") + esp_err_to_name(err);
+    PackedYuvImage image;
+    image.packed = picture.packed;
+    image.coded_width = info.coded_width;
+    image.coded_height = info.coded_height;
+    image.crop_left = info.crop_left;
+    image.crop_top = info.crop_top;
+    image.width = info.width;
+    image.height = info.height;
+    image.full_range = info.full_range;
+    image.bt709 = uses_bt709(info);
+    if (!scaler_.draw(image, target, error)) {
         if (frame) drop(frame);
         return false;
     }

@@ -50,6 +50,7 @@ static const char *TAG = "mp4_demux";
 #define ENTRY_AVC3 FOURCC('a', 'v', 'c', '3')
 #define ENTRY_JPEG FOURCC('j', 'p', 'e', 'g')
 #define ENTRY_MJPA FOURCC('m', 'j', 'p', 'a')
+#define ENTRY_M2V1 FOURCC('m', '2', 'v', '1')
 #define ENTRY_MP4V FOURCC('m', 'p', '4', 'v')
 #define ENTRY_MP4A FOURCC('m', 'p', '4', 'a')
 #define ENTRY_MP3  FOURCC('.', 'm', 'p', '3')
@@ -57,6 +58,8 @@ static const char *TAG = "mp4_demux";
 #define ENTRY_SOWT FOURCC('s', 'o', 'w', 't')
 
 #define OTI_MPEG4_AUDIO     0x40
+#define OTI_MPEG2_VIDEO_FIRST 0x60
+#define OTI_MPEG2_VIDEO_LAST 0x65
 #define OTI_MPEG2_AAC_FIRST 0x66
 #define OTI_MPEG2_AAC_LAST  0x68
 #define OTI_MPEG2_MP3       0x69
@@ -624,10 +627,16 @@ static void identify_video(track_t *track) {
         track->codec = MP4_VIDEO_CODEC_MJPEG;
         break;
     case ENTRY_MP4V:
-        if (span_find(children, BOX_ESDS, &body) && parse_esds(body, &object_type, &info) &&
-            object_type == OTI_MJPEG) {
+        if (!span_find(children, BOX_ESDS, &body) || !parse_esds(body, &object_type, &info)) break;
+        if (object_type == OTI_MJPEG) {
             track->codec = MP4_VIDEO_CODEC_MJPEG;
+        } else if (object_type >= OTI_MPEG2_VIDEO_FIRST && object_type <= OTI_MPEG2_VIDEO_LAST) {
+            track->codec = MP4_VIDEO_CODEC_MPEG2;
+            track->codec_private = info;
         }
+        break;
+    case ENTRY_M2V1:
+        track->codec = MP4_VIDEO_CODEC_MPEG2;
         break;
     default:
         break;
@@ -1039,7 +1048,7 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     int64_t landed = 0;
     if (pts_us <= 0) {
         cursor_seek(video, &demux->video_cursor, 0);
-    } else if (video->codec == MP4_VIDEO_CODEC_H264) {
+    } else if (video->codec != MP4_VIDEO_CODEC_MJPEG) {
         const uint32_t sample = sync_at_or_before(video, sample_at_us(video, pts_us, false));
         cursor_seek(video, &demux->video_cursor, sample);
         if (!demux->video_cursor.valid) return false;
@@ -1062,7 +1071,7 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
 }
 
 bool mp4_demux_keyframe_before(const mp4_demux_t *demux, int64_t pts_us, int64_t *key_us) {
-    if (!demux || !demux->have_video || demux->video.codec != MP4_VIDEO_CODEC_H264) return false;
+    if (!demux || !demux->have_video || demux->video.codec == MP4_VIDEO_CODEC_MJPEG) return false;
     const track_t *video = &demux->video;
     cursor_t cursor;
     cursor_seek(video, &cursor, sync_at_or_before(video, sample_at_us(video, pts_us, false)));

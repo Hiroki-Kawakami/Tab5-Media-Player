@@ -17,7 +17,7 @@ static void window_store(struct h264_dec *dec, const frame_t *f, int y) {
     const int cslot = cy & (WINDOW_ROWS / 2 - 1);
     uint8_t *c = ((y & 1) ? dec->win_v : dec->win_u) + (size_t)cslot * dec->win_cstride;
     uint8_t *luma = dec->win_y + (size_t)slot * dec->win_stride;
-    h264_k_unpack(f->data + (size_t)y * dec->packed_stride, c, luma, blocks);
+    vdec_k_unpack(f->data + (size_t)y * dec->packed_stride, c, luma, blocks);
     if (slot < WINDOW_MIRROR) memcpy(luma + (size_t)WINDOW_ROWS * dec->win_stride, luma, w);
     if (cslot < WINDOW_MIRROR / 2) {
         memcpy(c + (size_t)(WINDOW_ROWS / 2) * dec->win_cstride, c, cw);
@@ -103,7 +103,7 @@ static void fetch_luma_inside(struct h264_dec *dec, const frame_t *ref, int x0, 
                               uint8_t *dst, ptrdiff_t dst_stride) {
     PROF_START(dec);
     const uint32_t S = dec->packed_stride;
-    h264_k_unpack_rows(ref->data + (size_t)y0 * S + 3 * (x0 >> 1), S, dec->mc_scratch, 0,
+    vdec_k_unpack_rows(ref->data + (size_t)y0 * S + 3 * (x0 >> 1), S, dec->mc_scratch, 0,
                        dst - (x0 & 1), dst_stride, h);
     PROF_STOP(dec, H264_PROF_MC_FETCH);
 }
@@ -113,7 +113,7 @@ static void fetch_chroma(struct h264_dec *dec, const frame_t *ref, int comp, int
     const int W = dec->width / 2, H = dec->height / 2;
     if (x0 >= 0 && x0 + w <= W && y0 >= 0 && y0 + h <= H) {
         const uint32_t S = dec->packed_stride;
-        h264_k_unpack_rows(ref->data + ((size_t)y0 * 2 + comp) * S + 3 * x0, 2 * S, dst, dst_stride,
+        vdec_k_unpack_rows(ref->data + ((size_t)y0 * 2 + comp) * S + 3 * x0, 2 * S, dst, dst_stride,
                            dec->mc_scratch, 0, h);
         return;
     }
@@ -144,45 +144,45 @@ static void interpolate(struct h264_dec *dec, const uint8_t *r0, ptrdiff_t ss, i
     switch (frac) {
     case 1:
         h264_k_tap6_u8(r2, 1, pa, h, ss, 16);
-        h264_k_avg_u8(r2 + 2, pa, dst, h, ss, 16, stride);
+        vdec_k_avg_u8(r2 + 2, pa, dst, h, ss, 16, stride);
         break;
     case 2:
         h264_k_tap6_u8(r2, 1, dst, h, ss, stride);
         break;
     case 3:
         h264_k_tap6_u8(r2, 1, pa, h, ss, 16);
-        h264_k_avg_u8(r2 + 3, pa, dst, h, ss, 16, stride);
+        vdec_k_avg_u8(r2 + 3, pa, dst, h, ss, 16, stride);
         break;
     case 4:
         h264_k_tap6_u8(r0 + 2, ss, pa, h, ss, 16);
-        h264_k_avg_u8(r2 + 2, pa, dst, h, ss, 16, stride);
+        vdec_k_avg_u8(r2 + 2, pa, dst, h, ss, 16, stride);
         break;
     case 8:
         h264_k_tap6_u8(r0 + 2, ss, dst, h, ss, stride);
         break;
     case 12:
         h264_k_tap6_u8(r0 + 2, ss, pa, h, ss, 16);
-        h264_k_avg_u8(r3 + 2, pa, dst, h, ss, 16, stride);
+        vdec_k_avg_u8(r3 + 2, pa, dst, h, ss, 16, stride);
         break;
     case 5:
         h264_k_tap6_u8(r2, 1, pa, h, ss, 16);
         h264_k_tap6_u8(r0 + 2, ss, pb, h, ss, 16);
-        h264_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
+        vdec_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
         break;
     case 7:
         h264_k_tap6_u8(r2, 1, pa, h, ss, 16);
         h264_k_tap6_u8(r0 + 3, ss, pb, h, ss, 16);
-        h264_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
+        vdec_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
         break;
     case 13:
         h264_k_tap6_u8(r3, 1, pa, h, ss, 16);
         h264_k_tap6_u8(r0 + 2, ss, pb, h, ss, 16);
-        h264_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
+        vdec_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
         break;
     case 15:
         h264_k_tap6_u8(r3, 1, pa, h, ss, 16);
         h264_k_tap6_u8(r0 + 3, ss, pb, h, ss, 16);
-        h264_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
+        vdec_k_avg_u8(pa, pb, dst, h, 16, 16, stride);
         break;
     case 10:
         hpel_hv(dec, r0, ss, h, dst, stride);
@@ -195,7 +195,7 @@ static void interpolate(struct h264_dec *dec, const uint8_t *r0, ptrdiff_t ss, i
         case 9: h264_k_tap6_u8(r0 + 2, ss, pa, h, ss, 16); break;
         default: h264_k_tap6_u8(r0 + 3, ss, pa, h, ss, 16); break;
         }
-        h264_k_avg_u8(pb, pa, dst, h, 16, 16, stride);
+        vdec_k_avg_u8(pb, pa, dst, h, 16, 16, stride);
         break;
     }
 }
@@ -207,7 +207,7 @@ void h264_weight_block(uint8_t *dst, ptrdiff_t stride, int h, int weight, int of
 
 void h264_avg_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
                     ptrdiff_t src_stride, int h) {
-    h264_k_avg_u8(a, b, dst, h, src_stride, src_stride, stride);
+    vdec_k_avg_u8(a, b, dst, h, src_stride, src_stride, stride);
 }
 
 void h264_weight_bi_block(uint8_t *dst, ptrdiff_t stride, const uint8_t *a, const uint8_t *b,
@@ -240,12 +240,12 @@ void h264_mc_luma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst, ptrdif
             const uint8_t *src = h264_window_luma(dec, ref, yi, h);
             if (src) {
                 src += xi;
-                h264_k_copy(src, ws, dst, stride, h);
+                vdec_k_copy(src, ws, dst, stride, h);
                 return;
             }
             if (xi & 1) {
                 fetch_luma_inside(dec, ref, xi, yi, h, dec->mc_src, TS);
-                h264_k_copy(dec->mc_src, TS, dst, stride, h);
+                vdec_k_copy(dec->mc_src, TS, dst, stride, h);
             } else {
                 fetch_luma_inside(dec, ref, xi, yi, h, dst, stride);
             }
@@ -290,9 +290,9 @@ void h264_mc_chroma(struct h264_dec *dec, const frame_t *ref, uint8_t *dst_u, ui
             ss = 16;
         }
         if (!fx && !fy) {
-            h264_k_copy(src, ss, dst, stride, h);
+            vdec_k_copy(src, ss, dst, stride, h);
         } else {
-            h264_k_bilinear(src, ss, dst, stride, h, fx, fy);
+            vdec_k_bilinear(src, ss, dst, stride, h, fx, fy);
         }
     }
 }

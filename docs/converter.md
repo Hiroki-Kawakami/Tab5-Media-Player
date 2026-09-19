@@ -1,8 +1,8 @@
 # Converter (`tools/converter-rs`)
 
 `tab5conv` turns an arbitrary video into a file the player is guaranteed to
-open. Video is H.264 or progressive MPEG-2 (4:2:0 8-bit), and the only audio
-encoder is AAC-LC. Output is MP4 by default, or MKV when the output name ends in
+open. Video is H.264 or progressive MPEG-2 (4:2:0 8-bit), and audio is AAC-LC or
+MP3. Output is MP4 by default, or MKV when the output name ends in
 `.mkv`.
 
 ```sh
@@ -23,10 +23,27 @@ message lists the keys the codec accepts. Nothing is silently ignored, with
 the one intended exception described under `auto` below.
 
 `--audio auto`, the default, copies the input track when the player can decode
-it as is. That means AAC-LC or MP3 with at most 2 channels and 48 kHz. Anything
-else is encoded as AAC-LC.
-HE-AAC is re-encoded because only LC is copied. `auto` takes the `aac` keys,
-but they only apply when it ends up encoding.
+it as is. That means AAC-LC or MP3 with at most 2 channels and 16-48 kHz. Anything
+else is encoded with `fallback` (`aac` or `mp3`), which also decides which
+encoder keys `auto` accepts.
+HE-AAC is re-encoded because only LC is copied. The encoder keys only apply
+when `auto` ends up encoding.
+
+**Output audio is 16-48 kHz, whatever the codec.** On the device, driving the I2S
+output at 8 kHz makes audible noise. Lower-rate input is therefore resampled
+up to 16 kHz, and `auto` does not copy it. The device's MP3 decoder itself
+played every rate down to 8 kHz, MPEG-2.5 included.
+
+## MP3
+
+- **A CBR bitrate must be one MP3 can signal at the output sample rate**
+  (32k-320k from 32 kHz up, 8k-160k below). lame would otherwise round it to
+  the nearest one without saying so. The check runs after probing, because the
+  sample rate defaults to the input's.
+- **The default CBR is 192k, or 160k below 32 kHz**, because 192k does not
+  exist there and a default must never be an error.
+- **The 16 kHz floor also keeps MPEG-2.5 MP3 (8-12 kHz) out**, which ffmpeg's
+  mp4 muxer rejects as non-standard.
 
 ## MPEG-2
 

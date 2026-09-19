@@ -81,7 +81,7 @@ fn run(args: Args) -> Result<()> {
 
     let info = probe::probe(input)?;
     let video = video_spec.plan(&info.video)?;
-    let audio = audio_spec.plan(info.audio.as_ref());
+    let audio = audio_spec.plan(info.audio.as_ref())?;
     if !args.dry_run && !args.overwrite && output.exists() {
         bail!("{} already exists (use -y to overwrite)", output.display());
     }

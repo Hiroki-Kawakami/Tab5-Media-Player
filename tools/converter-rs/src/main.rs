@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Hiroki Kawakami
 
 mod audio;
+mod batch;
 mod command;
 mod ffmpeg;
 mod framerate;
@@ -17,7 +18,7 @@ mod video;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 
@@ -28,11 +29,17 @@ use clap::{CommandFactory, Parser};
     after_help = "Run with --preset help, --video help or --audio help for the details."
 )]
 struct Args {
-    input: Option<PathBuf>,
+    /// Input files; with several, names containing ".tab5." are skipped
+    #[arg(value_name = "INPUT")]
+    inputs: Vec<PathBuf>,
 
-    /// Output file (.mp4, .m4v, .mov or .mkv) [default: <input>.tab5.mp4]
-    #[arg(short, long)]
+    /// Output file for a single input (.mp4, .m4v, .mov or .mkv) [default: <input>.tab5.mp4]
+    #[arg(short, long, conflicts_with = "outdir")]
     output: Option<PathBuf>,
+
+    /// Directory for the outputs, named <input>.mp4; created if missing
+    #[arg(long, value_name = "DIR")]
+    outdir: Option<PathBuf>,
 
     /// Settings for --video and --audio: tiny, small, default or quality
     #[arg(long, default_value = preset::DEFAULT, value_name = "NAME")]
@@ -46,7 +53,7 @@ struct Args {
     #[arg(long, value_name = "SPEC")]
     audio: Option<String>,
 
-    /// Overwrite the output file if it exists
+    /// Overwrite output files that already exist
     #[arg(short = 'y', long)]
     overwrite: bool,
 
@@ -55,25 +62,82 @@ struct Args {
     dry_run: bool,
 }
 
-fn default_output(input: &Path) -> PathBuf {
-    let stem = input.file_stem().unwrap_or(input.as_os_str());
-    let mut name = stem.to_os_string();
-    name.push(".tab5.mp4");
-    input.with_file_name(name)
+struct Specs {
+    video: video::VideoSpec,
+    audio: audio::AudioSpec,
 }
 
-fn run(args: Args) -> Result<()> {
+fn convert(
+    input: &Path,
+    output: &Path,
+    container: command::Container,
+    specs: &Specs,
+    dry_run: bool,
+) -> Result<()> {
+    let info = probe::probe(input)?;
+    let video = specs.video.plan(&info.video)?;
+    let audio = specs.audio.plan(info.audio.as_ref())?;
+    let encoders: Vec<&str> = video.encoder.into_iter().chain(audio.encoder).collect();
+    ffmpeg::require_encoders(&encoders)?;
+
+    eprintln!(
+        "video: {}x{} -> {}",
+        info.video.display_width.round(),
+        info.video.display_height.round(),
+        video.label
+    );
+    eprintln!("audio: {}", audio.label);
+    eprintln!("output: {}", output.display());
+
+    let part = batch::part_path(output);
+    let job = command::Job {
+        input,
+        output: &part,
+        container,
+        overwrite: true,
+        video: &video,
+        audio: &audio,
+    };
+    let result = match job.commands() {
+        command::Commands::Single(ffmpeg_args) => {
+            if dry_run {
+                println!("{}", ffmpeg::command_line(&ffmpeg_args));
+                return Ok(());
+            }
+            ffmpeg::run(&ffmpeg_args)
+        }
+        command::Commands::Piped { decode, mux, job } => {
+            if dry_run {
+                println!("{} \\", ffmpeg::command_line(&decode));
+                println!("  | (built-in MJPEG encoder) \\");
+                println!("  | {}", ffmpeg::command_line(&mux));
+                return Ok(());
+            }
+            pipeline::run(&decode, &mux, job).map(|stats| report(&stats, job))
+        }
+    };
+    match result {
+        Ok(()) => std::fs::rename(&part, output)
+            .with_context(|| format!("renaming {} to {}", part.display(), output.display())),
+        Err(err) => {
+            let _ = std::fs::remove_file(&part);
+            Err(err)
+        }
+    }
+}
+
+fn run(args: Args) -> Result<bool> {
     if args.preset == "help" {
         print!("{}", preset::help());
-        return Ok(());
+        return Ok(true);
     }
     if args.video.as_deref() == Some("help") {
         print!("{}", video::HELP);
-        return Ok(());
+        return Ok(true);
     }
     if args.audio.as_deref() == Some("help") {
         print!("{}", audio::HELP);
-        return Ok(());
+        return Ok(true);
     }
     let preset = preset::find(&args.preset)?;
     let video_spec = preset.video(args.video.as_deref())?;
@@ -84,67 +148,92 @@ fn run(args: Args) -> Result<()> {
         video_spec.to_text(),
         audio_spec.to_text()
     );
-    let video_spec = video::from_spec(video_spec)?;
-    let audio_spec = audio::from_spec(audio_spec)?;
+    let specs = Specs {
+        video: video::from_spec(video_spec)?,
+        audio: audio::from_spec(audio_spec)?,
+    };
 
-    let Some(input) = args.input.as_deref() else {
+    if args.inputs.is_empty() {
         Args::command()
             .error(
                 ErrorKind::MissingRequiredArgument,
-                "the input file is required",
+                "at least one input file is required",
             )
             .exit();
-    };
-    let output = args.output.clone().unwrap_or_else(|| default_output(input));
-    let container = command::Container::from_path(&output)?;
-
-    let info = probe::probe(input)?;
-    let video = video_spec.plan(&info.video)?;
-    let audio = audio_spec.plan(info.audio.as_ref())?;
-    if !args.dry_run && !args.overwrite && output.exists() {
-        bail!("{} already exists (use -y to overwrite)", output.display());
     }
-
-    let encoders: Vec<&str> = video.encoder.into_iter().chain(audio.encoder).collect();
-    ffmpeg::require_encoders(&encoders)?;
+    let targets = batch::plan(&args.inputs, args.output.as_deref(), args.outdir.as_deref())?;
+    if !args.dry_run && !args.overwrite {
+        let existing = batch::existing(&targets);
+        if !existing.is_empty() {
+            let list: Vec<String> = existing.iter().map(|p| p.display().to_string()).collect();
+            bail!(
+                "these outputs already exist (use -y to overwrite):\n       {}",
+                list.join("\n       ")
+            );
+        }
+    }
+    if let (Some(dir), false) = (&args.outdir, args.dry_run) {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
 
     eprintln!("{applied}");
-    eprintln!(
-        "video: {}x{} -> {}",
-        info.video.display_width.round(),
-        info.video.display_height.round(),
-        video.label
-    );
-    eprintln!("audio: {}", audio.label);
+    if let [
+        batch::Target::Convert {
+            input,
+            output,
+            container,
+        },
+    ] = targets.as_slice()
+    {
+        convert(input, output, *container, &specs, args.dry_run)?;
+        return Ok(true);
+    }
 
-    let job = command::Job {
-        input,
-        output: &output,
-        container,
-        overwrite: args.overwrite,
-        video: &video,
-        audio: &audio,
-    };
-    match job.commands() {
-        command::Commands::Single(ffmpeg_args) => {
-            if args.dry_run {
-                println!("{}", ffmpeg::command_line(&ffmpeg_args));
-                return Ok(());
+    let total = targets.len();
+    let (mut converted, mut skipped, mut failed) = (0, Vec::new(), Vec::new());
+    for (i, target) in targets.iter().enumerate() {
+        match target {
+            batch::Target::Skip { input, reason } => {
+                eprintln!(
+                    "[{}/{total}] {}: skipped ({reason})",
+                    i + 1,
+                    input.display()
+                );
+                skipped.push(format!("{} ({reason})", input.display()));
             }
-            ffmpeg::run(&ffmpeg_args)
-        }
-        command::Commands::Piped { decode, mux, job } => {
-            if args.dry_run {
-                println!("{} \\", ffmpeg::command_line(&decode));
-                println!("  | (built-in MJPEG encoder) \\");
-                println!("  | {}", ffmpeg::command_line(&mux));
-                return Ok(());
+            batch::Target::Convert {
+                input,
+                output,
+                container,
+            } => {
+                eprintln!("[{}/{total}] {}", i + 1, input.display());
+                match convert(input, output, *container, &specs, args.dry_run) {
+                    Ok(()) => converted += 1,
+                    Err(err) => {
+                        eprintln!("error: {err:#}");
+                        failed.push(format!("{}: {err:#}", input.display()));
+                    }
+                }
             }
-            let stats = pipeline::run(&decode, &mux, job)?;
-            report(&stats, job);
-            Ok(())
         }
     }
+    eprintln!(
+        "done: {converted} {}, {} skipped, {} failed",
+        if args.dry_run {
+            "planned (dry run)"
+        } else {
+            "converted"
+        },
+        skipped.len(),
+        failed.len()
+    );
+    for line in &skipped {
+        eprintln!("  skipped  {line}");
+    }
+    for line in &failed {
+        eprintln!("  failed   {line}");
+    }
+    Ok(failed.is_empty())
 }
 
 fn report(stats: &pipeline::Stats, job: &video::MjpegJob) {
@@ -210,7 +299,8 @@ fn report(stats: &pipeline::Stats, job: &video::MjpegJob) {
 
 fn main() -> ExitCode {
     match run(Args::parse()) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE

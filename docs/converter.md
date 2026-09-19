@@ -12,6 +12,26 @@ nix develop -c cargo run --manifest-path tools/converter-rs/Cargo.toml -- in.mov
 nix develop -c cargo run --manifest-path tools/converter-rs/Cargo.toml -- --video help
 ```
 
+## Several inputs
+
+`tab5conv *.mp4 --outdir out` converts one file after another, not in
+parallel: the MJPEG encoder and x264 each use every core already.
+
+- **Outputs are `<input>.tab5.mp4` next to the input, or `DIR/<input>.mp4`
+  with `--outdir`.** `-o` takes a single input. With several inputs, a name
+  containing `.tab5.` is skipped as an earlier output, so re-running a glob
+  over the same folder does not convert outputs again.
+- **Everything that can fail before encoding is checked up front**: two
+  inputs writing the same file, an output that is its own input (`--outdir`
+  pointing at the input folder), and, without `-y`, outputs that already
+  exist. Nothing is converted until all of them pass, so it is clear which
+  files `-y` would replace.
+- **A failing input does not stop the batch.** Each output is written to
+  `<output>.part.<ext>` and renamed when ffmpeg succeeds, and a failed part
+  is deleted. A half-written file is never taken for a finished one. The run
+  ends with a list of skipped and failed inputs and exits non-zero if any
+  failed.
+
 ## Codec specs
 
 `--video` and `--audio` each take one string, `<codec>[,key=value]...`, and the

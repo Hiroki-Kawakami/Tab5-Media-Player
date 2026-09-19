@@ -19,6 +19,9 @@ struct Stream {
     index: u32,
     #[serde(default)]
     codec_type: String,
+    #[serde(default)]
+    codec_name: String,
+    profile: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     sample_aspect_ratio: Option<String>,
@@ -52,6 +55,8 @@ pub struct Video {
 
 pub struct Audio {
     pub index: u32,
+    pub codec_name: String,
+    pub profile: Option<String>,
     pub channels: u32,
     pub sample_rate: u32,
 }
@@ -116,6 +121,8 @@ fn parse(json: &str) -> Result<MediaInfo> {
         .find(|s| s.codec_type == "audio")
         .map(|s| Audio {
             index: s.index,
+            codec_name: s.codec_name.clone(),
+            profile: s.profile.clone(),
             channels: s.channels.unwrap_or(2),
             sample_rate: s
                 .sample_rate
@@ -147,7 +154,8 @@ mod tests {
             {"index":1,"codec_type":"video","width":720,"height":480,
              "sample_aspect_ratio":"32:27","avg_frame_rate":"30000/1001",
              "side_data_list":[{"side_data_type":"Display Matrix","rotation":-90}]},
-            {"index":2,"codec_type":"audio","channels":6,"sample_rate":"44100"}
+            {"index":2,"codec_type":"audio","codec_name":"aac","profile":"HE-AAC",
+             "channels":6,"sample_rate":"44100"}
         ]}"#;
         let info = parse(json).unwrap();
         assert_eq!(info.video.index, 1);
@@ -159,6 +167,8 @@ mod tests {
             (audio.index, audio.channels, audio.sample_rate),
             (2, 6, 44100)
         );
+        assert_eq!(audio.codec_name, "aac");
+        assert_eq!(audio.profile.as_deref(), Some("HE-AAC"));
     }
 
     #[test]

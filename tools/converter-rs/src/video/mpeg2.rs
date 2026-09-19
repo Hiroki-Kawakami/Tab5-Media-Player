@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
-use super::{PLAYER_LIMITS, VideoPlan, keyint_frames};
+use super::{PictureSpec, VideoPlan};
 use crate::probe;
-use crate::size::SizeSpec;
 use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
 
 pub const KEYS: [&str; 6] = ["qscale", "bitrate", "bframes", "keyint", "gop", "hq"];
@@ -17,7 +16,7 @@ enum Rate {
 }
 
 pub struct Mpeg2 {
-    size: SizeSpec,
+    picture: PictureSpec,
     rate: Rate,
     bframes: u32,
     keyint: f64,
@@ -27,7 +26,7 @@ pub struct Mpeg2 {
 
 impl Mpeg2 {
     pub fn take(spec: &mut Spec) -> Result<Self> {
-        let size = SizeSpec::take(spec)?;
+        let picture = PictureSpec::take(spec)?;
         let qscale = spec.take("qscale", |v| int_in(v, 1, 31))?;
         let bitrate = spec.take("bitrate", quantity)?;
         let rate = match (qscale, bitrate) {
@@ -44,7 +43,7 @@ impl Mpeg2 {
             .is_none_or(|gop| gop == "closed");
         let hq = spec.take("hq", yes_no)?.unwrap_or(true);
         Ok(Self {
-            size,
+            picture,
             rate,
             bframes,
             keyint,
@@ -54,15 +53,12 @@ impl Mpeg2 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let resize = self
-            .size
-            .resolve(video.display_width, video.display_height, &PLAYER_LIMITS)
-            .context("mpeg2")?;
-        let keyint = keyint_frames(video, self.keyint);
+        let picture = self.picture.resolve("mpeg2", video)?;
+        let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [
             "-vf",
-            &resize.filter(),
+            &picture.filter,
             "-c:v",
             "mpeg2video",
             "-pix_fmt",
@@ -97,9 +93,8 @@ impl Mpeg2 {
             index: video.index,
             encoder: "mpeg2video",
             label: format!(
-                "MPEG-2 {}x{}, {rate}, {} B pictures, {} GOP of {keyint} frames{}",
-                resize.width,
-                resize.height,
+                "MPEG-2 {}, {rate}, {} B pictures, {} GOP of {keyint} frames{}",
+                picture.label,
                 self.bframes,
                 if self.closed_gop { "closed" } else { "open" },
                 if self.hq { ", hq" } else { "" },

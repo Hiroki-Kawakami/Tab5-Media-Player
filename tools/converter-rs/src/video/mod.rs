@@ -4,10 +4,11 @@
 mod h264;
 mod mpeg2;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
+use crate::framerate::{self, FrameRateSpec};
 use crate::probe;
-use crate::size::{self, Constraints};
+use crate::size::{self, Constraints, SizeSpec};
 use crate::spec::Spec;
 
 pub const HELP: &str = "\
@@ -21,6 +22,10 @@ size keys, for every codec:
                       cover    fill the box and crop the overflow (needs both sides)
                       stretch  fill the box ignoring the aspect ratio (needs both sides)
                       Without any size key, long=640 is used; one side keeps the aspect ratio.
+  fps=R               output frame rate, e.g. 24, 12.5, 29.97 or 30000/1001;
+                      frames are dropped or repeated to match
+  maxfps=R            lower the frame rate to R only when the input is faster
+                      Without fps or maxfps, maxfps=30 is used.
 
 h264   H.264 (libx264), 4:2:0 8-bit (default)
   profile=P           baseline, main or high (default high)
@@ -44,7 +49,6 @@ const PLAYER_LIMITS: Constraints = Constraints {
     max_side: 1280,
     max_macroblocks: 3600,
 };
-const FALLBACK_FPS: f64 = 30.0;
 
 pub struct VideoPlan {
     pub index: u32,
@@ -68,7 +72,12 @@ pub fn parse(text: &str) -> Result<VideoSpec> {
         ),
         other => bail!("unknown video codec '{other}' (codecs: h264, mpeg2)"),
     };
-    let keys: Vec<&str> = size::KEYS.iter().chain(codec_keys).copied().collect();
+    let keys: Vec<&str> = size::KEYS
+        .iter()
+        .chain(&framerate::KEYS)
+        .chain(codec_keys)
+        .copied()
+        .collect();
     spec.finish(&keys)?;
     Ok(video)
 }
@@ -82,9 +91,49 @@ impl VideoSpec {
     }
 }
 
-fn keyint_frames(video: &probe::Video, seconds: f64) -> u32 {
-    let fps = video.fps.unwrap_or(FALLBACK_FPS);
-    ((fps * seconds).round() as u32).max(1)
+struct PictureSpec {
+    size: SizeSpec,
+    framerate: FrameRateSpec,
+}
+
+struct Picture {
+    filter: String,
+    label: String,
+    fps: f64,
+}
+
+impl PictureSpec {
+    fn take(spec: &mut Spec) -> Result<Self> {
+        Ok(Self {
+            size: SizeSpec::take(spec)?,
+            framerate: FrameRateSpec::take(spec)?,
+        })
+    }
+
+    fn resolve(&self, codec: &'static str, video: &probe::Video) -> Result<Picture> {
+        let resize = self
+            .size
+            .resolve(video.display_width, video.display_height, &PLAYER_LIMITS)
+            .context(codec)?;
+        let framerate = self.framerate.resolve(video.fps);
+        let filter = framerate
+            .filter()
+            .into_iter()
+            .chain([resize.filter()])
+            .collect::<Vec<_>>()
+            .join(",");
+        Ok(Picture {
+            filter,
+            label: format!("{}x{} {}", resize.width, resize.height, framerate.label),
+            fps: framerate.fps,
+        })
+    }
+}
+
+impl Picture {
+    fn keyint(&self, seconds: f64) -> u32 {
+        ((self.fps * seconds).round() as u32).max(1)
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +155,34 @@ mod tests {
 
     pub fn has(args: &[String], pair: [&str; 2]) -> bool {
         args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1])
+    }
+
+    #[test]
+    fn frame_rate_is_capped_and_drives_keyint() {
+        let fast = probe::Video {
+            fps: Some(60.0),
+            ..source()
+        };
+        for codec in ["h264", "mpeg2"] {
+            let a = parse(codec).unwrap().plan(&fast).unwrap().args;
+            assert!(has(&a, ["-vf", "fps=30,scale=640:360,setsar=1"]), "{a:?}");
+            assert!(has(&a, ["-g", "60"]), "{a:?}");
+            let a = parse(&format!("{codec},fps=24,keyint=1"))
+                .unwrap()
+                .plan(&fast)
+                .unwrap()
+                .args;
+            assert!(has(&a, ["-vf", "fps=24,scale=640:360,setsar=1"]), "{a:?}");
+            assert!(has(&a, ["-g", "24"]), "{a:?}");
+            let a = parse(&format!("{codec},maxfps=60"))
+                .unwrap()
+                .plan(&fast)
+                .unwrap()
+                .args;
+            assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]), "{a:?}");
+            assert!(has(&a, ["-g", "120"]), "{a:?}");
+        }
+        assert!(parse("h264,fps=30,maxfps=30").is_err());
     }
 
     #[test]

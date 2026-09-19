@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
-use super::{PLAYER_LIMITS, VideoPlan, keyint_frames};
+use super::{PictureSpec, VideoPlan};
 use crate::probe;
-use crate::size::SizeSpec;
 use crate::spec::{Spec, int_in, one_of, quantity, seconds};
 
 pub const KEYS: [&str; 5] = ["profile", "crf", "bitrate", "keyint", "preset"];
@@ -29,7 +28,7 @@ enum Rate {
 }
 
 pub struct H264 {
-    size: SizeSpec,
+    picture: PictureSpec,
     profile: &'static str,
     rate: Rate,
     keyint: f64,
@@ -38,7 +37,7 @@ pub struct H264 {
 
 impl H264 {
     pub fn take(spec: &mut Spec) -> Result<Self> {
-        let size = SizeSpec::take(spec)?;
+        let picture = PictureSpec::take(spec)?;
         let profile = spec
             .take("profile", |v| one_of(v, &PROFILES))?
             .unwrap_or("high");
@@ -54,7 +53,7 @@ impl H264 {
             .take("preset", |v| one_of(v, &PRESETS))?
             .unwrap_or("medium");
         Ok(Self {
-            size,
+            picture,
             profile,
             rate,
             keyint,
@@ -63,15 +62,12 @@ impl H264 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let resize = self
-            .size
-            .resolve(video.display_width, video.display_height, &PLAYER_LIMITS)
-            .context("h264")?;
-        let keyint = keyint_frames(video, self.keyint);
+        let picture = self.picture.resolve("h264", video)?;
+        let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [
             "-vf",
-            &resize.filter(),
+            &picture.filter,
             "-c:v",
             "libx264",
             "-profile:v",
@@ -99,8 +95,8 @@ impl H264 {
             index: video.index,
             encoder: "libx264",
             label: format!(
-                "H.264 {} {}x{}, {rate}, keyframe every {keyint} frames",
-                self.profile, resize.width, resize.height
+                "H.264 {} {}, {rate}, keyframe every {keyint} frames",
+                self.profile, picture.label
             ),
             args,
         })

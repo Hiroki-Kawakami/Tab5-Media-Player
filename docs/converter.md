@@ -110,4 +110,23 @@ for that codec. H.264 and MPEG-2 share the same constraints: a rounding unit of
   the display size, and ffmpeg's default autorotate applies it and drops the
   matrix, so the output needs no rotation handling in the player.
 
+## Frame rate
+
+The frame-rate keys (`framerate.rs`) are shared by every video codec, like the
+size keys. `fps` converts to a constant rate, dropping or repeating frames.
+`maxfps` only ever lowers the rate, the way `contain` only ever shrinks.
+
+- **The default is `maxfps=30`**, for the same reason the default size is
+  360p: the device decodes 360p High H.264 at about 33 fps, so a 60 fps
+  source would drop frames all the way through.
+- **`fps=` goes first in `-vf`**, so the scaler only sees frames that are
+  kept.
+- **`keyint` is converted with the output rate.** Using the input's would
+  double the keyframe interval when 60 fps comes down to 30.
+- **`23.976`, `29.97` and `59.94` mean the NTSC rates** (`24000/1001` and so
+  on). As decimals they would be slightly off.
+- **A source with no usable average rate is capped anyway.** `avg_frame_rate`
+  can be `0/0`, and without the filter nothing would enforce the maximum.
+  Sources at or below the maximum keep their timing, VFR included.
+
 The first video stream that is not cover art (`attached_pic`) is used.

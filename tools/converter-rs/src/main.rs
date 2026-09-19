@@ -4,6 +4,7 @@
 mod audio;
 mod command;
 mod ffmpeg;
+mod framerate;
 mod probe;
 mod size;
 mod spec;

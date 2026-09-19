@@ -11,6 +11,7 @@ use crate::jpeg::dct;
 
 const UNUSED_F_CODE: u32 = 15;
 const INTRA_BIAS: u32 = 500;
+const RD_MODES: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PictureType {
@@ -94,12 +95,26 @@ pub struct Encoder<'a> {
     best: [Vec<(Mv, u32)>; 2],
 }
 
+const BLOCKS: [[u16; 64]; 6] = {
+    let mut out = [[0; 64]; 6];
+    let mut b = 0;
+    while b < 6 {
+        let mut i = 0;
+        while i < 64 {
+            out[b][i] = match b {
+                0..4 => ((b >> 1) * 8 + i / 8) * 16 + (b & 1) * 8 + i % 8,
+                4 => 256 + i,
+                _ => 320 + i,
+            } as u16;
+            i += 1;
+        }
+        b += 1;
+    }
+    out
+};
+
 fn block(b: usize) -> impl Iterator<Item = usize> {
-    (0..64).map(move |i| match b {
-        0..4 => ((b >> 1) * 8 + i / 8) * 16 + (b & 1) * 8 + i % 8,
-        4 => 256 + i,
-        _ => 320 + i,
-    })
+    BLOCKS[b].iter().map(|&k| k as usize)
 }
 
 fn f_code_for(extent: i32) -> u32 {
@@ -270,15 +285,10 @@ impl<'a> Encoder<'a> {
 
     fn predict(&self, mbx: usize, mby: usize, flags: u8, mv: &[Mv; 2]) -> [u8; 384] {
         let mut out = [0; 384];
-        let dirs: Vec<usize> = [MB_FWD, MB_BWD]
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| flags & **f != 0)
-            .map(|(s, _)| s)
-            .collect();
+        let first = usize::from(flags & MB_FWD == 0);
         let reference = |s: usize| self.refs[s].expect("reference for the prediction");
-        reference(dirs[0]).predict(mbx, mby, mv[dirs[0]], &mut out);
-        if dirs.len() == 2 {
+        reference(first).predict(mbx, mby, mv[first], &mut out);
+        if flags & (MB_FWD | MB_BWD) == MB_FWD | MB_BWD {
             let mut other = [0; 384];
             reference(1).predict(mbx, mby, mv[1], &mut other);
             for (a, b) in out.iter_mut().zip(other) {
@@ -310,10 +320,17 @@ impl<'a> Encoder<'a> {
             recon: pred,
             sse: 0,
         };
+        let zero_below = self.quant.inter_zero_below();
         for b in 0..6 {
             let mut pixels = [0f32; 64];
             for (i, k) in block(b).enumerate() {
                 pixels[i] = src[k] as f32 - if intra { 0.0 } else { pred[k] as f32 };
+            }
+            if !intra {
+                let sad: f32 = pixels.iter().map(|p| p.abs()).sum();
+                if sad * 0.251 < zero_below {
+                    continue;
+                }
             }
             let coef = dct::forward(&pixels);
             let levels = if intra {
@@ -424,6 +441,14 @@ impl<'a> Encoder<'a> {
         modes.push(Mode::Intra);
         let mut best: Option<(f32, Coded)> = None;
         if self.hq {
+            if modes.len() > RD_MODES {
+                let mut ranked: Vec<(u32, Mode)> = modes
+                    .iter()
+                    .map(|&m| (self.sad_cost(src, m, mbx, mby, state), m))
+                    .collect();
+                ranked.sort_by_key(|r| r.0);
+                modes = ranked.into_iter().take(RD_MODES).map(|r| r.1).collect();
+            }
             for mode in modes {
                 let coded = self.evaluate(src, mode, mbx, mby);
                 let skippable = Some(mode) == skip_mode && coded.cbp == 0;
@@ -536,19 +561,21 @@ fn put_ac(s: &mut impl Sink, levels: &[i16; 64], start: usize, table: &vlc::DctT
 }
 
 fn sse(a: &[u8; 384], b: &[u8; 384]) -> u64 {
-    a.iter()
+    let sum: u32 = a
+        .iter()
         .zip(b)
         .map(|(&x, &y)| {
-            let d = x as i32 - y as i32;
-            (d * d) as u64
+            let d = x.abs_diff(y) as u32;
+            d * d
         })
-        .sum()
+        .sum();
+    sum as u64
 }
 
 fn intra_sad(src: &[u8; 384]) -> u32 {
     (0..4)
         .map(|b| {
-            let px: Vec<u32> = block(b).map(|k| src[k] as u32).collect();
+            let px: [u32; 64] = BLOCKS[b].map(|k| src[k as usize] as u32);
             let mean = (px.iter().sum::<u32>() + 32) / 64;
             px.iter().map(|&p| p.abs_diff(mean)).sum::<u32>()
         })

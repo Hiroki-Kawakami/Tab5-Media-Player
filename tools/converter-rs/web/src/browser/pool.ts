@@ -15,6 +15,7 @@ const KINDS: Record<Exclude<EncoderReply["type"], "error">, EncoderRequest["type
 export class EncoderPool {
   private readonly workers: Worker[];
   private readonly pending = new Map<string, Pending>();
+  readonly busy: Record<string, number> = {};
   private nextId = 0;
 
   constructor(size: number) {
@@ -23,6 +24,7 @@ export class EncoderPool {
       worker.onmessage = (event: MessageEvent<EncoderReply>) => {
         const reply = event.data;
         const kind = reply.type === "error" ? reply.kind : KINDS[reply.type];
+        if (reply.type !== "error") this.busy[kind] = (this.busy[kind] ?? 0) + reply.ms;
         const key = `${kind}:${reply.id}`;
         const pending = this.pending.get(key);
         if (!pending) return;
@@ -77,6 +79,7 @@ export class EncoderPool {
 
 export class ScalePool {
   private readonly workers: Worker[];
+  readonly busy: Record<string, number> = {};
   private readonly pending = new Map<number, { resolve: (data: ArrayBuffer) => void; reject: (err: Error) => void }>();
   private nextId = 0;
 
@@ -88,11 +91,19 @@ export class ScalePool {
         const pending = this.pending.get(reply.id);
         if (!pending) return;
         this.pending.delete(reply.id);
-        if ("error" in reply) pending.reject(new Error(reply.error));
-        else pending.resolve(reply.data);
+        if ("error" in reply) {
+          pending.reject(new Error(reply.error));
+          return;
+        }
+        for (const [stage, ms] of Object.entries(reply.times)) this.busy[stage] = (this.busy[stage] ?? 0) + ms;
+        pending.resolve(reply.data);
       };
       return worker;
     });
+  }
+
+  get size(): number {
+    return this.workers.length;
   }
 
   get inflight(): number {

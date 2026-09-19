@@ -20,9 +20,16 @@ pub struct SizeModel {
     blocks: [u32; 2],
 }
 
+const STEPS: [u32; 7] = [
+    0x0B_95C2, 0x18_37F1, 0x25_FED7, 0x35_04F4, 0x45_672B, 0x57_44FD, 0x6A_C0C7,
+];
+
 fn bin(normalized: f32) -> usize {
-    let position = (normalized.log2() - MIN_LOG2) * BINS_PER_OCTAVE;
-    (position.max(0.0) as usize).min(BINS - 1)
+    let bits = normalized.to_bits();
+    let octave = (bits >> 23) as i32 - 127 - MIN_LOG2 as i32;
+    let mantissa = bits & 0x7F_FFFF;
+    let step: i32 = STEPS.iter().map(|&s| i32::from(mantissa >= s)).sum();
+    (octave * BINS_PER_OCTAVE as i32 + step).clamp(0, BINS as i32 - 1) as usize
 }
 
 fn representative(bin: usize) -> f32 {
@@ -69,6 +76,8 @@ impl SizeModel {
             dc: [[0; BINS]; 2],
             blocks: [0; 2],
         };
+        let inverse =
+            [&LUMA_QUANT, &CHROMA_QUANT].map(|b| b.map(|q| 1.0 / (COEFFICIENT_SCALE * q as f32)));
         let mut predictors = [0f32; 3];
         for (i, block) in blocks.iter().enumerate() {
             let slot = i % MCU_BLOCKS;
@@ -84,10 +93,20 @@ impl SizeModel {
             if diff > 0.0 {
                 model.dc[class][bin(diff)] += 1;
             }
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            {
+                let bins = wasm::bins(block, &inverse[class]);
+                let mut mask = super::nonzero_ac(block);
+                while mask != 0 {
+                    let n = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    model.ac[class][bins[n] as usize] += 1;
+                }
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
             for (n, &coefficient) in block.iter().enumerate().skip(1) {
                 if coefficient != 0 {
-                    let normalized =
-                        coefficient.unsigned_abs() as f32 / COEFFICIENT_SCALE / base[n] as f32;
+                    let normalized = coefficient.unsigned_abs() as f32 * inverse[class][n];
                     model.ac[class][bin(normalized)] += 1;
                 }
             }
@@ -117,9 +136,67 @@ impl SizeModel {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::*;
+
+    use super::{BINS, BINS_PER_OCTAVE, MIN_LOG2, STEPS};
+
+    fn position(v: v128, inverse: *const v128) -> v128 {
+        let steps = STEPS.map(|s| u32x4_splat(s));
+        let normalized = unsafe { f32x4_mul(f32x4_convert_u32x4(v), v128_load(inverse)) };
+        let octave = i32x4_sub(
+            u32x4_shr(normalized, 23),
+            i32x4_splat(127 + MIN_LOG2 as i32),
+        );
+        let mantissa = v128_and(normalized, u32x4_splat(0x7F_FFFF));
+        let mut position = i32x4_mul(octave, i32x4_splat(BINS_PER_OCTAVE as i32));
+        for s in steps {
+            position = i32x4_sub(position, u32x4_ge(mantissa, s));
+        }
+        i32x4_min(
+            i32x4_max(position, i32x4_splat(0)),
+            i32x4_splat(BINS as i32 - 1),
+        )
+    }
+
+    pub fn bins(block: &[i16; 64], inverse: &[f32; 64]) -> [i32; 64] {
+        let mut out = [0i32; 64];
+        let p = block.as_ptr() as *const v128;
+        let w = inverse.as_ptr() as *const v128;
+        let q = out.as_mut_ptr() as *mut v128;
+        for i in 0..8 {
+            unsafe {
+                let abs = i16x8_abs(v128_load(p.add(i)));
+                v128_store(
+                    q.add(2 * i),
+                    position(u32x4_extend_low_u16x8(abs), w.add(2 * i)),
+                );
+                v128_store(
+                    q.add(2 * i + 1),
+                    position(u32x4_extend_high_u16x8(abs), w.add(2 * i + 1)),
+                );
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bins_follow_log2() {
+        let mut state = 7u32;
+        for _ in 0..100_000 {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            let value = (state >> 8) as f32 / 4096.0 + 1e-3;
+            let exact = ((value as f64).log2() - MIN_LOG2 as f64) * BINS_PER_OCTAVE as f64;
+            let expected = (exact.floor().max(0.0) as usize).min(BINS - 1);
+            assert_eq!(bin(value), expected, "{value}");
+        }
+    }
 
     #[test]
     fn bins_round_trip() {

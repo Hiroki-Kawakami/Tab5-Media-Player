@@ -343,6 +343,50 @@ async function plan(files: File[], keys: string[], settings: Settings): Promise<
   return { applied, items };
 }
 
+class Timing {
+  private readonly start = performance.now();
+  private readonly engine: Record<string, number> = {};
+  frames = 0;
+
+  add(stage: string, ms: number) {
+    this.engine[stage] = (this.engine[stage] ?? 0) + ms;
+  }
+
+  measure<T>(stage: string, f: () => T): T {
+    const start = performance.now();
+    try {
+      return f();
+    } finally {
+      this.add(stage, performance.now() - start);
+    }
+  }
+
+  async wait(stage: string, promise: Promise<unknown>) {
+    const start = performance.now();
+    try {
+      await promise;
+    } finally {
+      this.add(stage, performance.now() - start);
+    }
+  }
+
+  log(file: string, pools: { encoder: EncoderPool; scale: ScalePool | null }) {
+    const round = (r: Record<string, number>) =>
+      Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Math.round(v)]));
+    const report = {
+      file,
+      wallMs: Math.round(performance.now() - this.start),
+      frames: this.frames,
+      engine: round(this.engine),
+      encoders: pools.encoder.size,
+      encoderBusyMs: round(pools.encoder.busy),
+      scalers: pools.scale?.size ?? 0,
+      scaleBusyMs: round(pools.scale?.busy ?? {}),
+    };
+    console.info(`[timing] ${JSON.stringify(report)}`);
+  }
+}
+
 async function until(condition: () => boolean, check: () => void): Promise<void> {
   while (!condition()) {
     check();
@@ -393,6 +437,7 @@ async function convert(
   const check = () => {
     if (cancelled.has(id)) throw new Cancelled();
   };
+  const timing = new Timing();
   const media = open(file);
   const rates = await aacRates;
   const info: PlanInfo = JSON.parse(media.plan(settings.preset, settings.video, settings.audio, rates));
@@ -414,11 +459,11 @@ async function convert(
     settings.audio,
     rates,
     (data: Uint8Array) => {
-      access.write(data, { at: position });
+      timing.measure("write", () => access.write(data, { at: position }));
       position += data.length;
     },
     (offset: number, data: Uint8Array) => {
-      access.write(data, { at: offset });
+      timing.measure("write", () => access.write(data, { at: offset }));
     },
   );
 
@@ -457,7 +502,10 @@ async function convert(
         !videoTrack.color && videoTrack.codec !== "h264",
       )
     : new MjpegPipeline(job, pool, p.storedWidth, p.storedHeight, fps, track, tasks, written);
-  const emit = (picture: Picture) => video.emit({ kind: picture.kind, data: picture.data.slice(0) });
+  const emit = (picture: Picture) => {
+    timing.frames += 1;
+    video.emit({ kind: picture.kind, data: picture.data.slice(0) });
+  };
   const yuvGeometry = job.yuvGeometry();
   const sourceColor = job.sourceColor();
 
@@ -492,12 +540,13 @@ async function convert(
     const repeats = job.repeats(decoded.timestamp);
     for (let i = 0; i < repeats && held; i++) emit(held);
     if (source instanceof VideoFrame) {
-      held = { kind: "rgba", data: render(source) };
+      held = { kind: "rgba", data: timing.measure("render", () => render(source)) };
       source.close();
     } else if (source.kind === "yuv") {
       held = { kind: "yuv", data: await source.data };
     } else {
-      held = { kind: "rgba", data: render(await source.data) };
+      const scaled = await source.data;
+      held = { kind: "rgba", data: timing.measure("render", () => render(scaled)) };
     }
     lastPts = decoded.timestamp;
     lastDuration = decoded.duration ?? 0;
@@ -628,17 +677,20 @@ async function convert(
         job.addAudio(data, packet.pts, samples);
       }
       packet.free();
-      await until(
-        () =>
-          decoder.decodeQueueSize < DECODE_QUEUE &&
-          video.ready() &&
-          (scaling.pool?.inflight ?? 0) < SCALE_QUEUE &&
-          (audioDecoder?.decodeQueueSize ?? 0) + (audioEncoder?.encodeQueueSize ?? 0) < AUDIO_QUEUE,
-        checkAll,
-      );
+      const blocked = () => {
+        if (decoder.decodeQueueSize >= DECODE_QUEUE) return "wait:decoder";
+        if (!video.ready()) return "wait:encoder";
+        if ((scaling.pool?.inflight ?? 0) >= SCALE_QUEUE) return "wait:scaler";
+        if ((audioDecoder?.decodeQueueSize ?? 0) + (audioEncoder?.encodeQueueSize ?? 0) >= AUDIO_QUEUE) {
+          return "wait:audio";
+        }
+        return null;
+      };
+      for (let stage = blocked(); stage; stage = blocked()) {
+        await timing.wait(stage, until(() => blocked() !== stage, checkAll));
+      }
     }
-    await decoder.flush();
-    await frames;
+    await timing.wait("wait:flush", decoder.flush().then(() => frames));
     checkAll();
     const end = lastPts + (lastDuration || 1e6 / fps);
     const repeats = job.finishFrames(end);
@@ -648,9 +700,10 @@ async function convert(
       flushAudio();
       await audioEncoder.flush();
     }
-    await video.finish(checkAll);
+    await timing.wait("wait:finish", video.finish(checkAll));
     checkAll();
     const report: string[] = JSON.parse(job.finish());
+    timing.log(file.name, { encoder: pool, scale: scaling.pool });
     access.flush();
     access.close();
     progress(1);

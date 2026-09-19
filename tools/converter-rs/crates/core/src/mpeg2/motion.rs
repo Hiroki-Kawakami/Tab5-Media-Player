@@ -144,21 +144,63 @@ impl Reference {
         let x = (mbx * 16) as i32 + (mv[0] >> 1);
         let y = (mby * 16) as i32 + (mv[1] >> 1);
         let plane = self.luma(mv[0] & 1, mv[1] & 1);
-        let mut sum = 0;
+        let start = y as usize * w + x as usize;
+        assert!(start + 15 * w + 16 <= plane.len());
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        return unsafe { wasm::sad(plane.as_ptr().add(start), w, cur, limit) };
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+        scalar_sad(&plane[start..], w, cur, limit)
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::*;
+
+    fn total(acc: v128) -> u32 {
+        let wide = u32x4_extadd_pairwise_u16x8(acc);
+        u32x4_extract_lane::<0>(wide)
+            + u32x4_extract_lane::<1>(wide)
+            + u32x4_extract_lane::<2>(wide)
+            + u32x4_extract_lane::<3>(wide)
+    }
+
+    pub unsafe fn sad(plane: *const u8, stride: usize, cur: &[u8; 256], limit: u32) -> u32 {
+        let mut acc = u16x8_splat(0);
         for r in 0..16 {
-            let start = (y as usize + r) * w + x as usize;
-            let row = &plane[start..start + 16];
-            sum += row
-                .iter()
-                .zip(&cur[r * 16..r * 16 + 16])
-                .map(|(&a, &b)| a.abs_diff(b) as u32)
-                .sum::<u32>();
-            if sum >= limit {
-                return sum;
+            let (a, b) = unsafe {
+                (
+                    v128_load(plane.add(r * stride) as *const v128),
+                    v128_load(cur.as_ptr().add(r * 16) as *const v128),
+                )
+            };
+            let diff = v128_or(u8x16_sub_sat(a, b), u8x16_sub_sat(b, a));
+            acc = i16x8_add(acc, u16x8_extadd_pairwise_u8x16(diff));
+            if r % 4 == 3 && r < 15 {
+                let sum = total(acc);
+                if sum >= limit {
+                    return sum;
+                }
             }
         }
-        sum
+        total(acc)
     }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+fn scalar_sad(plane: &[u8], stride: usize, cur: &[u8; 256], limit: u32) -> u32 {
+    let mut sum = 0;
+    for r in 0..16 {
+        sum += plane[r * stride..r * stride + 16]
+            .iter()
+            .zip(&cur[r * 16..r * 16 + 16])
+            .map(|(&a, &b)| a.abs_diff(b) as u32)
+            .sum::<u32>();
+        if sum >= limit {
+            return sum;
+        }
+    }
+    sum
 }
 
 pub fn luma_block(planes: &Planes, mbx: usize, mby: usize) -> [u8; 256] {

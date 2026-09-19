@@ -27,6 +27,16 @@ pub struct Taps {
     pub len: usize,
     pub start: Vec<u32>,
     pub weights: Vec<i16>,
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_feature = "simd128")),
+        allow(dead_code)
+    )]
+    padded_len: usize,
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_feature = "simd128")),
+        allow(dead_code)
+    )]
+    padded: Vec<i16>,
 }
 
 impl Taps {
@@ -65,10 +75,21 @@ impl Taps {
             start.push(first as u32);
             weights.extend(fixed.iter().map(|&v| v as i16));
         }
+        let padded_len = len.next_multiple_of(8);
+        let padded = weights
+            .chunks_exact(len)
+            .flat_map(|w| {
+                w.iter()
+                    .copied()
+                    .chain(std::iter::repeat_n(0, padded_len - len))
+            })
+            .collect();
         Self {
             len,
             start,
             weights,
+            padded_len,
+            padded,
         }
     }
 }
@@ -128,6 +149,11 @@ pub struct Resampler {
     pub horizontal: Taps,
     pub vertical: Taps,
     rows: Vec<i16>,
+    #[cfg_attr(
+        not(all(target_arch = "wasm32", target_feature = "simd128")),
+        allow(dead_code)
+    )]
+    line: Vec<u8>,
 }
 
 impl Resampler {
@@ -138,6 +164,7 @@ impl Resampler {
             horizontal: Taps::new(src_width, dst_width),
             vertical: Taps::new(src_height, dst_height),
             rows: Vec::new(),
+            line: Vec::new(),
         }
     }
 
@@ -165,6 +192,12 @@ impl Resampler {
         let (dw, dh) = self.dst;
         assert!(stride >= sw && src.len() >= (sh - 1) * stride + sw);
         assert_eq!(dst.len(), dw * dh);
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        {
+            let _ = dh;
+            wasm::plane(self, src, stride, dst);
+        }
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
         run::<1, 1>(
             &self.horizontal,
             &self.vertical,
@@ -174,6 +207,110 @@ impl Resampler {
             self.dst,
             dst,
         );
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::*;
+
+    use super::{EXTRA_BITS, Resampler, Taps, WEIGHT_BITS};
+
+    const H_SHIFT: u32 = WEIGHT_BITS - EXTRA_BITS;
+    const V_SHIFT: u32 = WEIGHT_BITS + EXTRA_BITS;
+
+    unsafe fn dot(line: *const u8, weights: *const i16, len: usize) -> v128 {
+        let mut acc = i32x4_splat(0);
+        for k in (0..len).step_by(8) {
+            unsafe {
+                let p = u16x8_load_extend_u8x8(line.add(k));
+                let w = v128_load(weights.add(k) as *const v128);
+                acc = i32x4_add(acc, i32x4_dot_i16x8(p, w));
+            }
+        }
+        acc
+    }
+
+    fn horizontal(h: &Taps, line: &[u8], out: &mut [i16]) {
+        let len = h.padded_len;
+        let round = 1i32 << (H_SHIFT - 1);
+        let tap = |x: usize| unsafe {
+            dot(
+                line.as_ptr().add(h.start[x] as usize),
+                h.padded.as_ptr().add(x * len),
+                len,
+            )
+        };
+        let mut x = 0;
+        while x + 4 <= out.len() {
+            let [a, b, c, d] = [tap(x), tap(x + 1), tap(x + 2), tap(x + 3)];
+            let ab = i32x4_add(
+                i32x4_shuffle::<0, 4, 1, 5>(a, b),
+                i32x4_shuffle::<2, 6, 3, 7>(a, b),
+            );
+            let cd = i32x4_add(
+                i32x4_shuffle::<0, 4, 1, 5>(c, d),
+                i32x4_shuffle::<2, 6, 3, 7>(c, d),
+            );
+            let sum = i32x4_add(
+                i32x4_shuffle::<0, 1, 4, 5>(ab, cd),
+                i32x4_shuffle::<2, 3, 6, 7>(ab, cd),
+            );
+            let r = i32x4_shr(i32x4_add(sum, i32x4_splat(round)), H_SHIFT);
+            let n = i16x8_narrow_i32x4(r, r);
+            unsafe { v128_store64_lane::<0>(n, out.as_mut_ptr().add(x) as *mut u64) };
+            x += 4;
+        }
+        for (x, o) in out.iter_mut().enumerate().skip(x) {
+            let v = tap(x);
+            let sum = i32x4_extract_lane::<0>(v)
+                + i32x4_extract_lane::<1>(v)
+                + i32x4_extract_lane::<2>(v)
+                + i32x4_extract_lane::<3>(v);
+            *o = ((sum + round) >> H_SHIFT) as i16;
+        }
+    }
+
+    fn vertical(v: &Taps, rows: &[i16], width: usize, y: usize, out: &mut [u8]) {
+        let first = v.start[y] as usize;
+        let weights = &v.weights[y * v.len..(y + 1) * v.len];
+        let round = 1i32 << (V_SHIFT - 1);
+        let mut x = 0;
+        while x + 8 <= width {
+            let (mut lo, mut hi) = (i32x4_splat(round), i32x4_splat(round));
+            for (t, &w) in weights.iter().enumerate() {
+                let r =
+                    unsafe { v128_load(rows.as_ptr().add((first + t) * width + x) as *const v128) };
+                let w = i16x8_splat(w);
+                lo = i32x4_add(lo, i32x4_extmul_low_i16x8(r, w));
+                hi = i32x4_add(hi, i32x4_extmul_high_i16x8(r, w));
+            }
+            let n = i16x8_narrow_i32x4(i32x4_shr(lo, V_SHIFT), i32x4_shr(hi, V_SHIFT));
+            let b = u8x16_narrow_i16x8(n, n);
+            unsafe { v128_store64_lane::<0>(b, out.as_mut_ptr().add(x) as *mut u64) };
+            x += 8;
+        }
+        for x in x..width {
+            let mut acc = round;
+            for (t, &w) in weights.iter().enumerate() {
+                acc += rows[(first + t) * width + x] as i32 * w as i32;
+            }
+            out[x] = (acc >> V_SHIFT).clamp(0, 255) as u8;
+        }
+    }
+
+    pub fn plane(r: &mut Resampler, src: &[u8], stride: usize, dst: &mut [u8]) {
+        let (sw, sh) = r.src;
+        let (dw, dh) = r.dst;
+        r.rows.resize(sh * dw, 0);
+        r.line.resize(sw + r.horizontal.padded_len, 0);
+        for (y, out) in r.rows.chunks_exact_mut(dw).enumerate() {
+            r.line[..sw].copy_from_slice(&src[y * stride..y * stride + sw]);
+            horizontal(&r.horizontal, &r.line, out);
+        }
+        for (y, out) in dst.chunks_exact_mut(dw).take(dh).enumerate() {
+            vertical(&r.vertical, &r.rows, dw, y, out);
+        }
     }
 }
 

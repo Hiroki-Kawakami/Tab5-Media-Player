@@ -9,7 +9,9 @@
     "dev": "npm run wasm && vite",
     "build": "npm run wasm && tsc --noEmit && vite build",
     "preview": "vite preview",
-    "check:jpeg": "cargo build --manifest-path ../Cargo.toml -q --release -p tab5conv-wasm --example jpeg && node scripts/check-jpeg.mjs ../target/release/examples/jpeg",
+    "check:wasm": "npm run wasm && cargo build --manifest-path ../Cargo.toml -q --release -p tab5conv-wasm --examples && node scripts/check-wasm.mjs ../target/release/examples",
+    "bench": "node scripts/bench.mjs",
+    "bench:kernels": "npm run wasm && node scripts/kernels.mjs",
     "e2e": "cargo build --manifest-path ../Cargo.toml -q --release -p tab5conv && node scripts/e2e.mjs ../target/release/tab5conv"
   },
   "dependencies": {

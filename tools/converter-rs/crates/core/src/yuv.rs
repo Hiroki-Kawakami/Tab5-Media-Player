@@ -64,14 +64,22 @@ impl Plane {
                 data: self.data.iter().rev().copied().collect(),
             },
             d => {
+                const TILE: usize = 16;
                 let mut out = Self::new(h, w);
-                for y in 0..w {
-                    for x in 0..h {
-                        out.data[y * h + x] = if d == 90 {
-                            self.at(y, h - 1 - x)
-                        } else {
-                            self.at(w - 1 - y, x)
-                        };
+                for ty in (0..w).step_by(TILE) {
+                    for tx in (0..h).step_by(TILE) {
+                        for y in ty..(ty + TILE).min(w) {
+                            let row = &mut out.data[y * h..(y + 1) * h];
+                            for (x, o) in
+                                row.iter_mut().enumerate().take((tx + TILE).min(h)).skip(tx)
+                            {
+                                *o = if d == 90 {
+                                    self.data[(h - 1 - x) * w + y]
+                                } else {
+                                    self.data[x * w + (w - 1 - y)]
+                                };
+                            }
+                        }
                     }
                 }
                 out
@@ -79,7 +87,18 @@ impl Plane {
         }
     }
 
-    fn crop(&self, x0: usize, y0: usize, width: usize, height: usize) -> Self {
+    fn turned(self, degrees: u32) -> Self {
+        if degrees.is_multiple_of(360) {
+            self
+        } else {
+            self.rotate_cw(degrees)
+        }
+    }
+
+    fn crop(self, x0: usize, y0: usize, width: usize, height: usize) -> Self {
+        if (x0, y0, width, height) == (0, 0, self.width, self.height) {
+            return self;
+        }
         let mut out = Self::new(width, height);
         for y in 0..height {
             let start = (y0 + y) * self.width + x0;
@@ -88,9 +107,9 @@ impl Plane {
         out
     }
 
-    fn resize(&self, width: usize, height: usize, cache: &mut Option<Resampler>) -> Self {
+    fn resize(self, width: usize, height: usize, cache: &mut Option<Resampler>) -> Self {
         if (width, height) == (self.width, self.height) {
-            return self.clone();
+            return self;
         }
         let fresh = |r: &Resampler| r.src != (self.width, self.height) || r.dst != (width, height);
         if cache.as_ref().is_none_or(fresh) {
@@ -119,10 +138,14 @@ fn read(
         bail!("plane {index} is truncated");
     }
     let mut out = Plane::new(width, height);
-    for y in 0..height {
+    for (y, dst) in out.data.chunks_exact_mut(width).enumerate() {
         let row = &source.data[offset + y * stride..];
-        for x in 0..width {
-            out.data[y * width + x] = row[x * step + phase];
+        if step == 1 {
+            dst.copy_from_slice(&row[..width]);
+        } else {
+            for (x, d) in dst.iter_mut().enumerate() {
+                *d = row[x * step + phase];
+            }
         }
     }
     Ok(out)
@@ -220,6 +243,7 @@ struct Transform {
     rows: [[f32; 3]; 3],
     input: [(f32, f32); 3],
     output: [(f32, f32); 3],
+    folded: [[f32; 3]; 3],
 }
 
 impl Transform {
@@ -259,10 +283,14 @@ impl Transform {
                 *value = (0..3).map(|k| from_rgb[i][k] * to_rgb[k][j]).sum();
             }
         }
+        let (input, output) = (range(color.full_range), range(output == Output::Bt601Full));
+        let folded =
+            std::array::from_fn(|r| std::array::from_fn(|k| rows[r][k] * output[r].1 / input[k].1));
         Self {
             rows,
-            input: range(color.full_range),
-            output: range(output == Output::Bt601Full),
+            input,
+            output,
+            folded,
         }
     }
 
@@ -272,12 +300,21 @@ impl Transform {
         unit && self.input == self.output
     }
 
+    fn apply_row(&self, row: usize, y: &[u8], u: &[u8], v: &[u8], out: &mut Vec<u8>) {
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        let done = wasm::apply_row(self, row, y, u, v, out);
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+        let done = 0;
+        for i in done..y.len() {
+            out.push(self.apply(row, [y[i], u[i], v[i]]));
+        }
+    }
+
     fn apply(&self, row: usize, yuv: [u8; 3]) -> u8 {
-        let n: [f32; 3] =
-            std::array::from_fn(|k| (yuv[k] as f32 - self.input[k].0) / self.input[k].1);
-        let v: f32 = (0..3).map(|k| self.rows[row][k] * n[k]).sum();
-        let (offset, scale) = self.output[row];
-        (offset + v * scale).round().clamp(0.0, 255.0) as u8
+        let f = &self.folded[row];
+        let d: [f32; 3] = std::array::from_fn(|k| yuv[k] as f32 - self.input[k].0);
+        let v = f[0] * d[0] + f[1] * d[1] + f[2] * d[2];
+        (self.output[row].0 + v).round().clamp(0.0, 255.0) as u8
     }
 }
 
@@ -313,14 +350,14 @@ impl Converter {
         let back = (360 - g.output_rotation % 360) % 360;
         let luma = y
             .resize(dw, dh, &mut self.luma)
-            .rotate_cw(g.source_rotation)
+            .turned(g.source_rotation)
             .crop(x0, y0, w, h)
-            .rotate_cw(back);
+            .turned(back);
         let chroma = |p: Plane, cache: &mut Option<Resampler>| {
             p.resize(dw.div_ceil(2), dh.div_ceil(2), cache)
-                .rotate_cw(g.source_rotation)
+                .turned(g.source_rotation)
                 .crop(x0 / 2, y0 / 2, w.div_ceil(2), h.div_ceil(2))
-                .rotate_cw(back)
+                .turned(back)
         };
         let u = chroma(u, &mut self.chroma);
         let v = chroma(v, &mut self.chroma);
@@ -342,27 +379,111 @@ impl Converter {
             return Ok(out);
         }
         let (w, h) = (luma.width, luma.height);
-        for y in 0..h {
-            for x in 0..w {
-                let (cx, cy) = (x / 2, y / 2);
-                out.push(transform.apply(0, [luma.at(x, y), u.at(cx, cy), v.at(cx, cy)]));
+        let mut chroma = [
+            Vec::with_capacity(u.data.len()),
+            Vec::with_capacity(u.data.len()),
+        ];
+        let (mut cu, mut cv) = (vec![0; w], vec![0; w]);
+        let doubled = |dst: &mut [u8], src: &[u8]| {
+            let pairs = dst.len() / 2;
+            for (pair, &c) in dst.chunks_exact_mut(2).zip(&src[..pairs]) {
+                pair[0] = c;
+                pair[1] = c;
             }
-        }
-        let mean_luma = |cx: usize, cy: usize| {
-            let mut sum = 0u32;
-            for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                sum += luma.at((2 * cx + dx).min(w - 1), (2 * cy + dy).min(h - 1)) as u32;
+            if dst.len() % 2 == 1 {
+                dst[dst.len() - 1] = src[pairs];
             }
-            ((sum + 2) / 4) as u8
         };
-        for row in 1..3 {
-            for cy in 0..u.height {
-                for cx in 0..u.width {
-                    out.push(transform.apply(row, [mean_luma(cx, cy), u.at(cx, cy), v.at(cx, cy)]));
-                }
-            }
+        for (y, row) in luma.data.chunks_exact(w).enumerate() {
+            let cy = y / 2;
+            doubled(&mut cu, &u.data[cy * u.width..(cy + 1) * u.width]);
+            doubled(&mut cv, &v.data[cy * v.width..(cy + 1) * v.width]);
+            transform.apply_row(0, row, &cu, &cv, &mut out);
         }
+        let mut mean = vec![0; u.width];
+        for cy in 0..u.height {
+            let a = &luma.data[2 * cy * w..][..w];
+            let b = &luma.data[(2 * cy + 1).min(h - 1) * w..][..w];
+            for ((m, a), b) in mean
+                .iter_mut()
+                .zip(a.chunks_exact(2))
+                .zip(b.chunks_exact(2))
+            {
+                let sum = a[0] as u16 + a[1] as u16 + b[0] as u16 + b[1] as u16;
+                *m = ((sum + 2) / 4) as u8;
+            }
+            if w % 2 == 1 {
+                let sum = 2 * a[w - 1] as u16 + 2 * b[w - 1] as u16;
+                mean[w / 2] = ((sum + 2) / 4) as u8;
+            }
+            let at = cy * u.width..(cy + 1) * u.width;
+            let (cb, cr) = (&u.data[at.clone()], &v.data[at]);
+            transform.apply_row(1, &mean, cb, cr, &mut chroma[0]);
+            transform.apply_row(2, &mean, cb, cr, &mut chroma[1]);
+        }
+        out.extend_from_slice(&chroma[0]);
+        out.extend_from_slice(&chroma[1]);
         Ok(out)
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::*;
+
+    use super::Transform;
+    use crate::num::wasm::round;
+
+    fn apply(f: &[v128; 3], o: &[v128; 3], offset: v128, k: [v128; 3]) -> v128 {
+        let d: [v128; 3] = std::array::from_fn(|c| f32x4_sub(k[c], o[c]));
+        let mut v = f32x4_mul(f[0], d[0]);
+        v = f32x4_add(v, f32x4_mul(f[1], d[1]));
+        v = f32x4_add(v, f32x4_mul(f[2], d[2]));
+        let r = round(f32x4_add(offset, v));
+        i32x4_trunc_sat_f32x4(f32x4_min(
+            f32x4_max(r, f32x4_splat(0.0)),
+            f32x4_splat(255.0),
+        ))
+    }
+
+    fn quarters(v: v128) -> [v128; 4] {
+        let (lo, hi) = (u16x8_extend_low_u8x16(v), u16x8_extend_high_u8x16(v));
+        [
+            u32x4_extend_low_u16x8(lo),
+            u32x4_extend_high_u16x8(lo),
+            u32x4_extend_low_u16x8(hi),
+            u32x4_extend_high_u16x8(hi),
+        ]
+        .map(|q| f32x4_convert_u32x4(q))
+    }
+
+    pub fn apply_row(
+        t: &Transform,
+        row: usize,
+        y: &[u8],
+        u: &[u8],
+        v: &[u8],
+        out: &mut Vec<u8>,
+    ) -> usize {
+        let n = y.len() / 16 * 16;
+        let (u, v) = (&u[..y.len()], &v[..y.len()]);
+        let f = t.folded[row].map(|c| f32x4_splat(c));
+        let o = t.input.map(|(o, _)| f32x4_splat(o));
+        let offset = f32x4_splat(t.output[row].0);
+        for i in (0..n).step_by(16) {
+            let load = |p: &[u8]| unsafe { quarters(v128_load(p.as_ptr().add(i) as *const v128)) };
+            let (ys, us, vs) = (load(y), load(u), load(v));
+            let w: [v128; 4] =
+                std::array::from_fn(|q| apply(&f, &o, offset, [ys[q], us[q], vs[q]]));
+            let bytes = u8x16_narrow_i16x8(
+                i16x8_narrow_i32x4(w[0], w[1]),
+                i16x8_narrow_i32x4(w[2], w[3]),
+            );
+            let mut chunk = [0u8; 16];
+            unsafe { v128_store(chunk.as_mut_ptr() as *mut v128, bytes) };
+            out.extend_from_slice(&chunk);
+        }
+        n
     }
 }
 

@@ -10,6 +10,9 @@ pub use estimate::SizeModel;
 use huffman::Table;
 use tables::{QuantTables, ZIGZAG};
 
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+use crate::num;
+
 const MAX_AC: i16 = 1023;
 const COEFFICIENT_SCALE: f32 = 8.0;
 const MCU_BLOCKS: usize = 6;
@@ -119,6 +122,16 @@ pub fn encode(coefficients: &Coefficients, quality: u8, limits: &Limits) -> Enco
 }
 
 fn block_at(plane: &[u8], stride: usize, rows: usize, bx: usize, by: usize) -> [f32; 64] {
+    if bx + 8 <= stride && by + 8 <= rows {
+        let mut out = [0f32; 64];
+        for (y, row) in out.chunks_exact_mut(8).enumerate() {
+            let src = &plane[(by + y) * stride + bx..][..8];
+            for (o, &p) in row.iter_mut().zip(src) {
+                *o = p as f32 - 128.0;
+            }
+        }
+        return out;
+    }
     std::array::from_fn(|i| {
         let x = (bx + i % 8).min(stride - 1);
         let y = (by + i / 8).min(rows - 1);
@@ -128,7 +141,10 @@ fn block_at(plane: &[u8], stride: usize, rows: usize, bx: usize, by: usize) -> [
 
 fn stored(block: &[f32; 64]) -> [i16; 64] {
     let coefficients = dct::forward(block);
-    coefficients.map(|c| (c * COEFFICIENT_SCALE).round() as i16)
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    return wasm::stored(&coefficients);
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    coefficients.map(|c| num::round(c * COEFFICIENT_SCALE) as i16)
 }
 
 fn transform(frame: &Frame) -> Coefficients {
@@ -155,24 +171,44 @@ fn transform(frame: &Frame) -> Coefficients {
 }
 
 fn quantize(coefficients: &Coefficients, tables: &QuantTables) -> Vec<[i16; 64]> {
+    let divisors = [&tables.luma, &tables.chroma].map(|t| t.map(|q| q as f32 * COEFFICIENT_SCALE));
     coefficients
         .blocks
         .iter()
         .enumerate()
         .map(|(i, block)| {
-            let table = if i % MCU_BLOCKS < 4 {
-                &tables.luma
-            } else {
-                &tables.chroma
-            };
-            std::array::from_fn(|k| {
-                let n = ZIGZAG[k];
-                let divisor = table[n] as f32 * COEFFICIENT_SCALE;
-                let q = (block[n] as f32 / divisor).round() as i16;
-                if k == 0 { q } else { q.clamp(-MAX_AC, MAX_AC) }
-            })
+            let divisor = &divisors[usize::from(i % MCU_BLOCKS >= 4)];
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            let natural = wasm::quantize(block, divisor);
+            #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+            let natural: [i16; 64] = std::array::from_fn(|n| {
+                let q = num::round(block[n] as f32 / divisor[n]) as i16;
+                if n == 0 { q } else { q.clamp(-MAX_AC, MAX_AC) }
+            });
+            ZIGZAG.map(|n| natural[n])
         })
         .collect()
+}
+
+fn nonzero_ac(block: &[i16; 64]) -> u64 {
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    let mask = wasm::nonzero(block);
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+    let mask = nonzero(block);
+    mask & !1
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+fn nonzero(block: &[i16; 64]) -> u64 {
+    let mut mask = 0u64;
+    for (i, chunk) in block.chunks_exact(8).enumerate() {
+        let mut bits = 0u64;
+        for (j, &c) in chunk.iter().enumerate() {
+            bits |= u64::from(c != 0) << j;
+        }
+        mask |= bits << (8 * i);
+    }
+    mask
 }
 
 fn category(value: i32) -> u8 {
@@ -213,12 +249,14 @@ fn symbols(quantized: &[[i16; 64]], mut sink: impl FnMut(Symbol)) {
             diff,
         });
 
-        let mut run = 0u8;
-        for &coef in &block[1..] {
-            if coef == 0 {
-                run += 1;
-                continue;
-            }
+        let mut mask = nonzero_ac(block);
+        let mut last = 0u32;
+        while mask != 0 {
+            let k = mask.trailing_zeros();
+            mask &= mask - 1;
+            let mut run = (k - last - 1) as u8;
+            last = k;
+            let coef = block[k as usize];
             while run > 15 {
                 sink(Symbol::Ac {
                     chroma,
@@ -236,9 +274,8 @@ fn symbols(quantized: &[[i16; 64]], mut sink: impl FnMut(Symbol)) {
                 value,
                 category: cat,
             });
-            run = 0;
         }
-        if run > 0 {
+        if last < 63 {
             sink(Symbol::Ac {
                 chroma,
                 symbol: 0x00,
@@ -381,6 +418,68 @@ fn encode_blocks(coefficients: &Coefficients, quality: u8, mode: HuffmanMode) ->
     let mut out = writer.finish();
     out.extend([0xFF, 0xD9]);
     out
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod wasm {
+    use core::arch::wasm32::*;
+
+    use super::{COEFFICIENT_SCALE, MAX_AC};
+    use crate::num::wasm::round_i16x8;
+
+    pub fn stored(coefficients: &[f32; 64]) -> [i16; 64] {
+        let mut out = [0i16; 64];
+        let p = coefficients.as_ptr() as *const v128;
+        let q = out.as_mut_ptr() as *mut v128;
+        let scale = f32x4_splat(COEFFICIENT_SCALE);
+        for i in 0..8 {
+            unsafe {
+                let lo = f32x4_mul(v128_load(p.add(2 * i)), scale);
+                let hi = f32x4_mul(v128_load(p.add(2 * i + 1)), scale);
+                v128_store(q.add(i), round_i16x8(lo, hi));
+            }
+        }
+        out
+    }
+
+    pub fn quantize(block: &[i16; 64], divisor: &[f32; 64]) -> [i16; 64] {
+        let mut out = [0i16; 64];
+        let p = block.as_ptr() as *const v128;
+        let d = divisor.as_ptr() as *const v128;
+        let q = out.as_mut_ptr() as *mut v128;
+        let (lo_limit, hi_limit) = (i16x8_splat(-MAX_AC), i16x8_splat(MAX_AC));
+        for i in 0..8 {
+            unsafe {
+                let v = v128_load(p.add(i));
+                let lo = f32x4_convert_i32x4(i32x4_extend_low_i16x8(v));
+                let hi = f32x4_convert_i32x4(i32x4_extend_high_i16x8(v));
+                let lo = f32x4_div(lo, v128_load(d.add(2 * i)));
+                let hi = f32x4_div(hi, v128_load(d.add(2 * i + 1)));
+                let r = round_i16x8(lo, hi);
+                let clamped = i16x8_min(i16x8_max(r, lo_limit), hi_limit);
+                v128_store(
+                    q.add(i),
+                    if i == 0 {
+                        i16x8_replace_lane::<0>(clamped, i16x8_extract_lane::<0>(r))
+                    } else {
+                        clamped
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    pub fn nonzero(block: &[i16; 64]) -> u64 {
+        let p = block.as_ptr() as *const v128;
+        let zero = i16x8_splat(0);
+        let mut mask = 0u64;
+        for i in 0..8 {
+            let v = unsafe { v128_load(p.add(i)) };
+            mask |= u64::from(i16x8_bitmask(i16x8_ne(v, zero))) << (8 * i);
+        }
+        mask
+    }
 }
 
 #[cfg(test)]

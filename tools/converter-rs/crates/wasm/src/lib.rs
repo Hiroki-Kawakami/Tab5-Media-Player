@@ -23,7 +23,7 @@ use tab5conv_core::yuv::Output;
 use tab5conv_core::{Specs, audio, color, pcm, preset, video};
 use wasm_bindgen::prelude::*;
 
-mod mpeg2;
+pub mod mpeg2;
 
 use mpeg2::{Config, Mpeg2Mux, Pictures, yuv_geometry};
 use tab5conv_core::color::Matrix;

@@ -5,6 +5,7 @@ use super::tables::{DEFAULT_INTRA, ZIGZAG};
 use super::vlc::DctTable;
 
 const MAX_LEVEL: i32 = 2047;
+const MAX_NODES: usize = 1 + 2 * 64;
 const INTRA_BIAS: f32 = 0.375;
 
 pub struct Quantiser {
@@ -36,6 +37,10 @@ impl Quantiser {
 
     fn recon(&self, level: i32, weight: i32, inter: bool) -> i32 {
         (((2 * level + i32::from(inter)) * weight * self.qs) >> 5).min(MAX_LEVEL)
+    }
+
+    pub fn inter_zero_below(&self) -> f32 {
+        self.recon(1, Self::weight(true, 0), true) as f32 / 2.0
     }
 
     pub fn intra(&self, coef: &[f32; 64], table: &DctTable) -> [i16; 64] {
@@ -91,13 +96,15 @@ impl Quantiser {
             zero[i + 1] = zero[i] + f * f;
         }
         let gap = |from: isize, to: usize| zero[to] - zero[(from + 1) as usize];
-        let mut nodes = vec![Node {
+        let mut nodes = [Node {
             pos: start as isize - 1,
             cost: 0.0,
             level: 0,
             prev: 0,
-        }];
-        let mut alive: Vec<usize> = vec![0];
+        }; MAX_NODES];
+        let mut used = 1;
+        let mut alive = [0u8; MAX_NODES];
+        let mut living = 1;
         for (i, &j) in ZIGZAG.iter().enumerate().skip(start) {
             let f = coef[j].abs();
             let weight = Self::weight(inter, j);
@@ -110,7 +117,8 @@ impl Quantiser {
                 let d = f - self.recon(level, weight, inter) as f32;
                 let dist = d * d;
                 let mut best = (f32::INFINITY, 0);
-                for &n in &alive {
+                for &n in &alive[..living] {
+                    let n = n as usize;
                     let node = &nodes[n];
                     let run = (i as isize - node.pos - 1) as usize;
                     let first = inter && n == 0;
@@ -121,21 +129,33 @@ impl Quantiser {
                     }
                 }
                 let sign = if coef[j] < 0.0 { -1 } else { 1 };
-                nodes.push(Node {
+                nodes[used] = Node {
                     pos: i as isize,
                     cost: best.0,
                     level: sign * level,
                     prev: best.1,
-                });
+                };
+                used += 1;
                 best_here = best_here.min(best.0);
             }
-            let fresh = nodes.len() - count..nodes.len();
-            alive.retain(|&n| nodes[n].cost + gap(nodes[n].pos, i + 1) < best_here);
-            alive.extend(fresh);
+            let mut kept = 0;
+            for a in 0..living {
+                let node = &nodes[alive[a] as usize];
+                if node.cost + gap(node.pos, i + 1) < best_here {
+                    alive[kept] = alive[a];
+                    kept += 1;
+                }
+            }
+            living = kept;
+            for n in used - count..used {
+                alive[living] = n as u8;
+                living += 1;
+            }
         }
         let eob = table.eob.1 as f32;
         let mut end = (f32::INFINITY, 0);
-        for &n in &alive {
+        for &n in &alive[..living] {
+            let n = n as usize;
             let node = &nodes[n];
             let bits = if n == 0 && inter { 0.0 } else { eob };
             let cost = node.cost + gap(node.pos, 64) + self.lambda * bits;
@@ -192,6 +212,34 @@ mod tests {
         assert_eq!(deq[0], 800);
         assert!((deq[1] as f32 + 100.0).abs() <= 8.0);
         assert!((deq[8] as f32 - 30.0).abs() <= 8.0);
+    }
+
+    #[test]
+    fn small_inter_residuals_quantise_to_zero() {
+        let mut state = 3u32;
+        for code in 1..=31u8 {
+            for trellis in [false, true] {
+                let q = Quantiser::new(code, 0.85 * (code as f32).powi(2), trellis);
+                let limit = q.inter_zero_below() / 0.251;
+                for spread in [1usize, 2, 4, 64] {
+                    let mut pixels = [0f32; 64];
+                    for (i, p) in pixels.iter_mut().enumerate() {
+                        state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                        if i % spread == 0 {
+                            *p = if state & 0x8000 != 0 { 1.0 } else { -1.0 };
+                        }
+                    }
+                    let sum: f32 = pixels.iter().map(|p| p.abs()).sum();
+                    let scale = (limit / sum).floor().max(0.0);
+                    let pixels = pixels.map(|p| p * scale);
+                    let levels = q.inter(&crate::jpeg::dct::forward(&pixels), dct(false));
+                    assert!(
+                        levels.iter().all(|&l| l == 0),
+                        "code {code} spread {spread}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

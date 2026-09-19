@@ -9,6 +9,7 @@ pub mod jpeg;
 pub mod media;
 pub mod mjpeg;
 pub mod mpeg2;
+pub mod num;
 pub mod pcm;
 pub mod preset;
 pub mod ratecontrol;

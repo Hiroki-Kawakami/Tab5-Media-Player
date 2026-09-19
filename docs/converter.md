@@ -83,7 +83,9 @@ nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri build --
 ```sh
 nix develop -c bash -c 'cd tools/converter-rs/web && npm run dev'         # http://localhost:5173
 nix develop -c bash -c 'cd tools/converter-rs/web && npm run e2e'         # converts in Chrome, checks against the CLI
-nix develop -c bash -c 'cd tools/converter-rs/web && npm run check:jpeg'  # wasm and native JPEGs are identical
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run check:wasm'  # wasm (SIMD) and native output are identical
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run bench [clip...]'  # time per stage, see below
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run bench:kernels'    # wasm kernels in node, with output hashes
 ```
 
 The same UI runs with `web/src/browser/` as its backend: an engine worker
@@ -120,8 +122,7 @@ to the origin private file system and then downloaded.
   encoder, see [below](#the-browsers-mpeg-2-encoder). MJPEG uses the CLI's
   encoder and rate control (`core/src/mjpeg.rs` holds the loop both use). Only size models travel
   between workers; each frame's coefficients stay in the worker that will
-  encode it. `+simd128` (`.cargo/config.toml`) leaves the output identical
-  to the native encoder.
+  encode it.
 - **Frames are taken as YUV, not drawn to a canvas.** `scale.worker.ts`
   gets each `VideoFrame`, copies its planes out with `copyTo` (I420, NV12,
   I422 and I444), and `core/src/yuv.rs` scales, rotates, crops and
@@ -153,9 +154,9 @@ to the origin private file system and then downloaded.
   - **No `willReadFrequently` on the fallback canvas.** It makes the canvas
     CPU-backed and `drawImage` then took 16 ms a frame.
   - **The scale workers get at most 8 frames at a time**; decoder frames
-    held elsewhere can stall the decoder. The resampler's weights are
-    fixed-point tables applied in two passes, the shape a wasm SIMD loop or
-    a WebGPU shader would take.
+    held elsewhere can stall the decoder. More scale workers (6 or 8) did
+    not convert faster: the decoder and `copyTo` (about 5 ms a 1080p frame)
+    were then the limit.
 - **Chrome encodes AAC only at 44.1 and 48 kHz** (checked on macOS). The
   browser plans audio with `AudioSpec::plan_for`, which raises an unset
   sample rate to the next supported one and rejects an explicit one it
@@ -168,6 +169,29 @@ to the origin private file system and then downloaded.
   per-platform value to rely on.
 - **Frame rate conversion** (`FrameSelector`) keeps, for each output slot,
   the last frame whose pts rounds to it, like ffmpeg's `fps` filter.
+- **`npm run bench` says which stage limits the speed.** The engine logs a
+  `[timing]` line per conversion: the workers' busy time per stage and how
+  long the demux loop waited, by the condition that held it (`wait:scaler`,
+  `wait:encoder`, ...). Busy time near 100% of the wall time times the
+  worker count marks the bottleneck. It converts a 30 s 1080p `testsrc2`
+  clip unless clips are given; `testsrc2` is easier to encode than real
+  footage, so compare runs on the same clip; runs vary by about 10%. Like
+  `e2e`, it serves `dist/`.
+- **Hot loops have a wasm SIMD version next to the scalar one**
+  (`mod wasm` under `target_feature = "simd128"`): the resampler, colour
+  conversion, forward DCT, JPEG quantisation and size model, MPEG-2 SAD.
+  Native builds, the CLI included, run the scalar code, and
+  `npm run check:wasm` checks that both give the same bytes. So a SIMD
+  path must do the same float operations in the same order per lane, with
+  no FMA; relaxed SIMD is not used because its results vary by machine.
+  `bench:kernels` prints a hash of each kernel's output to show whether a
+  change altered it.
+- **`f32::round` is a libm call in wasm**, since no instruction rounds half
+  away from zero. `num::round` builds it from `trunc` with the same results
+  (checked against `f32::round`); `roundf` alone had been 5% of MJPEG time.
+- **No WebGPU.** Scaling is the only stage that suits it, and on machines
+  where the GPU is not on shared memory the upload and readback would cost
+  what the shader saves.
 - **Build.** The `wasm-bindgen` crate is pinned to the nix CLI's version;
   they must match exactly. lld is not put on `PATH` (it could change other
   builds in the shell); `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER` points
@@ -340,11 +364,17 @@ tools/converter-rs/target/release/examples/mpeg2 640 360 30 8 2 60 1 out.m2v rec
   reconstruction, to compare with `mpeg2_dec_test` as in
   [`mpeg2.md`](mpeg2.md#verifying); I/P/B, 1-3 B pictures, `qscale` 1-31,
   640x360, 1280x720, 720x1280 and 350x198 all matched.
-- **`hq` means rate-distortion decisions**: every candidate (intra,
-  forward, backward, both, skip) is coded and the cheapest
-  `SSE + λ·bits` wins, with a trellis over each block's run/level codes.
-  λ is `0.85·qscale²`, what `mpeg2video` uses with `-mbd rd`. `hq=no`
-  picks the mode by SAD.
+- **`hq` means rate-distortion decisions**: the two candidates (intra,
+  forward, backward, both) with the lowest SAD cost, and skip, are coded
+  and the cheapest `SSE + λ·bits` wins, with a trellis over each block's
+  run/level codes. λ is `0.85·qscale²`, what `mpeg2video` uses with
+  `-mbd rd`. Coding every candidate took 1.5x the time for output
+  0.06-0.4% smaller and at most 0.03 dB better; one candidate was 2-3.5%
+  larger. `hq=no` picks the mode by SAD.
+- **An inter block with a small residual is not transformed.** No DCT
+  coefficient exceeds a quarter of the block's absolute residual sum, so
+  below four times the level-1 threshold every level is zero anyway
+  (`small_inter_residuals_quantise_to_zero`); the output is unchanged.
 - **Against `mpeg2video` with the CLI's settings** (`qscale=8`, 2 B
   pictures, `hq`), same input: 1.5% larger at the same PSNR on real footage
   scaled to 360p, 16-46% smaller on `testsrc2` at 360p, 720p and 720x1280.
@@ -362,8 +392,9 @@ tools/converter-rs/target/release/examples/mpeg2 640 360 30 8 2 60 1 out.m2v rec
   budget per GOP decided before the GOP is dispatched, with the actual
   sizes fed back late.
 - **Up to 256 MiB of frames are queued for the encoders.** Every worker
-  needs its own GOP's frames waiting to be busy. At 720p that limits the
-  parallelism to about three GOPs of 60 frames.
+  needs its own GOP's frames waiting to be busy, so at 720p only about
+  three GOPs of 60 frames are in flight. The encoders keep up with that:
+  512 MiB converted no faster.
 - **The source's matrix is kept and tagged** in `sequence_display_extension`;
   an untagged source stays untagged, as the CLI's `mpeg2video` output does.
 - **Against the CLI** (`small`, ffmpeg-scaled source as the reference): the
@@ -373,9 +404,10 @@ tools/converter-rs/target/release/examples/mpeg2 640 360 30 8 2 60 1 out.m2v rec
   an edit list starts the track one frame in, as ffmpeg writes it. The
   edit's length is the end of the last composition time, not the sum of the
   sample durations; the sum cut the last frame off.
-- **Speed** (Chrome, 10-core Mac): a 30 s 1080p clip converts to `small` in
-  about 5.5 s and to 720p in about 12 s. The MJPEG default takes about
-  9.7 s, 2 s more than through the canvas, for the bicubic 1080p to 720p.
+- **Speed** (Chrome, 10-core Mac, `npm run bench`): a 30 s 1080p clip
+  converts to `small` in about 2.4 s and to 720p in about 4.2 s; the MJPEG
+  default takes about 3 s. Before the SIMD and encoder work these were 3.9,
+  11.3 and 7.4 s.
 
 ## MJPEG
 
@@ -452,6 +484,10 @@ ffmpeg (decode, fps, scale)
   `maxframe` is re-quantised from its kept coefficients at the highest
   quality that fits. A frame over the limit even at `minquality` is written
   with a warning, and one over 1 MiB stops the run.
+- **The forward DCT is libjpeg's float AAN butterfly** (`jfdctflt`), with
+  the output scale applied afterwards. It replaced a direct matrix product;
+  a 720p frame at quality 75 came out 8 bytes different. The MPEG-2
+  encoder uses it too.
 - **Optimal Huffman tables are per frame** (libjpeg's
   `jpeg_gen_optimal_table`), about 14% smaller than the Annex K tables on
   720p footage, with identical pixels.

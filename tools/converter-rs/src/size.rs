@@ -42,6 +42,16 @@ pub struct Constraints {
 }
 
 impl Constraints {
+    pub fn check(&self, w: u32, h: u32) -> Result<()> {
+        if self.exceeded_by(w, h) {
+            bail!(
+                "output {w}x{h} exceeds the player limit ({})",
+                self.describe()
+            );
+        }
+        Ok(())
+    }
+
     fn exceeded_by(&self, w: u32, h: u32) -> bool {
         w > self.max_width
             || h > self.max_height
@@ -131,12 +141,7 @@ impl SizeSpec {
         Ok(Self { target, mode })
     }
 
-    pub fn resolve(
-        &self,
-        source_width: f64,
-        source_height: f64,
-        constraints: &Constraints,
-    ) -> Result<Resize> {
+    pub fn fit(&self, source_width: f64, source_height: f64, constraints: &Constraints) -> Resize {
         let (box_width, box_height) = match self.target {
             Target::Axes { width, height } => (width, height),
             Target::Sides { long, short } if source_width >= source_height => (long, short),
@@ -147,7 +152,7 @@ impl SizeSpec {
             ((v / unit as f64).round() as u32 * unit).max(unit)
         };
 
-        let resize = match self.mode {
+        match self.mode {
             ScaleMode::Contain | ScaleMode::Fit => {
                 let mut factor = f64::INFINITY;
                 if let Some(w) = box_width {
@@ -176,16 +181,7 @@ impl SizeSpec {
                     scaled_height: align(source_height * factor).max(height),
                 }
             }
-        };
-
-        let (w, h) = (resize.width, resize.height);
-        if constraints.exceeded_by(w, h) {
-            bail!(
-                "output {w}x{h} exceeds the player limit ({})",
-                constraints.describe()
-            );
         }
-        Ok(resize)
     }
 }
 
@@ -244,7 +240,9 @@ mod tests {
         let mut spec = Spec::parse(&format!("h264{options}"))?;
         let size = SizeSpec::take(&mut spec, constraints)?;
         spec.finish(&KEYS)?;
-        size.resolve(width, height, constraints)
+        let resize = size.fit(width, height, constraints);
+        constraints.check(resize.width, resize.height)?;
+        Ok(resize)
     }
 
     fn resolve(options: &str, width: f64, height: f64) -> Result<Resize> {

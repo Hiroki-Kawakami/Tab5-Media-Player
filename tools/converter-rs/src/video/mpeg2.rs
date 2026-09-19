@@ -53,7 +53,7 @@ impl Mpeg2 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("mpeg2", video, false, "")?;
+        let picture = self.picture.resolve("mpeg2", video, false, "", None)?;
         let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [

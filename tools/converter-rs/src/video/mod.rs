@@ -4,6 +4,7 @@
 mod h264;
 mod mjpeg;
 mod mpeg2;
+mod rotation;
 
 use anyhow::{Context, Result, bail};
 
@@ -56,6 +57,14 @@ mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rat
                       1048576, the player's limit); a frame over it is
                       re-quantised at a lower quality
   huffman=H           optimal (per-frame tables, default) or standard
+  rotate=D            turn the picture D degrees counter-clockwise before
+                      storing it: 0, 90 (default), 180, 270, -90, -180, -270
+  rotatewhen=W        landscape (default), portrait or always: which outputs
+                      are turned (sizes are the displayed ones)
+  rotatemeta=B        yes (default) or no: store the opposite rotation as
+                      display metadata, so players show the original
+                      orientation; with rotate=90, a UI at 90 decodes the
+                      720x1280 frames straight into the panel
 ";
 
 const DECODER_LIMITS: Constraints = Constraints {
@@ -134,6 +143,7 @@ struct Picture {
     width: u32,
     height: u32,
     rate: Rate,
+    rotation: Option<rotation::Rotation>,
 }
 
 impl PictureSpec {
@@ -151,11 +161,16 @@ impl PictureSpec {
         video: &probe::Video,
         constant_rate: bool,
         scale_options: &str,
+        rotation: Option<&rotation::RotationSpec>,
     ) -> Result<Picture> {
         let resize = self
             .size
-            .resolve(video.display_width, video.display_height, self.constraints)
-            .context(codec)?;
+            .fit(video.display_width, video.display_height, self.constraints);
+        let rotation = rotation.and_then(|r| r.resolve(resize.width, resize.height));
+        let (width, height) = rotation.map_or((resize.width, resize.height), |r| {
+            r.stored(resize.width, resize.height)
+        });
+        self.constraints.check(width, height).context(codec)?;
         let framerate = self.framerate.resolve(video.fps);
         let rate_filter = if constant_rate {
             Some(framerate.cfr_filter())
@@ -165,14 +180,22 @@ impl PictureSpec {
         let filter = rate_filter
             .into_iter()
             .chain([resize.filter(scale_options)])
+            .chain(rotation.map(|r| r.filter().to_string()))
             .collect::<Vec<_>>()
             .join(",");
+        let stored = rotation.map_or(String::new(), |r| {
+            format!(" (stored {width}x{height}, {})", r.label())
+        });
         Ok(Picture {
             filter,
-            label: format!("{}x{} {}", resize.width, resize.height, framerate.label),
-            width: resize.width,
-            height: resize.height,
+            label: format!(
+                "{}x{}{stored} {}",
+                resize.width, resize.height, framerate.label
+            ),
+            width,
+            height,
             rate: framerate.rate,
+            rotation,
         })
     }
 }

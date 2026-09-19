@@ -3,6 +3,7 @@
 
 use anyhow::{Result, bail};
 
+use super::rotation::{self, RotationSpec};
 use super::{PictureSpec, VideoOutput, VideoPlan};
 use crate::framerate::Rate;
 use crate::jpeg::{HuffmanMode, Limits};
@@ -10,13 +11,16 @@ use crate::probe;
 use crate::size::Constraints;
 use crate::spec::{Spec, int_in, one_of, quantity};
 
-pub const KEYS: [&str; 6] = [
+pub const KEYS: [&str; 9] = [
     "quality",
     "minquality",
     "bitrate",
     "buffer",
     "maxframe",
     "huffman",
+    rotation::KEYS[0],
+    rotation::KEYS[1],
+    rotation::KEYS[2],
 ];
 pub const PLAYER_MAX_FRAME: usize = 1 << 20;
 const PLAYER_READ_AHEAD: usize = 16 * 64 * 1024;
@@ -60,11 +64,13 @@ pub struct MjpegJob {
     pub width: usize,
     pub height: usize,
     pub rate: Rate,
+    pub display_rotation: Option<i32>,
     pub settings: Settings,
 }
 
 pub struct Mjpeg {
     picture: PictureSpec,
+    rotation: RotationSpec,
     settings: Settings,
 }
 
@@ -98,8 +104,10 @@ impl Mjpeg {
             Some("standard") => HuffmanMode::Standard,
             _ => HuffmanMode::Optimal,
         };
+        let rotation = RotationSpec::take(spec)?;
         Ok(Self {
             picture,
+            rotation,
             settings: Settings {
                 quality,
                 min_quality,
@@ -112,7 +120,9 @@ impl Mjpeg {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("mjpeg", video, true, SCALE_OPTIONS)?;
+        let picture =
+            self.picture
+                .resolve("mjpeg", video, true, SCALE_OPTIONS, Some(&self.rotation))?;
         let s = &self.settings;
         let bytes = |b: usize| {
             if b.is_multiple_of(1 << 20) {
@@ -142,6 +152,7 @@ impl Mjpeg {
                 width: picture.width as usize,
                 height: picture.height as usize,
                 rate: picture.rate,
+                display_rotation: picture.rotation.and_then(|r| r.display_rotation),
                 settings: self.settings,
             }),
         })
@@ -164,11 +175,12 @@ mod tests {
     #[test]
     fn defaults() {
         let j = job("mjpeg");
-        assert_eq!((j.width, j.height), (1280, 720));
+        assert_eq!((j.width, j.height), (720, 1280));
         assert_eq!(
             j.filter,
-            "fps=30000/1001,scale=1280:720:out_color_matrix=bt601:out_range=full,setsar=1"
+            "fps=30000/1001,scale=1280:720:out_color_matrix=bt601:out_range=full,setsar=1,transpose=cclock"
         );
+        assert_eq!(j.display_rotation, Some(-90));
         assert_eq!(j.rate, Rate::new(30000, 1001).unwrap());
         assert_eq!(j.settings.quality, 80);
         assert_eq!(j.settings.min_quality, 30);
@@ -180,8 +192,9 @@ mod tests {
 
     #[test]
     fn options() {
-        let j =
-            job("mjpeg,quality=90,maxframe=80k,minquality=50,huffman=standard,maxfps=24,long=640");
+        let j = job(
+            "mjpeg,quality=90,maxframe=80k,minquality=50,huffman=standard,maxfps=24,long=640,rotate=0",
+        );
         assert_eq!((j.width, j.height), (640, 360));
         assert!(j.filter.starts_with("fps=24,scale=640:360:"));
         assert_eq!(j.settings.quality, 90);
@@ -192,6 +205,54 @@ mod tests {
         let j = job("mjpeg,bitrate=8M,buffer=512k");
         assert_eq!(j.settings.bitrate, 8_000_000);
         assert_eq!(j.settings.buffer, 512_000);
+    }
+
+    #[test]
+    fn rotation() {
+        let portrait = probe::Video {
+            display_width: 1080.0,
+            display_height: 1920.0,
+            ..source()
+        };
+        let plan = |text: &str, video: &probe::Video| match parse(text)
+            .unwrap()
+            .plan(video)
+            .unwrap()
+            .output
+        {
+            VideoOutput::Mjpeg(job) => job,
+            VideoOutput::Ffmpeg(_) => unreachable!(),
+        };
+        let j = plan("mjpeg", &portrait);
+        assert_eq!((j.width, j.height, j.display_rotation), (720, 1280, None));
+        assert!(!j.filter.contains("transpose"));
+        let j = plan("mjpeg,rotatewhen=always,rotate=-90", &portrait);
+        assert_eq!(
+            (j.width, j.height, j.display_rotation),
+            (1280, 720, Some(90))
+        );
+        assert!(j.filter.ends_with(",transpose=clock"));
+        let j = plan("mjpeg,rotatemeta=no", &source());
+        assert_eq!((j.width, j.height, j.display_rotation), (720, 1280, None));
+        let j = plan("mjpeg,rotate=180", &source());
+        assert_eq!(
+            (j.width, j.height, j.display_rotation),
+            (1280, 720, Some(180))
+        );
+        assert!(j.filter.ends_with(",hflip,vflip"));
+    }
+
+    #[test]
+    fn limits_apply_to_the_stored_size() {
+        let text = "mjpeg,width=700,height=2600,scale=stretch,rotatewhen=always";
+        let err = parse(text).unwrap().plan(&source()).err().unwrap();
+        assert!(format!("{err:#}").contains("output 2600x700"), "{err:#}");
+        assert!(
+            parse(&format!("{text},rotate=0"))
+                .unwrap()
+                .plan(&source())
+                .is_ok()
+        );
     }
 
     #[test]

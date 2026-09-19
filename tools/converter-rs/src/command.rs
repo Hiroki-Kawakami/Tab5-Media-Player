@@ -81,6 +81,9 @@ impl<'a> Job<'a> {
                 decode.extend(strings(["-pix_fmt", "yuv420p", "-f", "rawvideo", "pipe:1"]));
 
                 let mut mux = self.head();
+                if let Some(rotation) = job.display_rotation {
+                    mux.extend(["-display_rotation".into(), rotation.to_string().into()]);
+                }
                 mux.extend(strings(["-f", "mjpeg", "-framerate"]));
                 mux.push(job.rate.ffmpeg_value().into());
                 mux.extend(strings(["-i", "pipe:0", "-i"]));

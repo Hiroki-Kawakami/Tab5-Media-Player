@@ -102,6 +102,18 @@ ffmpeg (decode, fps, scale)
 - **The default size is the panel (`long=1280,short=720`).** The hardware
   decodes it in time, and 720x1280 portrait is the direct path. The limits are
   the renderer's: width at most 2560, at most 1920x1088 pixels.
+- **Landscape output is stored turned 90° counter-clockwise, with
+  display rotation -90** (`rotate`, `rotatewhen`, `rotatemeta`;
+  `video/rotation.rs`). The direct path needs a 720x1280 source and an output
+  rotation of 0, and output rotation is UI rotation plus source rotation. So
+  a stored landscape clip decodes straight into the panel when the UI is at
+  `rotate`'s angle (90 by default) and goes through PPA at the other
+  landscape. The simulator log shows `direct decode` at `imu rot90` and
+  `pipeline ... rotation 2` at `rot270`. Only MJPEG has a direct path, which
+  is why the keys exist only here. Size keys describe the displayed picture;
+  the limits are checked on the stored one. The metadata is
+  `-display_rotation` on the piped input of the mux ffmpeg, which MP4 and MKV
+  both keep.
 - **The size model is a histogram of coefficients normalised by the Annex K
   base tables** (`estimate.rs`). IJG scaling makes every quality's table
   "base x scale", so the size at any quality comes from the histogram

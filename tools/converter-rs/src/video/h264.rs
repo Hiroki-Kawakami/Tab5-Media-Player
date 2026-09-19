@@ -62,7 +62,7 @@ impl H264 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("h264", video, false, "")?;
+        let picture = self.picture.resolve("h264", video, false, "", None)?;
         let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [

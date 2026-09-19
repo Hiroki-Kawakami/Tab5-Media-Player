@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-mod h264;
-mod mjpeg;
-mod mpeg2;
-mod rotation;
+pub mod h264;
+pub mod mjpeg;
+pub mod mpeg2;
+pub mod rotation;
 
 use anyhow::{Context, Result, bail};
 
 use crate::framerate::{self, FrameRateSpec, Rate};
-use crate::probe;
-use crate::size::{self, Constraints, SizeSpec};
+use crate::media;
+use crate::size::{self, Constraints, Resize, SizeSpec};
 use crate::spec::Spec;
 
 pub const HELP: &str = "\
@@ -79,18 +79,17 @@ const DECODER_LIMITS: Constraints = Constraints {
     default_short: None,
 };
 
-pub use mjpeg::{MjpegJob, PLAYER_MAX_FRAME, Settings as MjpegSettings};
-
-pub enum VideoOutput {
-    Ffmpeg(Vec<String>),
-    Mjpeg(MjpegJob),
-}
-
 pub struct VideoPlan {
     pub index: u32,
-    pub encoder: Option<&'static str>,
     pub label: String,
-    pub output: VideoOutput,
+    pub picture: Picture,
+    pub codec: VideoCodec,
+}
+
+pub enum VideoCodec {
+    H264(h264::Params),
+    Mpeg2(mpeg2::Params),
+    Mjpeg(mjpeg::Settings),
 }
 
 pub enum VideoSpec {
@@ -128,7 +127,7 @@ pub fn from_spec(mut spec: Spec) -> Result<VideoSpec> {
 }
 
 impl VideoSpec {
-    pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
+    pub fn plan(&self, video: &media::Video) -> Result<VideoPlan> {
         match self {
             Self::H264(h264) => h264.plan(video),
             Self::Mpeg2(mpeg2) => mpeg2.plan(video),
@@ -137,19 +136,27 @@ impl VideoSpec {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Color {
+    Source,
+    Bt601Full,
+}
+
 struct PictureSpec {
     size: SizeSpec,
     framerate: FrameRateSpec,
     constraints: &'static Constraints,
 }
 
-struct Picture {
-    filter: String,
+pub struct Picture {
+    pub resize: Resize,
+    pub rotation: Option<rotation::Rotation>,
+    pub width: u32,
+    pub height: u32,
+    pub rate: Rate,
+    pub convert_rate: Option<Rate>,
+    pub color: Color,
     label: String,
-    width: u32,
-    height: u32,
-    rate: Rate,
-    rotation: Option<rotation::Rotation>,
 }
 
 impl PictureSpec {
@@ -164,9 +171,9 @@ impl PictureSpec {
     fn resolve(
         &self,
         codec: &'static str,
-        video: &probe::Video,
+        video: &media::Video,
         constant_rate: bool,
-        scale_options: &str,
+        color: Color,
         rotation: Option<&rotation::RotationSpec>,
     ) -> Result<Picture> {
         let resize = self
@@ -178,30 +185,26 @@ impl PictureSpec {
         });
         self.constraints.check(width, height).context(codec)?;
         let framerate = self.framerate.resolve(video.fps);
-        let rate_filter = if constant_rate {
-            Some(framerate.cfr_filter())
+        let convert_rate = if constant_rate {
+            Some(framerate.rate)
         } else {
-            framerate.filter()
+            framerate.convert
         };
-        let filter = rate_filter
-            .into_iter()
-            .chain([resize.filter(scale_options)])
-            .chain(rotation.map(|r| r.filter().to_string()))
-            .collect::<Vec<_>>()
-            .join(",");
         let stored = rotation.map_or(String::new(), |r| {
             format!(" (stored {width}x{height}, {})", r.label())
         });
         Ok(Picture {
-            filter,
             label: format!(
                 "{}x{}{stored} {}",
                 resize.width, resize.height, framerate.label
             ),
+            resize,
+            rotation,
             width,
             height,
             rate: framerate.rate,
-            rotation,
+            convert_rate,
+            color,
         })
     }
 }
@@ -216,8 +219,8 @@ impl Picture {
 mod tests {
     use super::*;
 
-    pub fn source() -> probe::Video {
-        probe::Video {
+    pub fn source() -> media::Video {
+        media::Video {
             index: 0,
             display_width: 1920.0,
             display_height: 1080.0,
@@ -225,52 +228,37 @@ mod tests {
         }
     }
 
-    pub fn ffmpeg_args(plan: VideoPlan) -> Vec<String> {
-        match plan.output {
-            VideoOutput::Ffmpeg(args) => args,
-            VideoOutput::Mjpeg(_) => panic!("not an ffmpeg encode"),
+    pub fn plan(text: &str) -> VideoPlan {
+        parse(text).unwrap().plan(&source()).unwrap()
+    }
+
+    fn keyint(plan: &VideoPlan) -> u32 {
+        match &plan.codec {
+            VideoCodec::H264(p) => p.keyint,
+            VideoCodec::Mpeg2(p) => p.keyint,
+            VideoCodec::Mjpeg(_) => unreachable!(),
         }
-    }
-
-    pub fn args(text: &str) -> Vec<String> {
-        ffmpeg_args(parse(text).unwrap().plan(&source()).unwrap())
-    }
-
-    pub fn has(args: &[String], pair: [&str; 2]) -> bool {
-        args.windows(2).any(|w| w[0] == pair[0] && w[1] == pair[1])
     }
 
     #[test]
     fn frame_rate_is_capped_and_drives_keyint() {
-        let fast = probe::Video {
+        let fast = media::Video {
             fps: Rate::new(60, 1),
             ..source()
         };
+        let plan = |text: &str| parse(text).unwrap().plan(&fast).unwrap();
         for codec in ["h264", "mpeg2"] {
-            let a = ffmpeg_args(
-                parse(&format!("{codec},keyint=2"))
-                    .unwrap()
-                    .plan(&fast)
-                    .unwrap(),
-            );
-            assert!(has(&a, ["-vf", "fps=30,scale=640:360,setsar=1"]), "{a:?}");
-            assert!(has(&a, ["-g", "60"]), "{a:?}");
-            let a = ffmpeg_args(
-                parse(&format!("{codec},fps=24,keyint=1"))
-                    .unwrap()
-                    .plan(&fast)
-                    .unwrap(),
-            );
-            assert!(has(&a, ["-vf", "fps=24,scale=640:360,setsar=1"]), "{a:?}");
-            assert!(has(&a, ["-g", "24"]), "{a:?}");
-            let a = ffmpeg_args(
-                parse(&format!("{codec},maxfps=60,keyint=2"))
-                    .unwrap()
-                    .plan(&fast)
-                    .unwrap(),
-            );
-            assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]), "{a:?}");
-            assert!(has(&a, ["-g", "120"]), "{a:?}");
+            let p = plan(&format!("{codec},keyint=2"));
+            assert_eq!(p.picture.convert_rate, Rate::new(30, 1));
+            assert_eq!(p.picture.rate, Rate::new(30, 1).unwrap());
+            assert_eq!(keyint(&p), 60);
+            let p = plan(&format!("{codec},fps=24,keyint=1"));
+            assert_eq!(p.picture.convert_rate, Rate::new(24, 1));
+            assert_eq!(keyint(&p), 24);
+            let p = plan(&format!("{codec},maxfps=60,keyint=2"));
+            assert_eq!(p.picture.convert_rate, None);
+            assert_eq!((p.picture.width, p.picture.height), (640, 360));
+            assert_eq!(keyint(&p), 120);
         }
         assert!(parse("h264,fps=30,maxfps=30").is_err());
     }

@@ -11,10 +11,12 @@ use std::thread;
 
 use anyhow::{Context, Result, bail};
 
-use crate::ffmpeg;
-use crate::jpeg::{self, Coefficients, Encoded, Frame, SizeModel};
-use crate::ratecontrol::{Bucket, RateControl};
-use crate::video::{MjpegJob, PLAYER_MAX_FRAME};
+use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, SizeModel};
+use tab5conv_core::ratecontrol::{Bucket, RateControl};
+use tab5conv_core::video::Picture;
+use tab5conv_core::video::mjpeg::{PLAYER_MAX_FRAME, Settings};
+
+use crate::process;
 
 const LOOKAHEAD_SECONDS: f64 = 1.0;
 
@@ -77,6 +79,13 @@ impl Stats {
     }
 }
 
+struct Job {
+    width: usize,
+    height: usize,
+    fps: f64,
+    settings: Settings,
+}
+
 struct Analyzed {
     index: usize,
     coefficients: Coefficients,
@@ -106,9 +115,20 @@ struct Feedback {
     calibrate: bool,
 }
 
-pub fn run(decode: &[OsString], mux: &[OsString], job: &MjpegJob) -> Result<Stats> {
-    let mut decoder = ffmpeg::spawn(decode, Stdio::null(), Stdio::piped())?;
-    let mut muxer = match ffmpeg::spawn(mux, Stdio::piped(), Stdio::inherit()) {
+pub fn run(
+    decode: &[OsString],
+    mux: &[OsString],
+    picture: &Picture,
+    settings: &Settings,
+) -> Result<Stats> {
+    let job = &Job {
+        width: picture.width as usize,
+        height: picture.height as usize,
+        fps: picture.rate.as_f64(),
+        settings: *settings,
+    };
+    let mut decoder = process::spawn(decode, Stdio::null(), Stdio::piped())?;
+    let mut muxer = match process::spawn(mux, Stdio::piped(), Stdio::inherit()) {
         Ok(child) => child,
         Err(err) => {
             let _ = decoder.kill();
@@ -159,7 +179,7 @@ fn next<T>(queue: &Queue<T>) -> Option<T> {
     queue.lock().ok()?.recv().ok()
 }
 
-fn pump(mut source: impl Read + Send, mut sink: impl Write, job: &MjpegJob) -> Result<Stats> {
+fn pump(mut source: impl Read + Send, mut sink: impl Write, job: &Job) -> Result<Stats> {
     let frame_bytes = Frame::bytes(job.width, job.height);
     let workers = thread::available_parallelism().map_or(4, |n| n.get());
     let depth = workers * 2;
@@ -248,9 +268,9 @@ fn control(
     analyzed: Receiver<Analyzed>,
     decided: SyncSender<Decided>,
     feedback: Receiver<Feedback>,
-    job: &MjpegJob,
+    job: &Job,
 ) {
-    let fps = job.rate.as_f64();
+    let fps = job.fps;
     let lookahead = ((fps * LOOKAHEAD_SECONDS).round() as usize).max(1);
     let mut rate = RateControl::new(&job.settings, fps);
     let mut pending = BTreeMap::new();
@@ -294,11 +314,11 @@ fn write_in_order(
     done: Receiver<Done>,
     feedback: Sender<Feedback>,
     sink: &mut impl Write,
-    job: &MjpegJob,
+    job: &Job,
 ) -> Result<Stats> {
     let quality = job.settings.quality;
     let mut stats = Stats::new(quality);
-    let mut bucket = Bucket::new(&job.settings, job.rate.as_f64());
+    let mut bucket = Bucket::new(&job.settings, job.fps);
     let mut pending = BTreeMap::new();
     let mut next = 0;
     for frame in done {

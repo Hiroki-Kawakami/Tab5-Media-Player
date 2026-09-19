@@ -4,10 +4,9 @@
 use anyhow::{Result, bail};
 
 use super::rotation::{self, RotationSpec};
-use super::{PictureSpec, VideoOutput, VideoPlan};
-use crate::framerate::Rate;
+use super::{Color, PictureSpec, VideoCodec, VideoPlan};
 use crate::jpeg::{HuffmanMode, Limits};
-use crate::probe;
+use crate::media;
 use crate::size::Constraints;
 use crate::spec::{Spec, int_in, one_of, quantity};
 
@@ -27,7 +26,6 @@ const PLAYER_READ_AHEAD: usize = 16 * 64 * 1024;
 const DEFAULT_QUALITY: u8 = 75;
 const DEFAULT_MIN_QUALITY: u8 = 30;
 const DEFAULT_BITRATE: u64 = 24_000_000;
-const SCALE_OPTIONS: &str = ":out_color_matrix=bt601:out_range=full";
 
 static LIMITS: Constraints = Constraints {
     align: 2,
@@ -57,15 +55,6 @@ impl Settings {
             huffman: self.huffman,
         }
     }
-}
-
-pub struct MjpegJob {
-    pub filter: String,
-    pub width: usize,
-    pub height: usize,
-    pub rate: Rate,
-    pub display_rotation: Option<i32>,
-    pub settings: Settings,
 }
 
 pub struct Mjpeg {
@@ -119,10 +108,10 @@ impl Mjpeg {
         })
     }
 
-    pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
+    pub fn plan(&self, video: &media::Video) -> Result<VideoPlan> {
         let picture =
             self.picture
-                .resolve("mjpeg", video, true, SCALE_OPTIONS, Some(&self.rotation))?;
+                .resolve("mjpeg", video, true, Color::Bt601Full, Some(&self.rotation))?;
         let s = &self.settings;
         let bytes = |b: usize| {
             if b.is_multiple_of(1 << 20) {
@@ -137,7 +126,6 @@ impl Mjpeg {
         };
         Ok(VideoPlan {
             index: video.index,
-            encoder: None,
             label: format!(
                 "MJPEG {}, quality {} (down to {}) within {} Mbit/s over a {} buffer, frames up to {}, {huffman} Huffman",
                 picture.label,
@@ -147,14 +135,8 @@ impl Mjpeg {
                 bytes(s.buffer),
                 bytes(s.max_frame),
             ),
-            output: VideoOutput::Mjpeg(MjpegJob {
-                filter: picture.filter,
-                width: picture.width as usize,
-                height: picture.height as usize,
-                rate: picture.rate,
-                display_rotation: picture.rotation.and_then(|r| r.display_rotation),
-                settings: self.settings,
-            }),
+            picture,
+            codec: VideoCodec::Mjpeg(self.settings),
         })
     }
 }
@@ -163,83 +145,89 @@ impl Mjpeg {
 mod tests {
     use super::super::parse;
     use super::super::tests::source;
+    use super::super::{Picture, rotation::Rotation};
     use super::*;
+    use crate::framerate::Rate;
 
-    fn job(text: &str) -> MjpegJob {
-        match parse(text).unwrap().plan(&source()).unwrap().output {
-            VideoOutput::Mjpeg(job) => job,
-            VideoOutput::Ffmpeg(_) => panic!("mjpeg must use the built-in encoder"),
+    fn plan_for(text: &str, video: &media::Video) -> (Picture, Settings) {
+        let plan = parse(text).unwrap().plan(video).unwrap();
+        match plan.codec {
+            VideoCodec::Mjpeg(settings) => (plan.picture, settings),
+            _ => panic!("mjpeg must use the built-in encoder"),
         }
+    }
+
+    fn plan(text: &str) -> (Picture, Settings) {
+        plan_for(text, &source())
+    }
+
+    fn stored(p: &Picture) -> (u32, u32, Option<i32>) {
+        (
+            p.width,
+            p.height,
+            p.rotation.and_then(|r| r.display_rotation),
+        )
     }
 
     #[test]
     fn defaults() {
-        let j = job("mjpeg");
-        assert_eq!((j.width, j.height), (720, 1280));
+        let (p, s) = plan("mjpeg");
+        assert_eq!((p.width, p.height), (720, 1280));
+        assert_eq!((p.resize.width, p.resize.height), (1280, 720));
         assert_eq!(
-            j.filter,
-            "fps=30000/1001,scale=1280:720:out_color_matrix=bt601:out_range=full,setsar=1,transpose=cclock"
+            p.rotation,
+            Some(Rotation {
+                degrees: 90,
+                display_rotation: Some(-90)
+            })
         );
-        assert_eq!(j.display_rotation, Some(-90));
-        assert_eq!(j.rate, Rate::new(30000, 1001).unwrap());
-        assert_eq!(j.settings.quality, 75);
-        assert_eq!(j.settings.min_quality, 30);
-        assert_eq!(j.settings.max_frame, PLAYER_MAX_FRAME);
-        assert_eq!(j.settings.huffman, HuffmanMode::Optimal);
-        assert_eq!(j.settings.bitrate, 24_000_000);
-        assert_eq!(j.settings.buffer, 1 << 20);
+        assert_eq!(p.color, Color::Bt601Full);
+        assert_eq!(p.rate, Rate::new(30000, 1001).unwrap());
+        assert_eq!(p.convert_rate, Rate::new(30000, 1001));
+        assert_eq!(s.quality, 75);
+        assert_eq!(s.min_quality, 30);
+        assert_eq!(s.max_frame, PLAYER_MAX_FRAME);
+        assert_eq!(s.huffman, HuffmanMode::Optimal);
+        assert_eq!(s.bitrate, 24_000_000);
+        assert_eq!(s.buffer, 1 << 20);
     }
 
     #[test]
     fn options() {
-        let j = job(
+        let (p, s) = plan(
             "mjpeg,quality=90,maxframe=80k,minquality=50,huffman=standard,maxfps=24,long=640,rotate=0",
         );
-        assert_eq!((j.width, j.height), (640, 360));
-        assert!(j.filter.starts_with("fps=24,scale=640:360:"));
-        assert_eq!(j.settings.quality, 90);
-        assert_eq!(j.settings.min_quality, 50);
-        assert_eq!(j.settings.max_frame, 80_000);
-        assert_eq!(j.settings.huffman, HuffmanMode::Standard);
-        assert_eq!(job("mjpeg,quality=20").settings.min_quality, 20);
-        let j = job("mjpeg,bitrate=8M,buffer=512k");
-        assert_eq!(j.settings.bitrate, 8_000_000);
-        assert_eq!(j.settings.buffer, 512_000);
+        assert_eq!((p.width, p.height), (640, 360));
+        assert_eq!(p.convert_rate, Rate::new(24, 1));
+        assert_eq!(p.rotation, None);
+        assert_eq!(s.quality, 90);
+        assert_eq!(s.min_quality, 50);
+        assert_eq!(s.max_frame, 80_000);
+        assert_eq!(s.huffman, HuffmanMode::Standard);
+        assert_eq!(plan("mjpeg,quality=20").1.min_quality, 20);
+        let (_, s) = plan("mjpeg,bitrate=8M,buffer=512k");
+        assert_eq!(s.bitrate, 8_000_000);
+        assert_eq!(s.buffer, 512_000);
     }
 
     #[test]
     fn rotation() {
-        let portrait = probe::Video {
+        let portrait = media::Video {
             display_width: 1080.0,
             display_height: 1920.0,
             ..source()
         };
-        let plan = |text: &str, video: &probe::Video| match parse(text)
-            .unwrap()
-            .plan(video)
-            .unwrap()
-            .output
-        {
-            VideoOutput::Mjpeg(job) => job,
-            VideoOutput::Ffmpeg(_) => unreachable!(),
-        };
-        let j = plan("mjpeg", &portrait);
-        assert_eq!((j.width, j.height, j.display_rotation), (720, 1280, None));
-        assert!(!j.filter.contains("transpose"));
-        let j = plan("mjpeg,rotatewhen=always,rotate=-90", &portrait);
-        assert_eq!(
-            (j.width, j.height, j.display_rotation),
-            (1280, 720, Some(90))
-        );
-        assert!(j.filter.ends_with(",transpose=clock"));
-        let j = plan("mjpeg,rotatemeta=no", &source());
-        assert_eq!((j.width, j.height, j.display_rotation), (720, 1280, None));
-        let j = plan("mjpeg,rotate=180", &source());
-        assert_eq!(
-            (j.width, j.height, j.display_rotation),
-            (1280, 720, Some(180))
-        );
-        assert!(j.filter.ends_with(",hflip,vflip"));
+        let (p, _) = plan_for("mjpeg", &portrait);
+        assert_eq!(stored(&p), (720, 1280, None));
+        assert_eq!(p.rotation, None);
+        let (p, _) = plan_for("mjpeg,rotatewhen=always,rotate=-90", &portrait);
+        assert_eq!(stored(&p), (1280, 720, Some(90)));
+        assert_eq!(p.rotation.unwrap().degrees, 270);
+        let (p, _) = plan("mjpeg,rotatemeta=no");
+        assert_eq!(stored(&p), (720, 1280, None));
+        let (p, _) = plan("mjpeg,rotate=180");
+        assert_eq!(stored(&p), (1280, 720, Some(180)));
+        assert_eq!(p.rotation.unwrap().degrees, 180);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use crate::command::Container;
+use tab5conv_core::container::Container;
 
 const CONVERTED_MARK: &str = ".tab5.";
 

@@ -7,8 +7,10 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-use crate::ffmpeg;
-use crate::framerate::Rate;
+use tab5conv_core::framerate::Rate;
+use tab5conv_core::media::{Audio, MediaInfo, Video};
+
+use crate::process;
 
 #[derive(Deserialize)]
 struct ProbeOutput {
@@ -49,27 +51,6 @@ struct Disposition {
 #[derive(Deserialize)]
 struct SideData {
     rotation: Option<f64>,
-}
-
-pub struct Video {
-    pub index: u32,
-    pub display_width: f64,
-    pub display_height: f64,
-    pub fps: Option<Rate>,
-}
-
-pub struct Audio {
-    pub index: u32,
-    pub codec_name: String,
-    pub profile: Option<String>,
-    pub channels: u32,
-    pub sample_rate: u32,
-    pub bit_rate: Option<u64>,
-}
-
-pub struct MediaInfo {
-    pub video: Video,
-    pub audio: Option<Audio>,
 }
 
 fn bit_rate(stream: &Stream) -> Option<u64> {
@@ -162,7 +143,7 @@ fn parse(json: &str) -> Result<MediaInfo> {
 }
 
 pub fn probe(input: &Path) -> Result<MediaInfo> {
-    let json = ffmpeg::probe_json(input)?;
+    let json = process::probe_json(input)?;
     parse(&json).with_context(|| format!("cannot use {}", input.display()))
 }
 

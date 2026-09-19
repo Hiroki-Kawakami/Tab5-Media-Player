@@ -81,17 +81,17 @@ impl Preset {
 mod tests {
     use super::*;
     use crate::framerate::Rate;
-    use crate::{audio, probe, video};
+    use crate::{audio, media, video};
 
     #[test]
     fn every_preset_plans() {
-        let source = probe::Video {
+        let source = media::Video {
             index: 0,
             display_width: 1920.0,
             display_height: 1080.0,
             fps: Rate::new(60, 1),
         };
-        let input = probe::Audio {
+        let input = media::Audio {
             index: 1,
             codec_name: "aac".into(),
             profile: Some("LC".into()),

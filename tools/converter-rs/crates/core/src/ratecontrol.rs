@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Hiroki Kawakami
 
 use crate::jpeg::SizeModel;
-use crate::video::MjpegSettings;
+use crate::video::mjpeg::Settings as MjpegSettings;
 
 const CALIBRATION_WEIGHT: f32 = 0.2;
 

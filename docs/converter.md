@@ -12,6 +12,30 @@ nix develop -c cargo run --manifest-path tools/converter-rs/Cargo.toml -- in.mov
 nix develop -c cargo run --manifest-path tools/converter-rs/Cargo.toml -- --video help
 ```
 
+## Crates
+
+The CLI is one of several front ends planned (a native GUI and a browser
+version), so the tool is a workspace:
+
+| crate | holds |
+|---|---|
+| `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control |
+| `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline, batch output naming |
+| `crates/cli` | `tab5conv` itself |
+
+- **A plan is values, not ffmpeg arguments.** `VideoPlan`/`AudioPlan` say
+  what to produce (stored size, crop, rotation, frame-rate conversion,
+  colour, codec parameters, copy or encode); only `crates/ffmpeg/args.rs`
+  turns them into filters and flags. A browser version maps the same plan to
+  WebCodecs, so the player's rules live in one place and cannot drift
+  between front ends.
+- **`core` uses no processes, threads or file I/O**, so it builds for
+  `wasm32-unknown-unknown`. The MJPEG encoder's stages (`jpeg::analyze`,
+  `RateControl`, `jpeg::encode`) are plain functions; the threads that run
+  them belong to `crates/ffmpeg/pipeline.rs`.
+- **x264 settings are in `crates/ffmpeg`.** `-x264-params` is an x264
+  detail, while `core` only says which profile.
+
 ## Several inputs
 
 `tab5conv *.mp4 --outdir out` converts one file after another, not in
@@ -35,8 +59,8 @@ parallel: the MJPEG encoder and x264 each use every core already.
 ## Codec specs
 
 `--video` and `--audio` each take one string, `<codec>[,key=value]...`, and the
-codec's own module interprets the keys (`video/`, `audio.rs`; the shared
-parsing is in `spec.rs`). One flag per codec option would multiply as codecs are
+codec's own module interprets the keys (`core/src/video/`, `core/src/audio.rs`;
+the shared parsing is in `core/src/spec.rs`). One flag per codec option would multiply as codecs are
 added, and most options only mean something for one codec. Every key is
 checked: an unknown key, a repeated key or a bad value is an error, and the
 message lists the keys the codec accepts. Nothing is silently ignored, with
@@ -63,7 +87,7 @@ played every rate down to 8 kHz, MPEG-2.5 included.
 
 ## Presets
 
-`--preset` (`preset.rs`) supplies the `--video` and `--audio` strings:
+`--preset` (`core/src/preset.rs`) supplies the `--video` and `--audio` strings:
 `tiny`, `small`, `default` (the default) and `quality`; `--preset help` lists
 them. Presets are plain spec strings run through the same parser, so they
 cannot drift from the options. An explicit spec with the same codec is merged
@@ -154,10 +178,10 @@ To check an output against the player's decoder, copy the stream out with
 
 ## MJPEG
 
-The encoder is our own (`src/jpeg/`). That puts the choice of quantisation
+The encoder is our own (`core/src/jpeg/`). That puts the choice of quantisation
 between the DCT and the entropy coder, so the quality of each frame can be
 decided from the whole timeline without encoding anything twice.
-`pipeline.rs` runs it between two ffmpeg processes:
+`ffmpeg/src/pipeline.rs` runs it between two ffmpeg processes:
 
 ```
 ffmpeg (decode, fps, scale)
@@ -183,7 +207,7 @@ ffmpeg (decode, fps, scale)
   the renderer's: width at most 2560, at most 1920x1088 pixels.
 - **Landscape output is stored turned 90° counter-clockwise, with
   display rotation -90** (`rotate`, `rotatewhen`, `rotatemeta`;
-  `video/rotation.rs`). The direct path needs a 720x1280 source and an output
+  `core/src/video/rotation.rs`). The direct path needs a 720x1280 source and an output
   rotation of 0, and output rotation is UI rotation plus source rotation. So
   a stored landscape clip decodes straight into the panel when the UI is at
   `rotate`'s angle (90 by default) and goes through PPA at the other
@@ -194,7 +218,7 @@ ffmpeg (decode, fps, scale)
   `-display_rotation` on the piped input of the mux ffmpeg, which MP4 and MKV
   both keep.
 - **The size model is a histogram of coefficients normalised by the Annex K
-  base tables** (`estimate.rs`). IJG scaling makes every quality's table
+  base tables** (`core/src/jpeg/estimate.rs`). IJG scaling makes every quality's table
   "base x scale", so the size at any quality comes from the histogram
   alone: bits = 4.15 per non-zero AC + 1.06 x magnitude bits + 2.82 per block.
   The constants were fitted by least squares on two 720p clips at quality
@@ -260,7 +284,7 @@ ffmpeg only decodes and muxes.
 
 ## Output size
 
-The size keys (`size.rs`) are shared by every video codec. `long`/`short` exist
+The size keys (`core/src/size.rs`) are shared by every video codec. `long`/`short` exist
 so that one command line works for both landscape and portrait sources. Each
 codec supplies its own constraints: the rounding unit and the player's limits
 for that codec. H.264 and MPEG-2 share the same constraints: a rounding unit of
@@ -281,7 +305,7 @@ for that codec. H.264 and MPEG-2 share the same constraints: a rounding unit of
 
 ## Frame rate
 
-The frame-rate keys (`framerate.rs`) are shared by every video codec, like the
+The frame-rate keys (`core/src/framerate.rs`) are shared by every video codec, like the
 size keys. `fps` converts to a constant rate, dropping or repeating frames.
 `maxfps` only ever lowers the rate, the way `contain` only ever shrinks.
 

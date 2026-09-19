@@ -218,8 +218,25 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "tab5conv-core",
+ "tab5conv-ffmpeg",
+]
+
+[[package]]
+name = "tab5conv-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
+name = "tab5conv-ffmpeg"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
  "serde",
  "serde_json",
+ "tab5conv-core",
 ]
 
 [[package]]

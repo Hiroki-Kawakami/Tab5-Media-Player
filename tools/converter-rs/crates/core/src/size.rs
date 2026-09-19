@@ -87,8 +87,8 @@ impl Constraints {
 pub struct Resize {
     pub width: u32,
     pub height: u32,
-    scaled_width: u32,
-    scaled_height: u32,
+    pub scaled_width: u32,
+    pub scaled_height: u32,
 }
 
 impl SizeSpec {
@@ -194,17 +194,6 @@ impl Resize {
             scaled_height: height,
         }
     }
-
-    pub fn filter(&self, scale_options: &str) -> String {
-        let mut filter = format!(
-            "scale={}:{}{scale_options},setsar=1",
-            self.scaled_width, self.scaled_height
-        );
-        if (self.scaled_width, self.scaled_height) != (self.width, self.height) {
-            filter.push_str(&format!(",crop={}:{}", self.width, self.height));
-        }
-        filter
-    }
 }
 
 #[cfg(test)]
@@ -267,6 +256,10 @@ mod tests {
         );
     }
 
+    fn scaled(r: &Resize) -> (u32, u32, u32, u32) {
+        (r.scaled_width, r.scaled_height, r.width, r.height)
+    }
+
     fn size(options: &str, width: f64, height: f64) -> (u32, u32) {
         let r = resolve(options, width, height).unwrap();
         (r.width, r.height)
@@ -312,22 +305,21 @@ mod tests {
     #[test]
     fn cover_crops_to_the_box() {
         let r = resolve(",width=720,height=720,scale=cover", 1920.0, 1080.0).unwrap();
-        assert_eq!((r.width, r.height), (720, 720));
-        assert_eq!(r.filter(""), "scale=1280:720,setsar=1,crop=720:720");
+        assert_eq!(scaled(&r), (1280, 720, 720, 720));
         let r = resolve(",width=720,height=720,scale=cover", 1080.0, 1920.0).unwrap();
-        assert_eq!(r.filter(""), "scale=720:1280,setsar=1,crop=720:720");
+        assert_eq!(scaled(&r), (720, 1280, 720, 720));
     }
 
     #[test]
     fn cover_upscales() {
         let r = resolve(",long=1280,short=720,scale=cover", 320.0, 240.0).unwrap();
-        assert_eq!(r.filter(""), "scale=1280:960,setsar=1,crop=1280:720");
+        assert_eq!(scaled(&r), (1280, 960, 1280, 720));
     }
 
     #[test]
     fn stretch_ignores_aspect() {
         let r = resolve(",width=720,height=720,scale=stretch", 1920.0, 1080.0).unwrap();
-        assert_eq!(r.filter(""), "scale=720:720,setsar=1");
+        assert_eq!(scaled(&r), (720, 720, 720, 720));
     }
 
     #[test]

@@ -1,26 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-mod audio;
-mod batch;
-mod command;
-mod ffmpeg;
-mod framerate;
-mod jpeg;
-mod pipeline;
-mod preset;
-mod probe;
-mod ratecontrol;
-mod size;
-mod spec;
-mod video;
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
+use tab5conv_core::container::Container;
+use tab5conv_core::video::VideoCodec;
+use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
+use tab5conv_core::{Specs, audio, preset, video};
+use tab5conv_ffmpeg::{Conversion, Stats, batch};
 
 #[derive(Parser)]
 #[command(
@@ -62,68 +53,35 @@ struct Args {
     dry_run: bool,
 }
 
-struct Specs {
-    video: video::VideoSpec,
-    audio: audio::AudioSpec,
-}
-
 fn convert(
     input: &Path,
     output: &Path,
-    container: command::Container,
+    container: Container,
     specs: &Specs,
     dry_run: bool,
 ) -> Result<()> {
-    let info = probe::probe(input)?;
-    let video = specs.video.plan(&info.video)?;
-    let audio = specs.audio.plan(info.audio.as_ref())?;
-    let encoders: Vec<&str> = video.encoder.into_iter().chain(audio.encoder).collect();
-    ffmpeg::require_encoders(&encoders)?;
-
+    let conversion = Conversion::prepare(input, output, container, specs)?;
+    let source = &conversion.info.video;
     eprintln!(
         "video: {}x{} -> {}",
-        info.video.display_width.round(),
-        info.video.display_height.round(),
-        video.label
+        source.display_width.round(),
+        source.display_height.round(),
+        conversion.video.label
     );
-    eprintln!("audio: {}", audio.label);
+    eprintln!("audio: {}", conversion.audio.label);
     eprintln!("output: {}", output.display());
 
-    let part = batch::part_path(output);
-    let job = command::Job {
-        input,
-        output: &part,
-        container,
-        overwrite: true,
-        video: &video,
-        audio: &audio,
-    };
-    let result = match job.commands() {
-        command::Commands::Single(ffmpeg_args) => {
-            if dry_run {
-                println!("{}", ffmpeg::command_line(&ffmpeg_args));
-                return Ok(());
-            }
-            ffmpeg::run(&ffmpeg_args)
+    if dry_run {
+        for line in conversion.command_lines() {
+            println!("{line}");
         }
-        command::Commands::Piped { decode, mux, job } => {
-            if dry_run {
-                println!("{} \\", ffmpeg::command_line(&decode));
-                println!("  | (built-in MJPEG encoder) \\");
-                println!("  | {}", ffmpeg::command_line(&mux));
-                return Ok(());
-            }
-            pipeline::run(&decode, &mux, job).map(|stats| report(&stats, job))
-        }
-    };
-    match result {
-        Ok(()) => std::fs::rename(&part, output)
-            .with_context(|| format!("renaming {} to {}", part.display(), output.display())),
-        Err(err) => {
-            let _ = std::fs::remove_file(&part);
-            Err(err)
-        }
+        return Ok(());
     }
+    if let (Some(stats), VideoCodec::Mjpeg(settings)) = (conversion.run()?, &conversion.video.codec)
+    {
+        report(&stats, settings, conversion.video.picture.rate.as_f64());
+    }
+    Ok(())
 }
 
 fn run(args: Args) -> Result<bool> {
@@ -139,19 +97,11 @@ fn run(args: Args) -> Result<bool> {
         print!("{}", audio::HELP);
         return Ok(true);
     }
-    let preset = preset::find(&args.preset)?;
-    let video_spec = preset.video(args.video.as_deref())?;
-    let audio_spec = preset.audio(args.audio.as_deref())?;
+    let specs = Specs::resolve(&args.preset, args.video.as_deref(), args.audio.as_deref())?;
     let applied = format!(
         "preset: {} (--video \"{}\" --audio \"{}\")",
-        preset.name,
-        video_spec.to_text(),
-        audio_spec.to_text()
+        specs.preset, specs.video_text, specs.audio_text
     );
-    let specs = Specs {
-        video: video::from_spec(video_spec)?,
-        audio: audio::from_spec(audio_spec)?,
-    };
 
     if args.inputs.is_empty() {
         Args::command()
@@ -236,15 +186,14 @@ fn run(args: Args) -> Result<bool> {
     Ok(failed.is_empty())
 }
 
-fn report(stats: &pipeline::Stats, job: &video::MjpegJob) {
+fn report(stats: &Stats, settings: &MjpegSettings, fps: f64) {
     if stats.frames == 0 {
         eprintln!("mjpeg: no frames");
         return;
     }
-    let settings = &job.settings;
     let frames = stats.frames as f64;
     let kib = |bytes: usize| bytes as f64 / 1024.0;
-    let seconds = frames / job.rate.as_f64();
+    let seconds = frames / fps;
     eprintln!(
         "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1}), {:.2} Mbit/s average",
         stats.frames,

@@ -75,15 +75,6 @@ impl RotationSpec {
 }
 
 impl Rotation {
-    pub fn filter(&self) -> &'static str {
-        match self.degrees {
-            90 => "transpose=cclock",
-            270 => "transpose=clock",
-            180 => "hflip,vflip",
-            other => unreachable!("rotation of {other} degrees"),
-        }
-    }
-
     pub fn stored(&self, width: u32, height: u32) -> (u32, u32) {
         if self.degrees == 180 {
             (width, height)
@@ -114,7 +105,7 @@ mod tests {
     #[test]
     fn default_turns_landscape_counter_clockwise() {
         let r = rotation("", 1280, 720).unwrap();
-        assert_eq!(r.filter(), "transpose=cclock");
+        assert_eq!(r.degrees, 90);
         assert_eq!(r.display_rotation, Some(-90));
         assert_eq!(r.stored(1280, 720), (720, 1280));
         assert_eq!(rotation("", 720, 1280), None);
@@ -124,14 +115,11 @@ mod tests {
     #[test]
     fn angles() {
         let r = rotation(",rotate=-90", 1280, 720).unwrap();
-        assert_eq!(
-            (r.filter(), r.display_rotation),
-            ("transpose=clock", Some(90))
-        );
+        assert_eq!((r.degrees, r.display_rotation), (270, Some(90)));
         let r = rotation(",rotate=270", 1280, 720).unwrap();
         assert_eq!(r.display_rotation, Some(90));
         let r = rotation(",rotate=180", 1280, 720).unwrap();
-        assert_eq!((r.filter(), r.display_rotation), ("hflip,vflip", Some(180)));
+        assert_eq!((r.degrees, r.display_rotation), (180, Some(180)));
         assert_eq!(r.stored(1280, 720), (1280, 720));
         assert_eq!(rotation(",rotate=-180", 1280, 720).unwrap().degrees, 180);
         assert_eq!(rotation(",rotate=-270", 1280, 720).unwrap().degrees, 90);
@@ -144,8 +132,7 @@ mod tests {
         assert!(rotation(",rotatewhen=portrait", 720, 1280).is_some());
         assert!(rotation(",rotatewhen=always", 720, 720).is_some());
         let r = rotation(",rotatemeta=no", 1280, 720).unwrap();
-        assert_eq!(r.display_rotation, None);
-        assert_eq!(r.filter(), "transpose=cclock");
+        assert_eq!((r.degrees, r.display_rotation), (90, None));
     }
 
     #[test]

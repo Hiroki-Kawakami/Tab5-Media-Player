@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::probe;
+use crate::media;
 use crate::spec::{Spec, int_in, one_of, quantity};
 
 pub const HELP: &str = "\
@@ -47,10 +47,29 @@ const MP3_MPEG1_MIN_RATE: u32 = 32000;
 const BITRATE_TOLERANCE: f64 = 1.05;
 
 pub struct AudioPlan {
-    pub index: Option<u32>,
-    pub encoder: Option<&'static str>,
     pub label: String,
-    pub args: Vec<String>,
+    pub action: AudioAction,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AudioAction {
+    None,
+    Copy {
+        index: u32,
+    },
+    Encode {
+        index: u32,
+        codec: Codec,
+        channels: u32,
+        sample_rate: u32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Codec {
+    Aac { bitrate: u64 },
+    Mp3Cbr { bitrate: u64 },
+    Mp3Vbr { quality: u32 },
 }
 
 pub enum AudioSpec {
@@ -82,7 +101,7 @@ pub fn from_spec(mut spec: Spec) -> Result<AudioSpec> {
 }
 
 impl AudioSpec {
-    pub fn plan(&self, input: Option<&probe::Audio>) -> Result<AudioPlan> {
+    pub fn plan(&self, input: Option<&media::Audio>) -> Result<AudioPlan> {
         let Some(input) = input else {
             return Ok(AudioPlan::none("input has no audio"));
         };
@@ -97,10 +116,8 @@ impl AudioSpec {
                 keep: true,
             } => match copy_blocker(input, encoding) {
                 None => Ok(AudioPlan {
-                    index: Some(input.index),
-                    encoder: None,
                     label: format!("copy ({})", describe(input)),
-                    args: vec!["-c:a".into(), "copy".into()],
+                    action: AudioAction::Copy { index: input.index },
                 }),
                 Some(reason) => encoding.plan(input, Some(reason)),
             },
@@ -111,15 +128,20 @@ impl AudioSpec {
 impl AudioPlan {
     fn none(reason: &str) -> Self {
         Self {
-            index: None,
-            encoder: None,
             label: format!("none ({reason})"),
-            args: Vec::new(),
+            action: AudioAction::None,
+        }
+    }
+
+    pub fn index(&self) -> Option<u32> {
+        match self.action {
+            AudioAction::None => None,
+            AudioAction::Copy { index } | AudioAction::Encode { index, .. } => Some(index),
         }
     }
 }
 
-fn describe(input: &probe::Audio) -> String {
+fn describe(input: &media::Audio) -> String {
     match (input.codec_name.as_str(), input.profile.as_deref()) {
         ("aac", Some("LC")) => "AAC-LC".into(),
         ("aac", Some(p)) if p.starts_with("HE") => p.into(),
@@ -130,7 +152,7 @@ fn describe(input: &probe::Audio) -> String {
     }
 }
 
-fn copy_blocker(input: &probe::Audio, encoding: &Encoding) -> Option<String> {
+fn copy_blocker(input: &media::Audio, encoding: &Encoding) -> Option<String> {
     let copyable = match encoding {
         Encoding::Aac(_) => input.codec_name == "aac" && input.profile.as_deref() == Some("LC"),
         Encoding::Mp3(_) => input.codec_name == "mp3",
@@ -174,7 +196,7 @@ impl Format {
         })
     }
 
-    fn resolve(&self, input: &probe::Audio) -> (u32, u32) {
+    fn resolve(&self, input: &media::Audio) -> (u32, u32) {
         (
             self.channels
                 .unwrap_or(input.channels.clamp(1, MAX_CHANNELS)),
@@ -204,7 +226,7 @@ impl Encoding {
         }
     }
 
-    fn target_bitrate(&self, input: &probe::Audio) -> Option<u64> {
+    fn target_bitrate(&self, input: &media::Audio) -> Option<u64> {
         match self {
             Self::Aac(aac) => Some(aac.bitrate),
             Self::Mp3(mp3) => match mp3.rate {
@@ -217,7 +239,7 @@ impl Encoding {
         }
     }
 
-    fn plan(&self, input: &probe::Audio, reason: Option<String>) -> Result<AudioPlan> {
+    fn plan(&self, input: &media::Audio, reason: Option<String>) -> Result<AudioPlan> {
         let encoded = match self {
             Self::Aac(aac) => aac.encode(input)?,
             Self::Mp3(mp3) => mp3.encode(input)?,
@@ -227,31 +249,26 @@ impl Encoding {
             label.push_str(&format!(" ({reason})"));
         }
         Ok(AudioPlan {
-            index: Some(input.index),
-            encoder: Some(encoded.encoder),
             label,
-            args: encoded.args,
+            action: AudioAction::Encode {
+                index: input.index,
+                codec: encoded.codec,
+                channels: encoded.channels,
+                sample_rate: encoded.sample_rate,
+            },
         })
     }
 }
 
 struct Encoded {
-    encoder: &'static str,
     label: String,
-    args: Vec<String>,
+    codec: Codec,
+    channels: u32,
+    sample_rate: u32,
 }
 
 fn kbps(bitrate: u64) -> String {
     format!("{} kbit/s", bitrate as f64 / 1000.0)
-}
-
-fn format_args(channels: u32, sample_rate: u32) -> [String; 4] {
-    [
-        "-ac".into(),
-        channels.to_string(),
-        "-ar".into(),
-        sample_rate.to_string(),
-    ]
 }
 
 pub struct Aac {
@@ -268,22 +285,18 @@ impl Aac {
         Ok(Self { bitrate, format })
     }
 
-    fn encode(&self, input: &probe::Audio) -> Result<Encoded> {
+    fn encode(&self, input: &media::Audio) -> Result<Encoded> {
         let (channels, sample_rate) = self.format.resolve(input);
-        let mut args: Vec<String> = vec![
-            "-c:a".into(),
-            "aac".into(),
-            "-b:a".into(),
-            self.bitrate.to_string(),
-        ];
-        args.extend(format_args(channels, sample_rate));
         Ok(Encoded {
-            encoder: "aac",
             label: format!(
                 "AAC-LC {}, {channels} ch, {sample_rate} Hz",
                 kbps(self.bitrate)
             ),
-            args,
+            codec: Codec::Aac {
+                bitrate: self.bitrate,
+            },
+            channels,
+            sample_rate,
         })
     }
 }
@@ -319,10 +332,9 @@ impl Mp3 {
         Ok(Self { rate, format })
     }
 
-    fn encode(&self, input: &probe::Audio) -> Result<Encoded> {
+    fn encode(&self, input: &media::Audio) -> Result<Encoded> {
         let (channels, sample_rate) = self.format.resolve(input);
-        let mut args: Vec<String> = vec!["-c:a".into(), "libmp3lame".into()];
-        let rate = match self.rate {
+        let (codec, rate) = match self.rate {
             Mp3Rate::Cbr(bitrate) => {
                 let valid: &[u64] = if sample_rate >= MP3_MPEG1_MIN_RATE {
                     &MP3_MPEG1_KBPS
@@ -341,19 +353,15 @@ impl Mp3 {
                             .join(", ")
                     );
                 }
-                args.extend(["-b:a".into(), bitrate.to_string()]);
-                format!("{} CBR", kbps(bitrate))
+                (Codec::Mp3Cbr { bitrate }, format!("{} CBR", kbps(bitrate)))
             }
-            Mp3Rate::Vbr(vbr) => {
-                args.extend(["-q:a".into(), vbr.to_string()]);
-                format!("VBR {vbr}")
-            }
+            Mp3Rate::Vbr(vbr) => (Codec::Mp3Vbr { quality: vbr }, format!("VBR {vbr}")),
         };
-        args.extend(format_args(channels, sample_rate));
         Ok(Encoded {
-            encoder: "libmp3lame",
             label: format!("MP3 {rate}, {channels} ch, {sample_rate} Hz"),
-            args,
+            codec,
+            channels,
+            sample_rate,
         })
     }
 }
@@ -362,8 +370,8 @@ impl Mp3 {
 mod tests {
     use super::*;
 
-    fn input(codec: &str, profile: Option<&str>, channels: u32, rate: u32) -> probe::Audio {
-        probe::Audio {
+    fn input(codec: &str, profile: Option<&str>, channels: u32, rate: u32) -> media::Audio {
+        media::Audio {
             index: 1,
             codec_name: codec.into(),
             profile: profile.map(String::from),
@@ -373,161 +381,160 @@ mod tests {
         }
     }
 
-    fn with_bit_rate(audio: probe::Audio, bit_rate: Option<u64>) -> probe::Audio {
-        probe::Audio { bit_rate, ..audio }
+    fn with_bit_rate(audio: media::Audio, bit_rate: Option<u64>) -> media::Audio {
+        media::Audio { bit_rate, ..audio }
     }
 
-    fn lc() -> probe::Audio {
+    fn lc() -> media::Audio {
         input("aac", Some("LC"), 2, 48000)
     }
 
-    fn plan(text: &str, input: &probe::Audio) -> AudioPlan {
+    fn plan(text: &str, input: &media::Audio) -> AudioPlan {
         parse(text).unwrap().plan(Some(input)).unwrap()
     }
 
-    fn has(plan: &AudioPlan, pair: [&str; 2]) -> bool {
-        plan.args.windows(2).any(|w| w == pair)
+    fn copied(plan: &AudioPlan) -> bool {
+        matches!(plan.action, AudioAction::Copy { .. })
+    }
+
+    fn encoded(plan: &AudioPlan) -> (Codec, u32, u32) {
+        match plan.action {
+            AudioAction::Encode {
+                codec,
+                channels,
+                sample_rate,
+                ..
+            } => (codec, channels, sample_rate),
+            _ => panic!("not encoded: {}", plan.label),
+        }
+    }
+
+    fn aac(plan: &AudioPlan) -> u64 {
+        match encoded(plan).0 {
+            Codec::Aac { bitrate } => bitrate,
+            other => panic!("not AAC: {other:?}"),
+        }
+    }
+
+    fn mp3_codec(plan: &AudioPlan) -> Codec {
+        match encoded(plan).0 {
+            Codec::Aac { .. } => panic!("not MP3: {}", plan.label),
+            codec => codec,
+        }
     }
 
     #[test]
     fn keep_copies_the_same_codec() {
         let p = plan("aac", &lc());
-        assert_eq!(p.args, ["-c:a", "copy"]);
+        assert_eq!(p.action, AudioAction::Copy { index: 1 });
         assert_eq!(p.label, "copy (AAC-LC)");
-        assert!(p.encoder.is_none());
         let p = plan("mp3,bitrate=160k", &input("mp3", None, 1, 44100));
-        assert_eq!(p.args, ["-c:a", "copy"]);
+        assert!(copied(&p));
         assert_eq!(p.label, "copy (MP3)");
     }
 
     #[test]
     fn keep_encodes_inputs_above_the_bitrate() {
         let p = plan("aac,bitrate=96k", &lc());
-        assert_eq!(p.encoder, Some("aac"));
         assert!(p.label.ends_with("(input is 128 kbit/s)"), "{}", p.label);
-        assert!(has(&p, ["-b:a", "96000"]));
+        assert_eq!(aac(&p), 96_000);
         let p = plan("aac", &with_bit_rate(lc(), Some(256_000)));
-        assert!(has(&p, ["-b:a", "160000"]));
+        assert_eq!(aac(&p), 160_000);
         let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(128_070)));
-        assert_eq!(p.args, ["-c:a", "copy"]);
+        assert!(copied(&p));
         let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(134_400)));
-        assert_eq!(p.args, ["-c:a", "copy"]);
+        assert!(copied(&p));
         let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(134_401)));
-        assert_eq!(p.encoder, Some("aac"));
+        assert_eq!(aac(&p), 128_000);
+        let mp3 = input("mp3", None, 2, 22050);
+        assert!(copied(&plan("mp3", &with_bit_rate(mp3, Some(160_000)))));
         let mp3 = input("mp3", None, 2, 22050);
         assert_eq!(
-            plan("mp3", &with_bit_rate(mp3, Some(160_000))).args,
-            ["-c:a", "copy"]
-        );
-        let mp3 = input("mp3", None, 2, 22050);
-        assert_eq!(
-            plan("mp3", &with_bit_rate(mp3, Some(192_000))).encoder,
-            Some("libmp3lame")
+            mp3_codec(&plan("mp3", &with_bit_rate(mp3, Some(192_000)))),
+            Codec::Mp3Cbr { bitrate: 160_000 }
         );
     }
 
     #[test]
     fn keep_encodes_when_the_bitrate_is_unknown() {
         let p = plan("aac", &with_bit_rate(lc(), None));
-        assert_eq!(p.encoder, Some("aac"));
+        assert_eq!(aac(&p), 160_000);
         assert!(p.label.ends_with("(input bitrate unknown)"), "{}", p.label);
     }
 
     #[test]
     fn keep_ignores_bitrate_with_vbr() {
         let mp3 = with_bit_rate(input("mp3", None, 2, 44100), Some(320_000));
-        assert_eq!(plan("mp3,vbr=2", &mp3).args, ["-c:a", "copy"]);
+        assert!(copied(&plan("mp3,vbr=2", &mp3)));
         let mp3 = with_bit_rate(input("mp3", None, 2, 44100), None);
-        assert_eq!(plan("mp3,vbr=2", &mp3).args, ["-c:a", "copy"]);
+        assert!(copied(&plan("mp3,vbr=2", &mp3)));
     }
 
     #[test]
     fn keep_encodes_a_different_codec() {
         let p = plan("aac", &input("mp3", None, 2, 44100));
-        assert_eq!(p.encoder, Some("aac"));
+        assert_eq!(aac(&p), 160_000);
         assert!(p.label.ends_with("(input is MP3)"), "{}", p.label);
         let p = plan("mp3", &lc());
-        assert_eq!(p.encoder, Some("libmp3lame"));
+        assert_eq!(mp3_codec(&p), Codec::Mp3Cbr { bitrate: 192_000 });
         assert!(p.label.ends_with("(input is AAC-LC)"), "{}", p.label);
         let p = plan("aac,bitrate=96k", &input("opus", None, 2, 48000));
-        assert!(has(&p, ["-b:a", "96000"]));
+        assert_eq!(aac(&p), 96_000);
         assert!(p.label.ends_with("(input is opus)"), "{}", p.label);
     }
 
     #[test]
     fn keep_encodes_what_the_player_cannot_take() {
         let p = plan("aac", &input("aac", Some("HE-AAC"), 2, 48000));
-        assert_eq!(p.encoder, Some("aac"));
+        assert_eq!(aac(&p), 160_000);
         assert!(p.label.ends_with("(input is HE-AAC)"), "{}", p.label);
         let p = plan("aac", &input("aac", Some("LC"), 6, 48000));
         assert!(p.label.ends_with("(input has 6 channels)"), "{}", p.label);
-        assert!(has(&p, ["-ac", "2"]));
+        assert_eq!(encoded(&p).1, 2);
         let p = plan("mp3", &input("mp3", None, 2, 96000));
-        assert!(has(&p, ["-ar", "48000"]));
+        assert_eq!(encoded(&p).2, 48000);
         let p = plan("mp3", &input("mp3", None, 1, 8000));
         assert!(p.label.ends_with("(input is 8000 Hz)"), "{}", p.label);
-        assert!(has(&p, ["-ar", "16000"]));
+        assert_eq!(encoded(&p).2, 16000);
     }
 
     #[test]
     fn keep_none_always_encodes() {
         let p = plan("aac,keep=none", &lc());
-        assert_eq!(p.encoder, Some("aac"));
+        assert_eq!(aac(&p), 160_000);
         assert!(!p.label.contains("("), "{}", p.label);
         let p = plan(
             "mp3,keep=none,vbr=2,channels=1",
             &input("mp3", None, 2, 44100),
         );
-        assert!(has(&p, ["-q:a", "2"]));
-        assert!(has(&p, ["-ac", "1"]));
+        assert_eq!(encoded(&p), (Codec::Mp3Vbr { quality: 2 }, 1, 44100));
     }
 
     #[test]
     fn aac_always_encodes() {
         let p = plan("aac,keep=none,channels=1,samplerate=44.1k", &lc());
-        assert_eq!(p.encoder, Some("aac"));
         assert_eq!(
-            p.args,
-            ["-c:a", "aac", "-b:a", "160000", "-ac", "1", "-ar", "44100"]
+            p.action,
+            AudioAction::Encode {
+                index: 1,
+                codec: Codec::Aac { bitrate: 160_000 },
+                channels: 1,
+                sample_rate: 44100,
+            }
         );
     }
 
     #[test]
     fn mp3_always_encodes() {
         let p = plan("mp3,keep=none", &input("mp3", None, 2, 44100));
-        assert_eq!(p.encoder, Some("libmp3lame"));
-        assert_eq!(
-            p.args,
-            [
-                "-c:a",
-                "libmp3lame",
-                "-b:a",
-                "192000",
-                "-ac",
-                "2",
-                "-ar",
-                "44100"
-            ]
-        );
+        assert_eq!(encoded(&p), (Codec::Mp3Cbr { bitrate: 192_000 }, 2, 44100));
         assert_eq!(p.label, "MP3 192 kbit/s CBR, 2 ch, 44100 Hz");
         let p = plan("mp3,samplerate=22.05k", &lc());
-        assert!(has(&p, ["-b:a", "160000"]));
+        assert_eq!(mp3_codec(&p), Codec::Mp3Cbr { bitrate: 160_000 });
         let p = plan("mp3,keep=none", &input("mp3", None, 1, 16000));
-        assert!(has(&p, ["-b:a", "160000"]));
+        assert_eq!(mp3_codec(&p), Codec::Mp3Cbr { bitrate: 160_000 });
         let p = plan("mp3,vbr=0,samplerate=22.05k", &lc());
-        assert_eq!(
-            p.args,
-            [
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "0",
-                "-ac",
-                "2",
-                "-ar",
-                "22050"
-            ]
-        );
+        assert_eq!(encoded(&p), (Codec::Mp3Vbr { quality: 0 }, 2, 22050));
     }
 
     #[test]
@@ -558,7 +565,8 @@ mod tests {
     #[test]
     fn none_and_missing_input() {
         let p = plan("none", &lc());
-        assert!(p.index.is_none() && p.args.is_empty());
+        assert_eq!(p.action, AudioAction::None);
+        assert_eq!(p.index(), None);
         let p = parse("aac").unwrap().plan(None).unwrap();
         assert_eq!(p.label, "none (input has no audio)");
     }

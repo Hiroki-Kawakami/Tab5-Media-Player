@@ -3,17 +3,27 @@
 
 use anyhow::{Result, bail};
 
-use super::{DECODER_LIMITS, PictureSpec, VideoOutput, VideoPlan};
-use crate::probe;
+use super::{Color, DECODER_LIMITS, PictureSpec, VideoCodec, VideoPlan};
+use crate::media;
 use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
 
 pub const KEYS: [&str; 6] = ["qscale", "bitrate", "bframes", "keyint", "gop", "hq"];
 const MAX_BFRAMES: u32 = 3;
 const DEFAULT_QSCALE: u32 = 8;
 
-enum Rate {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rate {
     Qscale(u32),
     Bitrate(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Params {
+    pub rate: Rate,
+    pub bframes: u32,
+    pub keyint: u32,
+    pub closed_gop: bool,
+    pub hq: bool,
 }
 
 pub struct Mpeg2 {
@@ -53,46 +63,17 @@ impl Mpeg2 {
         })
     }
 
-    pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("mpeg2", video, false, "", None)?;
+    pub fn plan(&self, video: &media::Video) -> Result<VideoPlan> {
+        let picture = self
+            .picture
+            .resolve("mpeg2", video, false, Color::Source, None)?;
         let keyint = picture.keyint(self.keyint);
-
-        let mut args: Vec<String> = [
-            "-vf",
-            &picture.filter,
-            "-c:v",
-            "mpeg2video",
-            "-pix_fmt",
-            "yuv420p",
-        ]
-        .map(String::from)
-        .to_vec();
         let rate = match self.rate {
-            Rate::Qscale(q) => {
-                args.extend(["-q:v".into(), q.to_string()]);
-                format!("qscale {q}")
-            }
-            Rate::Bitrate(bitrate) => {
-                args.extend(["-b:v".into(), bitrate.to_string()]);
-                format!("{} kbit/s", bitrate as f64 / 1000.0)
-            }
+            Rate::Qscale(q) => format!("qscale {q}"),
+            Rate::Bitrate(bitrate) => format!("{} kbit/s", bitrate as f64 / 1000.0),
         };
-        args.extend([
-            "-bf".into(),
-            self.bframes.to_string(),
-            "-g".into(),
-            keyint.to_string(),
-        ]);
-        if self.closed_gop {
-            args.extend(["-flags", "+cgop", "-sc_threshold", "1000000000"].map(String::from));
-        }
-        if self.hq {
-            args.extend(["-mbd", "rd", "-trellis", "1", "-intra_vlc", "1"].map(String::from));
-        }
-
         Ok(VideoPlan {
             index: video.index,
-            encoder: Some("mpeg2video"),
             label: format!(
                 "MPEG-2 {}, {rate}, {} B pictures, {} GOP of {keyint} frames{}",
                 picture.label,
@@ -100,7 +81,14 @@ impl Mpeg2 {
                 if self.closed_gop { "closed" } else { "open" },
                 if self.hq { ", hq" } else { "" },
             ),
-            output: VideoOutput::Ffmpeg(args),
+            picture,
+            codec: VideoCodec::Mpeg2(Params {
+                rate: self.rate,
+                bframes: self.bframes,
+                keyint,
+                closed_gop: self.closed_gop,
+                hq: self.hq,
+            }),
         })
     }
 }
@@ -108,35 +96,48 @@ impl Mpeg2 {
 #[cfg(test)]
 mod tests {
     use super::super::parse;
-    use super::super::tests::{args, has, source};
+    use super::super::tests::{plan, source};
+    use super::*;
+
+    fn params(text: &str) -> Params {
+        match plan(text).codec {
+            VideoCodec::Mpeg2(p) => p,
+            _ => unreachable!(),
+        }
+    }
 
     #[test]
     fn defaults() {
-        let a = args("mpeg2");
-        assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]));
-        assert!(has(&a, ["-c:v", "mpeg2video"]));
-        assert!(has(&a, ["-pix_fmt", "yuv420p"]));
-        assert!(has(&a, ["-q:v", "8"]));
-        assert!(has(&a, ["-bf", "2"]));
-        assert!(has(&a, ["-g", "60"]));
-        assert!(has(&a, ["-flags", "+cgop"]));
-        assert!(has(&a, ["-sc_threshold", "1000000000"]));
-        assert!(has(&a, ["-mbd", "rd"]));
-        assert!(has(&a, ["-trellis", "1"]));
-        assert!(has(&a, ["-intra_vlc", "1"]));
+        let p = plan("mpeg2");
+        assert_eq!((p.picture.width, p.picture.height), (640, 360));
+        assert_eq!(p.picture.color, Color::Source);
+        assert_eq!(
+            params("mpeg2"),
+            Params {
+                rate: Rate::Qscale(8),
+                bframes: 2,
+                keyint: 60,
+                closed_gop: true,
+                hq: true,
+            }
+        );
     }
 
     #[test]
     fn options() {
-        let a = args("mpeg2,bitrate=2M,bframes=0,keyint=1,gop=open,hq=no,short=720");
-        assert!(has(&a, ["-vf", "scale=1280:720,setsar=1"]));
-        assert!(has(&a, ["-b:v", "2000000"]));
-        assert!(!a.contains(&"-q:v".to_string()));
-        assert!(has(&a, ["-bf", "0"]));
-        assert!(has(&a, ["-g", "30"]));
-        assert!(!a.contains(&"+cgop".to_string()));
-        assert!(!a.contains(&"-sc_threshold".to_string()));
-        assert!(!a.contains(&"-mbd".to_string()));
+        let text = "mpeg2,bitrate=2M,bframes=0,keyint=1,gop=open,hq=no,short=720";
+        let p = plan(text);
+        assert_eq!((p.picture.width, p.picture.height), (1280, 720));
+        assert_eq!(
+            params(text),
+            Params {
+                rate: Rate::Bitrate(2_000_000),
+                bframes: 0,
+                keyint: 30,
+                closed_gop: false,
+                hq: false,
+            }
+        );
     }
 
     #[test]

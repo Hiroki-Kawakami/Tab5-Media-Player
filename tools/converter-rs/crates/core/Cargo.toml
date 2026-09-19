@@ -1,0 +1,10 @@
+[package]
+name = "tab5conv-core"
+description = "Settings, planning and the MJPEG encoder shared by every Tab5-Media-Player converter"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true

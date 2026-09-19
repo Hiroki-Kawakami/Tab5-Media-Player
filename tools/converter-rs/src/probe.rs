@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -30,6 +31,9 @@ struct Stream {
     r_frame_rate: Option<String>,
     channels: Option<u32>,
     sample_rate: Option<String>,
+    bit_rate: Option<String>,
+    #[serde(default)]
+    tags: HashMap<String, String>,
     #[serde(default)]
     disposition: Disposition,
     #[serde(default)]
@@ -60,11 +64,24 @@ pub struct Audio {
     pub profile: Option<String>,
     pub channels: u32,
     pub sample_rate: u32,
+    pub bit_rate: Option<u64>,
 }
 
 pub struct MediaInfo {
     pub video: Video,
     pub audio: Option<Audio>,
+}
+
+fn bit_rate(stream: &Stream) -> Option<u64> {
+    let tagged = stream
+        .tags
+        .iter()
+        .find(|(key, _)| *key == "BPS" || key.starts_with("BPS-"))
+        .map(|(_, value)| value.as_str());
+    [stream.bit_rate.as_deref(), tagged]
+        .into_iter()
+        .flatten()
+        .find_map(|text| text.parse().ok().filter(|&b: &u64| b > 0))
 }
 
 fn frame_rate(text: &str) -> Option<Rate> {
@@ -135,6 +152,7 @@ fn parse(json: &str) -> Result<MediaInfo> {
                 .as_deref()
                 .and_then(|r| r.parse().ok())
                 .unwrap_or(48000),
+            bit_rate: bit_rate(s),
         });
 
     Ok(MediaInfo {
@@ -175,6 +193,29 @@ mod tests {
         );
         assert_eq!(audio.codec_name, "aac");
         assert_eq!(audio.profile.as_deref(), Some("HE-AAC"));
+        assert_eq!(audio.bit_rate, None);
+    }
+
+    #[test]
+    fn audio_bit_rate_from_stream_or_tags() {
+        let rate = |audio: &str| {
+            let json = format!(
+                r#"{{"streams":[{{"index":0,"codec_type":"video","width":64,"height":64}},
+                   {{"index":1,"codec_type":"audio",{audio}}}]}}"#
+            );
+            parse(&json).unwrap().audio.unwrap().bit_rate
+        };
+        assert_eq!(rate(r#""bit_rate":"128070""#), Some(128070));
+        assert_eq!(
+            rate(r#""tags":{"BPS":"160000","language":"eng"}"#),
+            Some(160000)
+        );
+        assert_eq!(rate(r#""tags":{"BPS-eng":"96000"}"#), Some(96000));
+        assert_eq!(
+            rate(r#""bit_rate":"N/A","tags":{"BPS":"64000"}"#),
+            Some(64000)
+        );
+        assert_eq!(rate(r#""tags":{"title":"x"}"#), None);
     }
 
     #[test]

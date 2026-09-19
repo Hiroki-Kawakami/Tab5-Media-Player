@@ -30,15 +30,16 @@ size keys, for every codec:
   maxfps=R            lower the frame rate to R only when the input is faster
                       Without fps or maxfps, maxfps=30 is used.
 
-h264   H.264 (libx264), 4:2:0 8-bit (default)
-  profile=P           baseline, main or high (default high)
-  crf=N               0-51 (default 23)
+h264   H.264 (libx264), 4:2:0 8-bit; B pictures are never references and one
+       reference frame is used, so the player can drop B pictures when late
+  profile=P           baseline, main (default) or high
+  crf=N               0-51 (default 32)
   bitrate=R           e.g. 800k or 1.5M; replaces crf
-  keyint=S            keyframe interval in seconds (default 2)
+  keyint=S            keyframe interval in seconds (default 4)
   preset=P            x264 preset (default medium)
 
 mpeg2  MPEG-2 video (mpeg2video), Main profile, progressive 4:2:0
-  qscale=N            1-31, lower is better (default 4)
+  qscale=N            1-31, lower is better (default 8)
   bitrate=R           e.g. 2M; replaces qscale
   bframes=N           consecutive B pictures, 0-3 (default 2)
   keyint=S            I picture interval in seconds (default 2)
@@ -47,7 +48,8 @@ mpeg2  MPEG-2 video (mpeg2video), Main profile, progressive 4:2:0
   hq=B                yes or no (default yes): -mbd rd -trellis 1 -intra_vlc 1
 
 mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rate
-  quality=N           1-100 (default 80)
+       (default)
+  quality=N           1-100 (default 75)
   minquality=N        lowest quality rate control may use (default 30)
   bitrate=R           video bitrate to stay under, e.g. 12M (default 24M);
                       quality drops where the estimate would exceed it
@@ -97,8 +99,12 @@ pub enum VideoSpec {
     Mjpeg(mjpeg::Mjpeg),
 }
 
+#[cfg(test)]
 pub fn parse(text: &str) -> Result<VideoSpec> {
-    let mut spec = Spec::parse(text)?;
+    from_spec(Spec::parse(text)?)
+}
+
+pub fn from_spec(mut spec: Spec) -> Result<VideoSpec> {
     let (video, codec_keys): (_, &[&str]) = match spec.codec.clone().as_str() {
         "h264" => (VideoSpec::H264(h264::H264::take(&mut spec)?), &h264::KEYS),
         "mpeg2" => (
@@ -241,7 +247,12 @@ mod tests {
             ..source()
         };
         for codec in ["h264", "mpeg2"] {
-            let a = ffmpeg_args(parse(codec).unwrap().plan(&fast).unwrap());
+            let a = ffmpeg_args(
+                parse(&format!("{codec},keyint=2"))
+                    .unwrap()
+                    .plan(&fast)
+                    .unwrap(),
+            );
             assert!(has(&a, ["-vf", "fps=30,scale=640:360,setsar=1"]), "{a:?}");
             assert!(has(&a, ["-g", "60"]), "{a:?}");
             let a = ffmpeg_args(
@@ -253,7 +264,7 @@ mod tests {
             assert!(has(&a, ["-vf", "fps=24,scale=640:360,setsar=1"]), "{a:?}");
             assert!(has(&a, ["-g", "24"]), "{a:?}");
             let a = ffmpeg_args(
-                parse(&format!("{codec},maxfps=60"))
+                parse(&format!("{codec},maxfps=60,keyint=2"))
                     .unwrap()
                     .plan(&fast)
                     .unwrap(),

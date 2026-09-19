@@ -9,6 +9,7 @@ use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
 
 pub const KEYS: [&str; 6] = ["qscale", "bitrate", "bframes", "keyint", "gop", "hq"];
 const MAX_BFRAMES: u32 = 3;
+const DEFAULT_QSCALE: u32 = 8;
 
 enum Rate {
     Qscale(u32),
@@ -32,7 +33,7 @@ impl Mpeg2 {
         let rate = match (qscale, bitrate) {
             (Some(_), Some(_)) => bail!("mpeg2: qscale and bitrate cannot be combined"),
             (_, Some(bitrate)) => Rate::Bitrate(bitrate),
-            (qscale, None) => Rate::Qscale(qscale.unwrap_or(4)),
+            (qscale, None) => Rate::Qscale(qscale.unwrap_or(DEFAULT_QSCALE)),
         };
         let bframes = spec
             .take("bframes", |v| int_in(v, 0, MAX_BFRAMES))?
@@ -115,7 +116,7 @@ mod tests {
         assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]));
         assert!(has(&a, ["-c:v", "mpeg2video"]));
         assert!(has(&a, ["-pix_fmt", "yuv420p"]));
-        assert!(has(&a, ["-q:v", "4"]));
+        assert!(has(&a, ["-q:v", "8"]));
         assert!(has(&a, ["-bf", "2"]));
         assert!(has(&a, ["-g", "60"]));
         assert!(has(&a, ["-flags", "+cgop"]));

@@ -32,6 +32,29 @@ impl Spec {
         Ok(Self { codec, options })
     }
 
+    pub fn merged(self, over: Spec) -> Spec {
+        if self.codec != over.codec {
+            return over;
+        }
+        let mut options: Vec<(String, String)> = self
+            .options
+            .into_iter()
+            .filter(|(key, _)| !over.options.iter().any(|(k, _)| k == key))
+            .collect();
+        options.extend(over.options);
+        Spec {
+            codec: over.codec,
+            options,
+        }
+    }
+
+    pub fn to_text(&self) -> String {
+        std::iter::once(self.codec.clone())
+            .chain(self.options.iter().map(|(k, v)| format!("{k}={v}")))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
     pub fn take<T>(
         &mut self,
         key: &str,
@@ -141,6 +164,15 @@ mod tests {
         assert_eq!(spec.take("crf", positive_int).unwrap(), Some(20));
         assert_eq!(spec.take("crf", positive_int).unwrap(), None);
         assert!(spec.finish(&["crf"]).is_err());
+    }
+
+    #[test]
+    fn merges_over_the_same_codec_only() {
+        let base = || Spec::parse("h264,long=640,maxfps=15").unwrap();
+        let merged = base().merged(Spec::parse("h264,crf=20,maxfps=24").unwrap());
+        assert_eq!(merged.to_text(), "h264,long=640,crf=20,maxfps=24");
+        let replaced = base().merged(Spec::parse("mjpeg,quality=90").unwrap());
+        assert_eq!(replaced.to_text(), "mjpeg,quality=90");
     }
 
     #[test]

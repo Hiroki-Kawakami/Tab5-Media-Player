@@ -24,7 +24,7 @@ pub const KEYS: [&str; 9] = [
 ];
 pub const PLAYER_MAX_FRAME: usize = 1 << 20;
 const PLAYER_READ_AHEAD: usize = 16 * 64 * 1024;
-const DEFAULT_QUALITY: u8 = 80;
+const DEFAULT_QUALITY: u8 = 75;
 const DEFAULT_MIN_QUALITY: u8 = 30;
 const DEFAULT_BITRATE: u64 = 24_000_000;
 const SCALE_OPTIONS: &str = ":out_color_matrix=bt601:out_range=full";
@@ -182,7 +182,7 @@ mod tests {
         );
         assert_eq!(j.display_rotation, Some(-90));
         assert_eq!(j.rate, Rate::new(30000, 1001).unwrap());
-        assert_eq!(j.settings.quality, 80);
+        assert_eq!(j.settings.quality, 75);
         assert_eq!(j.settings.min_quality, 30);
         assert_eq!(j.settings.max_frame, PLAYER_MAX_FRAME);
         assert_eq!(j.settings.huffman, HuffmanMode::Optimal);

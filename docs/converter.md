@@ -1,8 +1,8 @@
 # Converter (`tools/converter-rs`)
 
 `tab5conv` turns an arbitrary video into a file the player is guaranteed to
-open. Video is H.264, progressive MPEG-2 (4:2:0 8-bit) or MJPEG, and audio is
-AAC-LC or MP3. Output is MP4 by default, or MKV when the output name ends in
+open. Video is MJPEG (the default), H.264 or progressive MPEG-2 (4:2:0 8-bit),
+and audio is AAC-LC or MP3. Output is MP4 by default, or MKV when the output name ends in
 `.mkv`.
 
 ```sh
@@ -25,8 +25,14 @@ the one intended exception described under `keep` below.
 `--audio aac` (the default) and `--audio mp3` take `keep=auto|none`. With
 `auto`, an input that is already the chosen codec is copied, provided the
 player can take it as is: AAC-LC (not HE-AAC) or MP3, at most 2 channels,
-16-48 kHz. Anything else is encoded, including the other codec, so the output
-codec is always the one asked for. There is no `keep=always`, which would
+16-48 kHz. It must also be no bigger than the bitrate an encode would use,
+whether set or the codec's default, so `bitrate` caps the file even when
+the codec matches. ffprobe's figure is a little off (a 128k CBR track reads
+127-128.1k), hence 5% slack. The bitrate comes from the stream or, in MKV,
+from a `BPS` tag; MKVs written by ffmpeg have neither, and an unknown
+bitrate is encoded. `vbr` has no bitrate to compare, so it skips the check.
+Anything else is encoded, including the other codec, so the output codec is
+always the one asked for. There is no `keep=always`, which would
 copy tracks the player may not handle. The encoder keys only apply when the
 track ends up encoded.
 
@@ -34,6 +40,18 @@ track ends up encoded.
 output at 8 kHz makes audible noise. Lower-rate input is therefore resampled
 up to 16 kHz, and `keep=auto` does not copy it. The device's MP3 decoder itself
 played every rate down to 8 kHz, MPEG-2.5 included.
+
+## Presets
+
+`--preset` (`preset.rs`) supplies the `--video` and `--audio` strings:
+`tiny`, `small`, `default` (the default) and `quality`; `--preset help` lists
+them. Presets are plain spec strings run through the same parser, so they
+cannot drift from the options. An explicit spec with the same codec is merged
+over the preset's (its keys win), so `--preset tiny --video h264,crf=20`
+only changes the CRF. One with another codec replaces that side, because the
+preset's keys would not make sense for it. `default` names only the codecs,
+so it follows the codecs' own defaults when they change. The run prints the
+merged specs, so it is clear what was applied.
 
 ## MP3
 
@@ -46,11 +64,51 @@ played every rate down to 8 kHz, MPEG-2.5 included.
 - **The 16 kHz floor also keeps MPEG-2.5 MP3 (8-12 kHz) out**, which ffmpeg's
   mp4 muxer rejects as non-standard.
 
+## H.264
+
+The defaults are `profile=main,crf=32,keyint=4`. x264 also always gets
+`bframes=3:b-pyramid=none:ref=1:weightp=0`; with `profile=baseline` it gets
+only `ref=1`, because `bframes` in `-x264-params` would override the
+profile and turn the stream back into Main. The target is a stream that
+decodes no heavier per frame than a 360p YouTube encode (Main, flat B
+pictures), which plays well on the device. The figures below are for a
+164 s 360p clip from YouTube (605 kbit/s, 2.5 KB a frame, 59% non-reference
+slices, 1150 fps in the host decoder).
+
+- **Frames the player can drop matter more than raw decode speed.** When it
+  runs late, the player skips pictures with `nal_ref_idc == 0` undecoded
+  and otherwise has to wait for the next keyframe (see
+  [`playback.md`](playback.md#h264-playback)). Baseline has no B pictures,
+  so 0% of it can be dropped. It decoded fast on the host (1136 fps) and
+  still fell behind on the device. B-pyramids make some B pictures
+  references (x264's default Main left 47% droppable); flat B pictures with
+  one reference give 61%.
+- **Lowering the frame rate does not lower the load.** At the same CRF,
+  15 fps saved only 7% of the bitrate and doubled the size of each frame
+  (5.2 KB against 2.8 KB), because consecutive frames differ more. Per-frame
+  load is what the player has to keep up with, so `tiny` stays at 30 fps and
+  saves size through CRF.
+- **CRF 32 is a little lighter than the reference per frame**: 510 kbit/s,
+  2.1 KB a frame (P 3.7 KB, B 0.9 KB), 61% droppable, 1210 fps on the host,
+  33.7 dB against the YouTube file. CRF 30 matches it (604 kbit/s, 2.5 KB,
+  35.2 dB), and CRF 28 is 7% heavier than that at 36.7 dB. The old defaults (High,
+  CRF 23, 2 s keyframes, 15 fps in `tiny`) came out at 1283 kbit/s and 539 fps.
+- **Keyframes every 4 s**: I pictures were over a tenth of the file at 2 s.
+  Seeking snaps to keyframes, so it gets coarser.
+
 ## MPEG-2
 
 ffmpeg's `mpeg2video` defaults are wrong for the player: 200 kbit/s, no B
 pictures and a 12-frame GOP. So `mpeg2` sets every one of those itself
-(`qscale=4`, 2 B pictures, 2 s GOP).
+(`qscale=8`, 2 B pictures, 2 s GOP).
+
+- **`qscale=8` matches MJPEG's default quality.** On 30 s of a detailed 4K
+  clip scaled to 360p, `qscale=8` gave 3.0 Mbit/s at 34.3 dB, the same as
+  `mjpeg,quality=75` at 10 Mbit/s (34.5 dB). The old default of 4 gave
+  6.1 Mbit/s at 39.3 dB, so it barely came out smaller than MJPEG. To
+  compare MJPEG with the others, convert its BT.601 full-range output to
+  the source's matrix first (`scale=in_color_matrix=bt601:in_range=full:...`).
+  Comparing raw YUV of mismatched matrices cost it 8 dB.
 
 - **`bframes` stops at 3**, the most the decoder has been checked against.
   B pictures are also what the player drops when it runs late.
@@ -138,7 +196,8 @@ ffmpeg (decode, fps, scale)
   noise left the bucket 10x full, and the easy frames after it stayed at
   `minquality` until it drained.
 - **The default `bitrate` is 24M**: well above what ordinary footage needs at
-  quality 80 (the 720p real-footage clip here needs about 11 Mbit/s), so it
+  quality 80, above the default 75 (the 720p real-footage clip here needs
+  about 11 Mbit/s), so it
   only stops outliers from growing the file. Audio is not counted: it is small next to
   the video, and counting it would tie video settings to audio ones.
 - **`maxframe` defaults to the player's hard limit, 1 MiB** (the

@@ -9,6 +9,11 @@ use crate::spec::{Spec, int_in, one_of, quantity, seconds};
 
 pub const KEYS: [&str; 5] = ["profile", "crf", "bitrate", "keyint", "preset"];
 const PROFILES: [&str; 3] = ["baseline", "main", "high"];
+const DEFAULT_PROFILE: &str = "main";
+const DEFAULT_CRF: u32 = 32;
+const X264_PARAMS: &str = "bframes=3:b-pyramid=none:ref=1:weightp=0";
+const X264_BASELINE_PARAMS: &str = "ref=1";
+const DEFAULT_KEYINT: f64 = 4.0;
 const PRESETS: [&str; 10] = [
     "ultrafast",
     "superfast",
@@ -40,15 +45,15 @@ impl H264 {
         let picture = PictureSpec::take(spec, &DECODER_LIMITS)?;
         let profile = spec
             .take("profile", |v| one_of(v, &PROFILES))?
-            .unwrap_or("high");
+            .unwrap_or(DEFAULT_PROFILE);
         let crf = spec.take("crf", |v| int_in(v, 0, 51))?;
         let bitrate = spec.take("bitrate", quantity)?;
         let rate = match (crf, bitrate) {
             (Some(_), Some(_)) => bail!("h264: crf and bitrate cannot be combined"),
             (_, Some(bitrate)) => Rate::Bitrate(bitrate),
-            (crf, None) => Rate::Crf(crf.unwrap_or(23)),
+            (crf, None) => Rate::Crf(crf.unwrap_or(DEFAULT_CRF)),
         };
-        let keyint = spec.take("keyint", seconds)?.unwrap_or(2.0);
+        let keyint = spec.take("keyint", seconds)?.unwrap_or(DEFAULT_KEYINT);
         let preset = spec
             .take("preset", |v| one_of(v, &PRESETS))?
             .unwrap_or("medium");
@@ -76,6 +81,12 @@ impl H264 {
             self.preset,
             "-pix_fmt",
             "yuv420p",
+            "-x264-params",
+            if self.profile == "baseline" {
+                X264_BASELINE_PARAMS
+            } else {
+                X264_PARAMS
+            },
         ]
         .map(String::from)
         .to_vec();
@@ -113,16 +124,22 @@ mod tests {
         let a = args("h264");
         assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]));
         assert!(has(&a, ["-c:v", "libx264"]));
-        assert!(has(&a, ["-profile:v", "high"]));
+        assert!(has(&a, ["-profile:v", "main"]));
         assert!(has(&a, ["-preset", "medium"]));
-        assert!(has(&a, ["-crf", "23"]));
-        assert!(has(&a, ["-g", "60"]));
+        assert!(has(&a, ["-crf", "32"]));
+        assert!(has(
+            &a,
+            ["-x264-params", "bframes=3:b-pyramid=none:ref=1:weightp=0"]
+        ));
+        assert!(has(&a, ["-g", "120"]));
     }
 
     #[test]
     fn options() {
-        let a = args("h264,profile=baseline,bitrate=1.5M,keyint=0.5,preset=fast");
-        assert!(has(&a, ["-profile:v", "baseline"]));
+        let a = args("h264,profile=baseline");
+        assert!(has(&a, ["-x264-params", "ref=1"]));
+        let a = args("h264,profile=high,bitrate=1.5M,keyint=0.5,preset=fast");
+        assert!(has(&a, ["-profile:v", "high"]));
         assert!(has(&a, ["-b:v", "1500000"]));
         assert!(!a.contains(&"-crf".to_string()));
         assert!(has(&a, ["-g", "15"]));

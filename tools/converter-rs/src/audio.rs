@@ -11,12 +11,15 @@ pub const HELP: &str = "\
 
 aac    AAC-LC (default)
   keep=K              auto (default): copy an input that is already AAC-LC
-                      with at most 2 channels at 16-48 kHz; none: always encode
+                      with at most 2 channels at 16-48 kHz and no more than
+                      bitrate (5% slack); none: always encode
   bitrate=R           e.g. 96k (default 160k)
   channels=N, samplerate=R
 mp3    MP3 (libmp3lame)
   keep=K              auto (default): copy an input that is already MP3 with
-                      at most 2 channels at 16-48 kHz; none: always encode
+                      at most 2 channels at 16-48 kHz and no more than
+                      bitrate (5% slack; any bitrate with vbr); none: always
+                      encode
   bitrate=R           CBR; 32k-320k at 32k-48k (default 192k),
                       8k-160k at 16k-24k (default 160k)
   vbr=N               VBR quality 0-9, lower is better; replaces bitrate
@@ -41,6 +44,7 @@ const MP3_MPEG1_KBPS: [u64; 14] = [
 ];
 const MP3_LSF_KBPS: [u64; 14] = [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 const MP3_MPEG1_MIN_RATE: u32 = 32000;
+const BITRATE_TOLERANCE: f64 = 1.05;
 
 pub struct AudioPlan {
     pub index: Option<u32>,
@@ -54,8 +58,12 @@ pub enum AudioSpec {
     None,
 }
 
+#[cfg(test)]
 pub fn parse(text: &str) -> Result<AudioSpec> {
-    let mut spec = Spec::parse(text)?;
+    from_spec(Spec::parse(text)?)
+}
+
+pub fn from_spec(mut spec: Spec) -> Result<AudioSpec> {
     let codec = spec.codec.clone();
     let (audio, keys) = match codec.as_str() {
         "aac" | "mp3" => {
@@ -134,7 +142,15 @@ fn copy_blocker(input: &probe::Audio, encoding: &Encoding) -> Option<String> {
     } else if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&input.sample_rate) {
         Some(format!("input is {} Hz", input.sample_rate))
     } else {
-        None
+        let target = encoding.target_bitrate(input)?;
+        match input.bit_rate {
+            None => Some("input bitrate unknown".into()),
+            Some(rate) if rate as f64 > target as f64 * BITRATE_TOLERANCE => Some(format!(
+                "input is {} kbit/s",
+                (rate as f64 / 1000.0).round()
+            )),
+            Some(_) => None,
+        }
     }
 }
 
@@ -185,6 +201,19 @@ impl Encoding {
         match self {
             Self::Aac(_) => &["bitrate", "channels", "samplerate"],
             Self::Mp3(_) => &["bitrate", "vbr", "channels", "samplerate"],
+        }
+    }
+
+    fn target_bitrate(&self, input: &probe::Audio) -> Option<u64> {
+        match self {
+            Self::Aac(aac) => Some(aac.bitrate),
+            Self::Mp3(mp3) => match mp3.rate {
+                Mp3Rate::Cbr(bitrate) => {
+                    let (_, sample_rate) = mp3.format.resolve(input);
+                    Some(bitrate.unwrap_or(mp3_default_bitrate(sample_rate)))
+                }
+                Mp3Rate::Vbr(_) => None,
+            },
         }
     }
 
@@ -259,6 +288,14 @@ impl Aac {
     }
 }
 
+fn mp3_default_bitrate(sample_rate: u32) -> u64 {
+    if sample_rate >= MP3_MPEG1_MIN_RATE {
+        MP3_DEFAULT_BITRATE
+    } else {
+        MP3_LSF_DEFAULT_BITRATE
+    }
+}
+
 enum Mp3Rate {
     Cbr(Option<u64>),
     Vbr(u32),
@@ -287,12 +324,12 @@ impl Mp3 {
         let mut args: Vec<String> = vec!["-c:a".into(), "libmp3lame".into()];
         let rate = match self.rate {
             Mp3Rate::Cbr(bitrate) => {
-                let (valid, default): (&[u64], u64) = if sample_rate >= MP3_MPEG1_MIN_RATE {
-                    (&MP3_MPEG1_KBPS, MP3_DEFAULT_BITRATE)
+                let valid: &[u64] = if sample_rate >= MP3_MPEG1_MIN_RATE {
+                    &MP3_MPEG1_KBPS
                 } else {
-                    (&MP3_LSF_KBPS, MP3_LSF_DEFAULT_BITRATE)
+                    &MP3_LSF_KBPS
                 };
-                let bitrate = bitrate.unwrap_or(default);
+                let bitrate = bitrate.unwrap_or(mp3_default_bitrate(sample_rate));
                 if bitrate % 1000 != 0 || !valid.contains(&(bitrate / 1000)) {
                     bail!(
                         "mp3: {} is not a valid bitrate at {sample_rate} Hz (valid: {})",
@@ -332,7 +369,12 @@ mod tests {
             profile: profile.map(String::from),
             channels,
             sample_rate: rate,
+            bit_rate: Some(128_000),
         }
+    }
+
+    fn with_bit_rate(audio: probe::Audio, bit_rate: Option<u64>) -> probe::Audio {
+        probe::Audio { bit_rate, ..audio }
     }
 
     fn lc() -> probe::Audio {
@@ -353,9 +395,50 @@ mod tests {
         assert_eq!(p.args, ["-c:a", "copy"]);
         assert_eq!(p.label, "copy (AAC-LC)");
         assert!(p.encoder.is_none());
-        let p = plan("mp3,bitrate=96k", &input("mp3", None, 1, 44100));
+        let p = plan("mp3,bitrate=160k", &input("mp3", None, 1, 44100));
         assert_eq!(p.args, ["-c:a", "copy"]);
         assert_eq!(p.label, "copy (MP3)");
+    }
+
+    #[test]
+    fn keep_encodes_inputs_above_the_bitrate() {
+        let p = plan("aac,bitrate=96k", &lc());
+        assert_eq!(p.encoder, Some("aac"));
+        assert!(p.label.ends_with("(input is 128 kbit/s)"), "{}", p.label);
+        assert!(has(&p, ["-b:a", "96000"]));
+        let p = plan("aac", &with_bit_rate(lc(), Some(256_000)));
+        assert!(has(&p, ["-b:a", "160000"]));
+        let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(128_070)));
+        assert_eq!(p.args, ["-c:a", "copy"]);
+        let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(134_400)));
+        assert_eq!(p.args, ["-c:a", "copy"]);
+        let p = plan("aac,bitrate=128k", &with_bit_rate(lc(), Some(134_401)));
+        assert_eq!(p.encoder, Some("aac"));
+        let mp3 = input("mp3", None, 2, 22050);
+        assert_eq!(
+            plan("mp3", &with_bit_rate(mp3, Some(160_000))).args,
+            ["-c:a", "copy"]
+        );
+        let mp3 = input("mp3", None, 2, 22050);
+        assert_eq!(
+            plan("mp3", &with_bit_rate(mp3, Some(192_000))).encoder,
+            Some("libmp3lame")
+        );
+    }
+
+    #[test]
+    fn keep_encodes_when_the_bitrate_is_unknown() {
+        let p = plan("aac", &with_bit_rate(lc(), None));
+        assert_eq!(p.encoder, Some("aac"));
+        assert!(p.label.ends_with("(input bitrate unknown)"), "{}", p.label);
+    }
+
+    #[test]
+    fn keep_ignores_bitrate_with_vbr() {
+        let mp3 = with_bit_rate(input("mp3", None, 2, 44100), Some(320_000));
+        assert_eq!(plan("mp3,vbr=2", &mp3).args, ["-c:a", "copy"]);
+        let mp3 = with_bit_rate(input("mp3", None, 2, 44100), None);
+        assert_eq!(plan("mp3,vbr=2", &mp3).args, ["-c:a", "copy"]);
     }
 
     #[test]

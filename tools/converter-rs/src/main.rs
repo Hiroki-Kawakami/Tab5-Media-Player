@@ -7,6 +7,7 @@ mod ffmpeg;
 mod framerate;
 mod jpeg;
 mod pipeline;
+mod preset;
 mod probe;
 mod ratecontrol;
 mod size;
@@ -24,7 +25,7 @@ use clap::{CommandFactory, Parser};
 #[command(
     version,
     about = "Convert video files for Tab5-Media-Player",
-    after_help = "Run with --video help or --audio help for the codecs and their keys."
+    after_help = "Run with --preset help, --video help or --audio help for the details."
 )]
 struct Args {
     input: Option<PathBuf>,
@@ -33,13 +34,17 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Video codec and options, e.g. "h264,long=1280,short=720,crf=20"
-    #[arg(long, default_value = "h264", value_name = "SPEC")]
-    video: String,
+    /// Settings for --video and --audio: tiny, small, default or quality
+    #[arg(long, default_value = preset::DEFAULT, value_name = "NAME")]
+    preset: String,
 
-    /// Audio codec and options, e.g. "aac,bitrate=96k"
-    #[arg(long, default_value = "aac", value_name = "SPEC")]
-    audio: String,
+    /// Video codec and options, e.g. "h264,long=1280,short=720,crf=20"; adds to the preset's for the same codec
+    #[arg(long, value_name = "SPEC")]
+    video: Option<String>,
+
+    /// Audio codec and options, e.g. "aac,bitrate=96k"; adds to the preset's for the same codec
+    #[arg(long, value_name = "SPEC")]
+    audio: Option<String>,
 
     /// Overwrite the output file if it exists
     #[arg(short = 'y', long)]
@@ -58,19 +63,29 @@ fn default_output(input: &Path) -> PathBuf {
 }
 
 fn run(args: Args) -> Result<()> {
-    if args.video == "help" || args.audio == "help" {
-        print!(
-            "{}",
-            if args.video == "help" {
-                video::HELP
-            } else {
-                audio::HELP
-            }
-        );
+    if args.preset == "help" {
+        print!("{}", preset::help());
         return Ok(());
     }
-    let video_spec = video::parse(&args.video)?;
-    let audio_spec = audio::parse(&args.audio)?;
+    if args.video.as_deref() == Some("help") {
+        print!("{}", video::HELP);
+        return Ok(());
+    }
+    if args.audio.as_deref() == Some("help") {
+        print!("{}", audio::HELP);
+        return Ok(());
+    }
+    let preset = preset::find(&args.preset)?;
+    let video_spec = preset.video(args.video.as_deref())?;
+    let audio_spec = preset.audio(args.audio.as_deref())?;
+    let applied = format!(
+        "preset: {} (--video \"{}\" --audio \"{}\")",
+        preset.name,
+        video_spec.to_text(),
+        audio_spec.to_text()
+    );
+    let video_spec = video::from_spec(video_spec)?;
+    let audio_spec = audio::from_spec(audio_spec)?;
 
     let Some(input) = args.input.as_deref() else {
         Args::command()
@@ -93,6 +108,7 @@ fn run(args: Args) -> Result<()> {
     let encoders: Vec<&str> = video.encoder.into_iter().chain(audio.encoder).collect();
     ffmpeg::require_encoders(&encoders)?;
 
+    eprintln!("{applied}");
     eprintln!(
         "video: {}x{} -> {}",
         info.video.display_width.round(),

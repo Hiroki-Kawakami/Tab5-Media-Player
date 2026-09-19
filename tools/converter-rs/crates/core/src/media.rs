@@ -20,6 +20,7 @@ pub struct Audio {
 }
 
 pub struct MediaInfo {
+    pub duration: Option<f64>,
     pub video: Video,
     pub audio: Option<Audio>,
 }

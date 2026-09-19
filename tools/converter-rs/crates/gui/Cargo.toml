@@ -1,0 +1,23 @@
+[package]
+name = "tab5conv-gui"
+description = "Desktop app that converts video files for Tab5-Media-Player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tab5conv-core.workspace = true
+tab5conv-ffmpeg.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"

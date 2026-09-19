@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tab5 Media Converter",
+  "identifier": "net.hkawakami.tab5mediaconverter",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../web" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../web" }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Tab5 Media Converter",
+        "width": 1000,
+        "height": 720,
+        "minWidth": 720,
+        "minHeight": 480
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

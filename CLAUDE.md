@@ -22,7 +22,8 @@ submodule.
   row-parallel two-core design, the PIE IDCT, and bit-exact checks against
   `ffmpeg -idct simple`.
 - [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI
-  that converts videos for the player by driving the external `ffmpeg`.
+  and desktop app that convert videos for the player by driving the external
+  `ffmpeg`.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button

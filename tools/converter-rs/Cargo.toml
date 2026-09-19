@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/ffmpeg", "crates/cli"]
+members = ["crates/core", "crates/ffmpeg", "crates/cli", "crates/gui"]
 default-members = ["crates/cli"]
 resolver = "3"
 

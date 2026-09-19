@@ -10,12 +10,19 @@ use serde::Deserialize;
 use tab5conv_core::framerate::Rate;
 use tab5conv_core::media::{Audio, MediaInfo, Video};
 
-use crate::process;
+use crate::process::Tools;
 
 #[derive(Deserialize)]
 struct ProbeOutput {
     #[serde(default)]
     streams: Vec<Stream>,
+    #[serde(default)]
+    format: Format,
+}
+
+#[derive(Deserialize, Default)]
+struct Format {
+    duration: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -137,13 +144,18 @@ fn parse(json: &str) -> Result<MediaInfo> {
         });
 
     Ok(MediaInfo {
+        duration: output
+            .format
+            .duration
+            .and_then(|d| d.parse().ok())
+            .filter(|d: &f64| d.is_finite() && *d > 0.0),
         video: video_info(video)?,
         audio,
     })
 }
 
-pub fn probe(input: &Path) -> Result<MediaInfo> {
-    let json = process::probe_json(input)?;
+pub fn probe(tools: &Tools, input: &Path) -> Result<MediaInfo> {
+    let json = tools.probe_json(input)?;
     parse(&json).with_context(|| format!("cannot use {}", input.display()))
 }
 
@@ -163,6 +175,7 @@ mod tests {
              "channels":6,"sample_rate":"44100"}
         ]}"#;
         let info = parse(json).unwrap();
+        assert_eq!(info.duration, None);
         assert_eq!(info.video.index, 1);
         assert_eq!(info.video.display_width, 480.0);
         assert!((info.video.display_height - 853.33).abs() < 0.01);
@@ -204,8 +217,9 @@ mod tests {
         let json = r#"{"streams":[
             {"index":0,"codec_type":"video","width":640,"height":360,
              "sample_aspect_ratio":"0:1","avg_frame_rate":"0/0","r_frame_rate":"0/0"}
-        ]}"#;
+        ],"format":{"duration":"12.500000"}}"#;
         let info = parse(json).unwrap();
+        assert_eq!(info.duration, Some(12.5));
         assert_eq!(info.video.display_width, 640.0);
         assert!(info.video.fps.is_none());
         assert!(info.audio.is_none());

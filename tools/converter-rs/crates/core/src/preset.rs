@@ -7,11 +7,11 @@ use crate::spec::Spec;
 
 pub struct Preset {
     pub name: &'static str,
-    video: &'static str,
-    audio: &'static str,
+    pub video: &'static str,
+    pub audio: &'static str,
 }
 
-const PRESETS: [Preset; 4] = [
+static PRESETS: [Preset; 4] = [
     Preset {
         name: "tiny",
         video: "h264,long=640,short=360,maxfps=30",
@@ -35,6 +35,10 @@ const PRESETS: [Preset; 4] = [
 ];
 
 pub const DEFAULT: &str = "default";
+
+pub fn all() -> &'static [Preset] {
+    &PRESETS
+}
 
 pub fn help() -> String {
     let mut text = String::from(

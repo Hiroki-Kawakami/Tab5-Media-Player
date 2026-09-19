@@ -16,6 +16,7 @@ pub struct Job<'a> {
     pub output: &'a Path,
     pub container: Container,
     pub overwrite: bool,
+    pub monitored: bool,
     pub video: &'a VideoPlan,
     pub audio: &'a AudioPlan,
 }
@@ -42,6 +43,9 @@ impl Job<'_> {
             VideoCodec::Mjpeg(settings) => return self.piped(*settings),
         };
         let mut args = self.head();
+        if self.monitored {
+            args.extend(strings(["-progress", "pipe:1"]));
+        }
         args.extend(strings(["-i"]));
         args.push(self.input.into());
         args.extend(["-map".into(), format!("0:{}", self.video.index).into()]);
@@ -88,7 +92,7 @@ impl Job<'_> {
             "-hide_banner",
             "-loglevel",
             "warning",
-            "-stats",
+            if self.monitored { "-nostats" } else { "-stats" },
             if self.overwrite { "-y" } else { "-n" },
         ])
         .collect()

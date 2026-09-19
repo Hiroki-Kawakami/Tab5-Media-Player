@@ -9,9 +9,8 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use tab5conv_core::container::Container;
 use tab5conv_core::video::VideoCodec;
-use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
 use tab5conv_core::{Specs, audio, preset, video};
-use tab5conv_ffmpeg::{Conversion, Stats, batch};
+use tab5conv_ffmpeg::{Conversion, Tools, batch};
 
 #[derive(Parser)]
 #[command(
@@ -60,7 +59,7 @@ fn convert(
     specs: &Specs,
     dry_run: bool,
 ) -> Result<()> {
-    let conversion = Conversion::prepare(input, output, container, specs)?;
+    let conversion = Conversion::prepare(&Tools::default(), input, output, container, specs)?;
     let source = &conversion.info.video;
     eprintln!(
         "video: {}x{} -> {}",
@@ -77,9 +76,12 @@ fn convert(
         }
         return Ok(());
     }
-    if let (Some(stats), VideoCodec::Mjpeg(settings)) = (conversion.run()?, &conversion.video.codec)
+    if let (Some(stats), VideoCodec::Mjpeg(settings)) =
+        (conversion.run(None)?, &conversion.video.codec)
     {
-        report(&stats, settings, conversion.video.picture.rate.as_f64());
+        for line in stats.report(settings, conversion.video.picture.rate.as_f64()) {
+            eprintln!("{line}");
+        }
     }
     Ok(())
 }
@@ -184,66 +186,6 @@ fn run(args: Args) -> Result<bool> {
         eprintln!("  failed   {line}");
     }
     Ok(failed.is_empty())
-}
-
-fn report(stats: &Stats, settings: &MjpegSettings, fps: f64) {
-    if stats.frames == 0 {
-        eprintln!("mjpeg: no frames");
-        return;
-    }
-    let frames = stats.frames as f64;
-    let kib = |bytes: usize| bytes as f64 / 1024.0;
-    let seconds = frames / fps;
-    eprintln!(
-        "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1}), {:.2} Mbit/s average",
-        stats.frames,
-        kib(stats.total_bytes / stats.frames),
-        kib(stats.min_bytes),
-        kib(stats.max_bytes),
-        stats.total_bytes as f64 * 8.0 / seconds / 1e6,
-    );
-    eprintln!(
-        "mjpeg: quality {:.1} average, {} lowest, {} of {} frames below {}",
-        stats.quality_sum as f64 / frames,
-        stats.lowest_quality,
-        stats.lowered,
-        stats.frames,
-        settings.quality,
-    );
-    let estimated = stats.frames - stats.requantized;
-    if estimated > 0 {
-        eprintln!(
-            "mjpeg: size estimate off by {:.1}% on average, {:.1}% at worst",
-            stats.estimate_error_sum / estimated as f64 * 100.0,
-            stats.estimate_error_max * 100.0,
-        );
-    }
-    eprintln!(
-        "mjpeg: buffer peak {:.0}% of {} bytes at {} Mbit/s",
-        stats.peak_fullness / settings.buffer as f64 * 100.0,
-        settings.buffer,
-        settings.bitrate as f64 / 1e6,
-    );
-    if stats.buffer_overflows > 0 {
-        eprintln!(
-            "warning: {} frames went over the {} Mbit/s budget (buffer {} bytes)",
-            stats.buffer_overflows,
-            settings.bitrate as f64 / 1e6,
-            settings.buffer
-        );
-    }
-    if stats.requantized > 0 {
-        eprintln!(
-            "mjpeg: {} frames re-quantised to stay within maxframe={}",
-            stats.requantized, settings.max_frame
-        );
-    }
-    if stats.over_max_frame > 0 {
-        eprintln!(
-            "warning: {} frames exceed maxframe={} even at minquality={}",
-            stats.over_max_frame, settings.max_frame, settings.min_quality
-        );
-    }
 }
 
 fn main() -> ExitCode {

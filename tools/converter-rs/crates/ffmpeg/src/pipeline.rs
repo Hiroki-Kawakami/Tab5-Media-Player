@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::process::Stdio;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,7 +17,7 @@ use tab5conv_core::ratecontrol::{Bucket, RateControl};
 use tab5conv_core::video::Picture;
 use tab5conv_core::video::mjpeg::{PLAYER_MAX_FRAME, Settings};
 
-use crate::process;
+use crate::process::{self, Cancelled, Log, Monitor, Tools};
 
 const LOOKAHEAD_SECONDS: f64 = 1.0;
 
@@ -53,6 +54,67 @@ impl Stats {
             estimate_error_sum: 0.0,
             estimate_error_max: 0.0,
         }
+    }
+
+    pub fn report(&self, settings: &Settings, fps: f64) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.frames == 0 {
+            return vec!["mjpeg: no frames".into()];
+        }
+        let frames = self.frames as f64;
+        let kib = |bytes: usize| bytes as f64 / 1024.0;
+        let seconds = frames / fps;
+        lines.push(format!(
+            "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1}), {:.2} Mbit/s average",
+            self.frames,
+            kib(self.total_bytes / self.frames),
+            kib(self.min_bytes),
+            kib(self.max_bytes),
+            self.total_bytes as f64 * 8.0 / seconds / 1e6,
+        ));
+        lines.push(format!(
+            "mjpeg: quality {:.1} average, {} lowest, {} of {} frames below {}",
+            self.quality_sum as f64 / frames,
+            self.lowest_quality,
+            self.lowered,
+            self.frames,
+            settings.quality,
+        ));
+        let estimated = self.frames - self.requantized;
+        if estimated > 0 {
+            lines.push(format!(
+                "mjpeg: size estimate off by {:.1}% on average, {:.1}% at worst",
+                self.estimate_error_sum / estimated as f64 * 100.0,
+                self.estimate_error_max * 100.0,
+            ));
+        }
+        lines.push(format!(
+            "mjpeg: buffer peak {:.0}% of {} bytes at {} Mbit/s",
+            self.peak_fullness / settings.buffer as f64 * 100.0,
+            settings.buffer,
+            settings.bitrate as f64 / 1e6,
+        ));
+        if self.buffer_overflows > 0 {
+            lines.push(format!(
+                "warning: {} frames went over the {} Mbit/s budget (buffer {} bytes)",
+                self.buffer_overflows,
+                settings.bitrate as f64 / 1e6,
+                settings.buffer
+            ));
+        }
+        if self.requantized > 0 {
+            lines.push(format!(
+                "mjpeg: {} frames re-quantised to stay within maxframe={}",
+                self.requantized, settings.max_frame
+            ));
+        }
+        if self.over_max_frame > 0 {
+            lines.push(format!(
+                "warning: {} frames exceed maxframe={} even at minquality={}",
+                self.over_max_frame, settings.max_frame, settings.min_quality
+            ));
+        }
+        lines
     }
 
     fn add(&mut self, done: &Done, quality: u8) {
@@ -116,10 +178,12 @@ struct Feedback {
 }
 
 pub fn run(
+    tools: &Tools,
     decode: &[OsString],
     mux: &[OsString],
     picture: &Picture,
     settings: &Settings,
+    monitor: Option<&Monitor>,
 ) -> Result<Stats> {
     let job = &Job {
         width: picture.width as usize,
@@ -127,8 +191,15 @@ pub fn run(
         fps: picture.rate.as_f64(),
         settings: *settings,
     };
-    let mut decoder = process::spawn(decode, Stdio::null(), Stdio::piped())?;
-    let mut muxer = match process::spawn(mux, Stdio::piped(), Stdio::inherit()) {
+    let stderr = || {
+        if monitor.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        }
+    };
+    let mut decoder = tools.spawn(decode, Stdio::null(), Stdio::piped(), stderr())?;
+    let mut muxer = match tools.spawn(mux, Stdio::piped(), Stdio::inherit(), stderr()) {
         Ok(child) => child,
         Err(err) => {
             let _ = decoder.kill();
@@ -136,26 +207,35 @@ pub fn run(
             return Err(err);
         }
     };
+    let decode_log = decoder.stderr.take().map(Log::capture);
+    let mux_log = muxer.stderr.take().map(Log::capture);
     let source = decoder.stdout.take().context("decoder has no stdout")?;
     let sink = muxer.stdin.take().context("muxer has no stdin")?;
-    let result = pump(source, sink, job);
+    let result = pump(source, sink, job, monitor);
+    let cancelled = matches!(&result, Err(err) if err.is::<Cancelled>());
     let mut mux_failed_first = false;
     if result.is_err() {
-        mux_failed_first = matches!(muxer.try_wait(), Ok(Some(status)) if !status.success());
+        mux_failed_first =
+            !cancelled && matches!(muxer.try_wait(), Ok(Some(status)) if !status.success());
         let _ = decoder.kill();
         let _ = muxer.kill();
     }
     let decoded = decoder.wait().context("waiting for ffmpeg (decode)")?;
     let muxed = muxer.wait().context("waiting for ffmpeg (mux)")?;
+    let decode_log = decode_log.map(Log::finish).unwrap_or_default();
+    let mux_log = mux_log.map(Log::finish).unwrap_or_default();
     if mux_failed_first {
-        bail!("ffmpeg (mux) failed ({muxed})");
+        bail!("{}", process::failure("ffmpeg (mux)", muxed, &mux_log));
     }
     if !decoded.success() && result.is_ok() {
-        bail!("ffmpeg (decode) failed ({decoded})");
+        bail!(
+            "{}",
+            process::failure("ffmpeg (decode)", decoded, &decode_log)
+        );
     }
     let stats = result?;
     if !muxed.success() {
-        bail!("ffmpeg (mux) failed ({muxed})");
+        bail!("{}", process::failure("ffmpeg (mux)", muxed, &mux_log));
     }
     Ok(stats)
 }
@@ -179,7 +259,12 @@ fn next<T>(queue: &Queue<T>) -> Option<T> {
     queue.lock().ok()?.recv().ok()
 }
 
-fn pump(mut source: impl Read + Send, mut sink: impl Write, job: &Job) -> Result<Stats> {
+fn pump(
+    mut source: impl Read + Send,
+    mut sink: impl Write,
+    job: &Job,
+    monitor: Option<&Monitor>,
+) -> Result<Stats> {
     let frame_bytes = Frame::bytes(job.width, job.height);
     let workers = thread::available_parallelism().map_or(4, |n| n.get());
     let depth = workers * 2;
@@ -256,7 +341,7 @@ fn pump(mut source: impl Read + Send, mut sink: impl Write, job: &Job) -> Result
         drop(decided_rx);
         drop(done_tx);
 
-        let written = write_in_order(done_rx, feedback_tx, &mut sink, job);
+        let written = write_in_order(done_rx, feedback_tx, &mut sink, job, monitor);
         let read = reader.join().expect("frame reader panicked");
         let stats = written?;
         read?;
@@ -315,6 +400,7 @@ fn write_in_order(
     feedback: Sender<Feedback>,
     sink: &mut impl Write,
     job: &Job,
+    monitor: Option<&Monitor>,
 ) -> Result<Stats> {
     let quality = job.settings.quality;
     let mut stats = Stats::new(quality);
@@ -342,6 +428,12 @@ fn write_in_order(
             bucket.add(len);
             stats.add(&frame, quality);
             next += 1;
+            if let Some(monitor) = monitor {
+                if monitor.cancel.load(Ordering::Relaxed) {
+                    return Err(Cancelled.into());
+                }
+                (monitor.progress)(next as f64 / job.fps);
+            }
         }
     }
     sink.flush().context("writing to ffmpeg (mux)")?;

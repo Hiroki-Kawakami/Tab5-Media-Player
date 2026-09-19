@@ -1,0 +1,294 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c2330;
+  --muted: #5d6778;
+  --line: #dde1e7;
+  --accent: #0e7490;
+  --accent-text: #ffffff;
+  --bad: #b42318;
+  --good: #067647;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15181e;
+    --panel: #1d2129;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --line: #2e343f;
+    --accent: #22a3c4;
+    --accent-text: #0b1014;
+    --bad: #f97066;
+    --good: #47cd89;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.bar h1 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.status {
+  color: var(--good);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 420px;
+}
+
+.status.bad,
+.applied.bad {
+  color: var(--bad);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+}
+
+main {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: 16px;
+  padding: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  min-height: 0;
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.output {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.path {
+  flex-basis: 100%;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+input:not([type="radio"]),
+select {
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+select {
+  font-family: inherit;
+}
+
+button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.applied {
+  margin: 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+details pre {
+  font-size: 11px;
+  white-space: pre;
+  overflow: auto;
+  max-height: 320px;
+}
+
+.files {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-style: dashed;
+}
+
+.files.hover {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.spacer {
+  flex: 1;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.row {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.row .head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.row .head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.row.done .badge {
+  color: var(--good);
+}
+
+.row.failed .badge,
+.row.error .badge {
+  color: var(--bad);
+}
+
+.remove {
+  padding: 0 7px;
+  line-height: 20px;
+}
+
+.detail {
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.problem,
+.report {
+  margin: 2px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.problem {
+  color: var(--bad);
+}
+
+.report {
+  color: var(--muted);
+}
+
+progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.empty {
+  margin: auto;
+  color: var(--muted);
+}

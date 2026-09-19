@@ -24,6 +24,8 @@
             pkgs.rustc
             pkgs.clippy
             pkgs.rustfmt
+            pkgs.nodejs
+            pkgs.cargo-tauri
           ];
         };
       }

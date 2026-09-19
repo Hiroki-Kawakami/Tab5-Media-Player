@@ -18,8 +18,10 @@ use tab5conv_core::media::MediaInfo;
 use tab5conv_core::video::VideoPlan;
 
 pub use pipeline::Stats;
+pub use process::{Cancelled, Monitor, Tools};
 
 pub struct Conversion {
+    tools: Tools,
     input: PathBuf,
     output: PathBuf,
     container: Container,
@@ -30,16 +32,18 @@ pub struct Conversion {
 
 impl Conversion {
     pub fn prepare(
+        tools: &Tools,
         input: &Path,
         output: &Path,
         container: Container,
         specs: &Specs,
     ) -> Result<Self> {
-        let info = probe::probe(input)?;
+        let info = probe::probe(tools, input)?;
         let video = specs.video.plan(&info.video)?;
         let audio = specs.audio.plan(info.audio.as_ref())?;
-        process::require_encoders(&args::encoders(&video, &audio))?;
+        tools.require_encoders(&args::encoders(&video, &audio))?;
         Ok(Self {
+            tools: tools.clone(),
             input: input.to_path_buf(),
             output: output.to_path_buf(),
             container,
@@ -53,12 +57,13 @@ impl Conversion {
         &self.output
     }
 
-    fn commands(&self, output: &Path) -> command::Commands {
+    fn commands(&self, output: &Path, monitored: bool) -> command::Commands {
         command::Job {
             input: &self.input,
             output,
             container: self.container,
             overwrite: true,
+            monitored,
             video: &self.video,
             audio: &self.audio,
         }
@@ -66,25 +71,39 @@ impl Conversion {
     }
 
     pub fn command_lines(&self) -> Vec<String> {
-        match self.commands(&batch::part_path(&self.output)) {
-            command::Commands::Single(args) => vec![process::command_line(&args)],
+        let tools = &self.tools;
+        match self.commands(&batch::part_path(&self.output), false) {
+            command::Commands::Single(args) => vec![tools.command_line(&args)],
             command::Commands::Piped { decode, mux, .. } => vec![
-                format!("{} \\", process::command_line(&decode)),
+                format!("{} \\", tools.command_line(&decode)),
                 "  | (built-in MJPEG encoder) \\".into(),
-                format!("  | {}", process::command_line(&mux)),
+                format!("  | {}", tools.command_line(&mux)),
             ],
         }
     }
 
-    pub fn run(&self) -> Result<Option<Stats>> {
+    pub fn run(&self, monitor: Option<&Monitor>) -> Result<Option<Stats>> {
         let part = batch::part_path(&self.output);
-        let result = match self.commands(&part) {
-            command::Commands::Single(args) => process::run(&args).map(|()| None),
+        let tools = &self.tools;
+        let result = match self.commands(&part, monitor.is_some()) {
+            command::Commands::Single(args) => match monitor {
+                Some(monitor) => tools.run_monitored(&args, monitor),
+                None => tools.run(&args),
+            }
+            .map(|()| None),
             command::Commands::Piped {
                 decode,
                 mux,
                 settings,
-            } => pipeline::run(&decode, &mux, &self.video.picture, &settings).map(Some),
+            } => pipeline::run(
+                tools,
+                &decode,
+                &mux,
+                &self.video.picture,
+                &settings,
+                monitor,
+            )
+            .map(Some),
         };
         match result {
             Ok(stats) => std::fs::rename(&part, &self.output)

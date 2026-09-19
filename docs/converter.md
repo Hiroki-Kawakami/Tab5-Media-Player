@@ -22,6 +22,7 @@ version), so the tool is a workspace:
 | `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control |
 | `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline, batch output naming |
 | `crates/cli` | `tab5conv` itself |
+| `crates/gui` | the desktop app (Tauri); its UI is `web/` |
 
 - **A plan is values, not ffmpeg arguments.** `VideoPlan`/`AudioPlan` say
   what to produce (stored size, crop, rotation, frame-rate conversion,
@@ -35,6 +36,46 @@ version), so the tool is a workspace:
   them belong to `crates/ffmpeg/pipeline.rs`.
 - **x264 settings are in `crates/ffmpeg`.** `-x264-params` is an x264
   detail, while `core` only says which profile.
+
+## Desktop app
+
+```sh
+nix develop -c bash -c 'cd tools/converter-rs/web && npm ci'        # once
+nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri dev'
+nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri dev --release'
+nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri build --bundles app'
+```
+
+- **Use `--release` to try real conversions.** The built-in MJPEG encoder
+  is unoptimised in a dev build and far slower than the CLI's release build.
+- **The UI in `web/` is shared with the planned browser version.** It only
+  talks to a `Backend` (`web/src/backend.ts`): `native.ts` calls the Tauri
+  commands in `crates/gui`, and `mock.ts` fakes everything, so
+  `npm run dev` and `?backend=mock` show the UI in a plain browser.
+- **ffmpeg is still the user's, not bundled** (see
+  [ffmpeg is a command](#ffmpeg-is-a-command-not-a-library)). An app
+  started from Finder does not get the shell's `PATH`, so `location.rs`
+  also searches the Homebrew, MacPorts and nix profile folders. A folder
+  chosen in the app is kept in `settings.json` in the app's config
+  directory.
+- **Monitored runs differ from the CLI's only in logging.** They pass
+  `-nostats -progress pipe:1` and keep the last lines of ffmpeg's stderr for
+  the error message; the MJPEG pipeline reports progress from the frames it
+  has written. The CLI keeps `-stats` and the inherited stderr, and
+  `--dry-run` prints the CLI's commands.
+- **A cancelled or failed run leaves nothing behind**, through the same
+  `.part` file as the CLI. Inputs are converted one at a time, as in the CLI.
+- **IPC tests (`crates/gui/src/main.rs`) use `tauri::test`.** The request
+  URL must be the platform's local origin (`tauri://localhost` outside
+  Windows and Android); with `http://tauri.localhost` on macOS every command
+  is refused as "not allowed. Plugin not found". `generate_context!` may
+  appear only once per crate (it defines `_EMBED_INFO_PLIST`), hence
+  `context()`.
+- **An app built in `nix develop` is not distributable**: it links
+  `libiconv` from `/nix/store`. Release builds need a non-nix toolchain.
+- **Under the nix toolchain a panicking test aborts the whole test binary**
+  ("failed to initiate panic, error 5"). The message of the first failure is
+  still printed; the tests after it do not run.
 
 ## Several inputs
 

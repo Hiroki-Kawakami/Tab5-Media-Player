@@ -15,6 +15,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ]);
       in {
         devShells.default = pkgs.mkShell {
           inputsFrom = [ esp-devkit.devShells.${system}.default ];
@@ -29,6 +30,7 @@
             pkgs.wasm-bindgen-cli_0_2_126
           ];
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER = "${pkgs.lld}/bin/wasm-ld";
+          RESGEN_PYTHON = "${resgenPython}/bin/python3";
         };
       }
     );

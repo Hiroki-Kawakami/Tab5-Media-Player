@@ -21,6 +21,9 @@ submodule.
 - [`docs/mpeg2.md`](docs/mpeg2.md) — the in-house MPEG-2 decoder: scope, the
   row-parallel two-core design, the PIE IDCT, and bit-exact checks against
   `ffmpeg -idct simple`.
+- [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
+  LVGL fonts, icon fonts and images from `app/resources/resources.json` at
+  build time.
 - [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI,
   desktop app and browser version that convert videos for the player.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,

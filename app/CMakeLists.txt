@@ -17,6 +17,12 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES ${APP_REQUIRES})
 
+file(GLOB APP_RESOURCES ${APP_GLOB_FLAGS} "${CMAKE_CURRENT_SOURCE_DIR}/resources/resources.json")
+if(APP_RESOURCES AND NOT CMAKE_SCRIPT_MODE_FILE)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/resgen/resgen.cmake")
+    resgen_add_resources(TARGET ${COMPONENT_LIB} DEFINITION ${APP_RESOURCES})
+endif()
+
 if(ESP_PLATFORM AND H264_BENCH_CLIP)
     configure_file("${H264_BENCH_CLIP}" "${CMAKE_CURRENT_BINARY_DIR}/bench.h264" COPYONLY)
     target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/bench.h264" BINARY)

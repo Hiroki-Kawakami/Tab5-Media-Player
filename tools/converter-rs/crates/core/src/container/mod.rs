@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
+mod bytes;
+pub mod demux;
+pub mod interleave;
+pub mod io;
+mod mkv;
+mod mp4;
+pub mod mux;
+
 use std::path::Path;
 
 use anyhow::{Result, bail};

@@ -6,6 +6,7 @@ use crate::video::mjpeg::Settings as MjpegSettings;
 
 const CALIBRATION_WEIGHT: f32 = 0.2;
 
+#[derive(Clone, Copy, Debug)]
 pub struct Decision {
     pub quality: u8,
     pub estimate: f32,

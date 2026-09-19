@@ -69,6 +69,14 @@ impl Rate {
         }
     }
 
+    pub fn num(self) -> u64 {
+        self.num
+    }
+
+    pub fn den(self) -> u64 {
+        self.den
+    }
+
     pub fn as_f64(self) -> f64 {
         self.num as f64 / self.den as f64
     }
@@ -136,6 +144,49 @@ impl FrameRateSpec {
             rate,
             label,
         }
+    }
+}
+
+pub struct FrameSelector {
+    rate: Rate,
+    start: Option<i64>,
+    next: i64,
+}
+
+impl FrameSelector {
+    pub fn new(rate: Rate) -> Self {
+        Self {
+            rate,
+            start: None,
+            next: 0,
+        }
+    }
+
+    fn slot(&self, start: i64, time_us: i64) -> i64 {
+        let ticks = (time_us - start) as i128 * self.rate.num as i128;
+        let unit = self.rate.den as i128 * 1_000_000;
+        ((ticks * 2 + unit) / (unit * 2)) as i64
+    }
+
+    pub fn push(&mut self, pts_us: i64) -> u64 {
+        let Some(start) = self.start else {
+            self.start = Some(pts_us);
+            return 0;
+        };
+        let slot = self.slot(start, pts_us).max(self.next);
+        let repeats = slot - self.next;
+        self.next = slot;
+        repeats as u64
+    }
+
+    pub fn finish(&mut self, end_us: i64) -> u64 {
+        let Some(start) = self.start else {
+            return 0;
+        };
+        let end = self.slot(start, end_us).max(self.next + 1);
+        let repeats = end - self.next;
+        self.next = end;
+        repeats as u64
     }
 }
 
@@ -235,6 +286,33 @@ mod tests {
         let fr = resolve(",fps=30", r(30, 1));
         assert_eq!(fr.convert, r(30, 1));
         assert_eq!(fr.label, "30 fps");
+    }
+
+    fn select(rate: Rate, pts: &[i64], end: i64) -> Vec<u64> {
+        let mut selector = FrameSelector::new(rate);
+        let mut repeats = Vec::new();
+        for (i, &t) in pts.iter().enumerate() {
+            let previous = selector.push(t);
+            if i > 0 {
+                repeats.push(previous);
+            }
+        }
+        repeats.push(selector.finish(end));
+        repeats
+    }
+
+    #[test]
+    fn frame_selection_drops_and_repeats() {
+        let frames = |fps: i64, n: i64| (0..n).map(|i| i * 1_000_000 / fps).collect::<Vec<_>>();
+        let halved = select(r(30, 1).unwrap(), &frames(60, 60), 1_000_000);
+        assert_eq!(halved.iter().sum::<u64>(), 30);
+        assert!(halved.iter().all(|&c| c <= 1));
+        let same = select(r(30000, 1001).unwrap(), &frames(30, 30), 1_000_000);
+        assert_eq!(same.iter().sum::<u64>(), 30);
+        let doubled = select(r(30, 1).unwrap(), &frames(15, 15), 1_000_000);
+        assert_eq!(doubled, vec![2; 15]);
+        let offset = select(r(10, 1).unwrap(), &[500_000, 600_000, 700_000], 800_000);
+        assert_eq!(offset, [1, 1, 1]);
     }
 
     #[test]

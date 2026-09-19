@@ -2,10 +2,13 @@
 // Copyright (c) 2026 Hiroki Kawakami
 
 pub mod audio;
+pub mod color;
 pub mod container;
 pub mod framerate;
 pub mod jpeg;
 pub mod media;
+pub mod mjpeg;
+pub mod pcm;
 pub mod preset;
 pub mod ratecontrol;
 pub mod size;

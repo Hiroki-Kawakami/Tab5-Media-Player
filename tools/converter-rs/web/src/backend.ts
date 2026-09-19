@@ -64,6 +64,7 @@ export interface DropHandlers {
 
 export interface Backend {
   readonly name: string;
+  readonly outputs: "folder" | "download";
   readonly actions: Action[];
   status(): Promise<Status>;
   presets(): Promise<PresetInfo[]>;

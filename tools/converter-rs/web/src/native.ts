@@ -48,6 +48,7 @@ function toInput(path: string): Input {
 
 export class NativeBackend implements Backend {
   readonly name = "native";
+  readonly outputs = "folder";
   private readonly listeners = new Map<string, (seconds: number) => void>();
   private readonly ready: Promise<unknown>;
 

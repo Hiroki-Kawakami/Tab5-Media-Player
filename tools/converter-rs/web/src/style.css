@@ -292,3 +292,7 @@ progress {
   margin: auto;
   color: var(--muted);
 }
+
+[hidden] {
+  display: none !important;
+}

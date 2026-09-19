@@ -19,10 +19,11 @@ version), so the tool is a workspace:
 
 | crate | holds |
 |---|---|
-| `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control |
+| `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control, MP4/MKV demuxing and MP4 muxing (`container/`) |
 | `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline, batch output naming |
 | `crates/cli` | `tab5conv` itself |
 | `crates/gui` | the desktop app (Tauri); its UI is `web/` |
+| `crates/wasm` | `core` for the browser version (wasm-bindgen) |
 
 - **A plan is values, not ffmpeg arguments.** `VideoPlan`/`AudioPlan` say
   what to produce (stored size, crop, rotation, frame-rate conversion,
@@ -76,6 +77,71 @@ nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri build --
 - **Under the nix toolchain a panicking test aborts the whole test binary**
   ("failed to initiate panic, error 5"). The message of the first failure is
   still printed; the tests after it do not run.
+
+## Browser version
+
+```sh
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run dev'         # http://localhost:5173
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run e2e'         # converts in Chrome, checks against the CLI
+nix develop -c bash -c 'cd tools/converter-rs/web && npm run check:jpeg'  # wasm and native JPEGs are identical
+```
+
+The same UI runs with `web/src/browser/` as its backend: an engine worker
+(demux, WebCodecs decoding, scaling and rotation on an `OffscreenCanvas`,
+rate control, muxing) and a pool of encoder workers (MJPEG analysis and
+encoding). The output is written to the origin private file system and
+then downloaded.
+
+- **Containers are our own, not ffmpeg.wasm or a JS library** (licence and
+  size). `core/src/container/` reads MP4/MOV and MKV/WebM and writes MP4.
+  `core/tests/container.rs` checks every packet (size, key flag, pts,
+  adler32) against `ffprobe -show_packets -show_data_hash`, and
+  `ffmpeg/tests/media_info.rs` checks that the demuxed `MediaInfo` gives the
+  same plans as ffprobe for every preset.
+- **The MP4 is written with `moov` at the end**, so it can be streamed to
+  disk; only the `mdat` size is patched afterwards. The player finds `moov`
+  with one seek (see [`playback.md`](playback.md)).
+- **Samples are written in time order across tracks** (`container/interleave.rs`),
+  as ffmpeg's muxer does. The player reads ahead only 16 x 64 KB, so audio
+  written seconds after the video of the same time stalls playback a moment
+  in; an early version wrote each video frame as soon as it was encoded and
+  put audio 2.4 s behind at a 2.7 MB/s bitrate. WebCodecs audio runs
+  behind the video, so the engine also stops demuxing while the audio
+  decoder and encoder queues are long; the interleaver's own limit
+  (256 MiB queued) is only a guard against a track that stops producing.
+  `npm run e2e` checks the lag against the CLI's. The video timescale is
+  1/1200000, the same as the CLI's MJPEG output.
+- **Only MJPEG is written for now**, with the CLI's encoder and rate control
+  (`core/src/mjpeg.rs` holds the loop both use). Only size models travel
+  between workers; each frame's coefficients stay in the worker that will
+  encode it. `+simd128` (`.cargo/config.toml`) leaves the output identical
+  to the native encoder.
+- **No `willReadFrequently` on the canvas.** It makes the canvas CPU-backed
+  and `drawImage` then took 16 ms a frame; without it a 30 s 1080p clip
+  converts in about 6 s instead of 16 s.
+- **Container colour tags are passed as `VideoDecoderConfig.colorSpace`.**
+  Chrome ignored a WebM's `smpte170m` otherwise (24 dB against the CLI,
+  44 dB with it). Untagged HD is still read as BT.709 by the browser and as
+  BT.601 by ffmpeg, so files made by ffmpeg without tags differ by about
+  25 dB; real footage is tagged.
+- **Chrome encodes AAC only at 44.1 and 48 kHz** (checked on macOS). The
+  browser plans audio with `AudioSpec::plan_for`, which raises an unset
+  sample rate to the next supported one and rejects an explicit one it
+  cannot encode.
+- **Priming.** Chrome's `AudioDecoder` does not carry the negative
+  timestamps of an AAC input's priming, so the decoded samples are trimmed
+  by the first packet's demuxed pts. Copied audio keeps its priming behind
+  an edit list, as ffmpeg writes it. The encoder's own priming (2112
+  samples, 44 ms, from AudioToolbox) is not compensated: there is no
+  per-platform value to rely on.
+- **Frame rate conversion** (`FrameSelector`) keeps, for each output slot,
+  the last frame whose pts rounds to it, like ffmpeg's `fps` filter.
+- **Build.** The `wasm-bindgen` crate is pinned to the nix CLI's version;
+  they must match exactly. lld is not put on `PATH` (it could change other
+  builds in the shell); `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER` points
+  at its `wasm-ld` instead.
+- **`npm run e2e` uses the installed Google Chrome** through
+  `playwright-core`; Playwright's own Chromium has no H.264 or AAC.
 
 ## Several inputs
 

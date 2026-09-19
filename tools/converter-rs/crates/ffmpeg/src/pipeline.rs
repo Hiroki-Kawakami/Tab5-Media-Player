@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::process::Stdio;
@@ -13,133 +13,12 @@ use std::thread;
 use anyhow::{Context, Result, bail};
 
 use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, SizeModel};
-use tab5conv_core::ratecontrol::{Bucket, RateControl};
+use tab5conv_core::mjpeg::{Feedback, Reorder, Scheduler, Stats, Tally};
+use tab5conv_core::ratecontrol::Decision;
 use tab5conv_core::video::Picture;
-use tab5conv_core::video::mjpeg::{PLAYER_MAX_FRAME, Settings};
+use tab5conv_core::video::mjpeg::Settings;
 
 use crate::process::{self, Cancelled, Log, Monitor, Tools};
-
-const LOOKAHEAD_SECONDS: f64 = 1.0;
-
-pub struct Stats {
-    pub frames: usize,
-    pub total_bytes: usize,
-    pub min_bytes: usize,
-    pub max_bytes: usize,
-    pub lowered: usize,
-    pub lowest_quality: u8,
-    pub quality_sum: usize,
-    pub over_max_frame: usize,
-    pub requantized: usize,
-    pub peak_fullness: f64,
-    pub buffer_overflows: usize,
-    pub estimate_error_sum: f64,
-    pub estimate_error_max: f64,
-}
-
-impl Stats {
-    fn new(quality: u8) -> Self {
-        Self {
-            frames: 0,
-            total_bytes: 0,
-            min_bytes: usize::MAX,
-            max_bytes: 0,
-            lowered: 0,
-            lowest_quality: quality,
-            quality_sum: 0,
-            over_max_frame: 0,
-            requantized: 0,
-            peak_fullness: 0.0,
-            buffer_overflows: 0,
-            estimate_error_sum: 0.0,
-            estimate_error_max: 0.0,
-        }
-    }
-
-    pub fn report(&self, settings: &Settings, fps: f64) -> Vec<String> {
-        let mut lines = Vec::new();
-        if self.frames == 0 {
-            return vec!["mjpeg: no frames".into()];
-        }
-        let frames = self.frames as f64;
-        let kib = |bytes: usize| bytes as f64 / 1024.0;
-        let seconds = frames / fps;
-        lines.push(format!(
-            "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1}), {:.2} Mbit/s average",
-            self.frames,
-            kib(self.total_bytes / self.frames),
-            kib(self.min_bytes),
-            kib(self.max_bytes),
-            self.total_bytes as f64 * 8.0 / seconds / 1e6,
-        ));
-        lines.push(format!(
-            "mjpeg: quality {:.1} average, {} lowest, {} of {} frames below {}",
-            self.quality_sum as f64 / frames,
-            self.lowest_quality,
-            self.lowered,
-            self.frames,
-            settings.quality,
-        ));
-        let estimated = self.frames - self.requantized;
-        if estimated > 0 {
-            lines.push(format!(
-                "mjpeg: size estimate off by {:.1}% on average, {:.1}% at worst",
-                self.estimate_error_sum / estimated as f64 * 100.0,
-                self.estimate_error_max * 100.0,
-            ));
-        }
-        lines.push(format!(
-            "mjpeg: buffer peak {:.0}% of {} bytes at {} Mbit/s",
-            self.peak_fullness / settings.buffer as f64 * 100.0,
-            settings.buffer,
-            settings.bitrate as f64 / 1e6,
-        ));
-        if self.buffer_overflows > 0 {
-            lines.push(format!(
-                "warning: {} frames went over the {} Mbit/s budget (buffer {} bytes)",
-                self.buffer_overflows,
-                settings.bitrate as f64 / 1e6,
-                settings.buffer
-            ));
-        }
-        if self.requantized > 0 {
-            lines.push(format!(
-                "mjpeg: {} frames re-quantised to stay within maxframe={}",
-                self.requantized, settings.max_frame
-            ));
-        }
-        if self.over_max_frame > 0 {
-            lines.push(format!(
-                "warning: {} frames exceed maxframe={} even at minquality={}",
-                self.over_max_frame, settings.max_frame, settings.min_quality
-            ));
-        }
-        lines
-    }
-
-    fn add(&mut self, done: &Done, quality: u8) {
-        let len = done.encoded.data.len();
-        self.frames += 1;
-        self.total_bytes += len;
-        self.min_bytes = self.min_bytes.min(len);
-        self.max_bytes = self.max_bytes.max(len);
-        if done.encoded.quality < quality {
-            self.lowered += 1;
-        }
-        self.lowest_quality = self.lowest_quality.min(done.encoded.quality);
-        self.quality_sum += done.encoded.quality as usize;
-        if !done.encoded.fits {
-            self.over_max_frame += 1;
-        }
-        if done.encoded.quality < done.decided_quality {
-            self.requantized += 1;
-        } else {
-            let error = (len as f64 - done.estimate as f64).abs() / len as f64;
-            self.estimate_error_sum += error;
-            self.estimate_error_max = self.estimate_error_max.max(error);
-        }
-    }
-}
 
 struct Job {
     width: usize,
@@ -157,24 +36,13 @@ struct Analyzed {
 struct Decided {
     index: usize,
     coefficients: Coefficients,
-    quality: u8,
-    estimate: f32,
-    raw_estimate: f32,
+    decision: Decision,
 }
 
 struct Done {
     index: usize,
     encoded: Encoded,
-    decided_quality: u8,
-    estimate: f32,
-    raw_estimate: f32,
-}
-
-struct Feedback {
-    estimate: f32,
-    raw_estimate: f32,
-    actual: usize,
-    calibrate: bool,
+    decision: Decision,
 }
 
 pub fn run(
@@ -324,13 +192,12 @@ fn pump(
             let done_tx = done_tx.clone();
             scope.spawn(move || {
                 while let Some(decided) = next(&decided_rx) {
-                    let encoded = jpeg::encode(&decided.coefficients, decided.quality, &limits);
+                    let encoded =
+                        jpeg::encode(&decided.coefficients, decided.decision.quality, &limits);
                     let done = Done {
                         index: decided.index,
                         encoded,
-                        decided_quality: decided.quality,
-                        estimate: decided.estimate,
-                        raw_estimate: decided.raw_estimate,
+                        decision: decided.decision,
                     };
                     if done_tx.send(done).is_err() {
                         break;
@@ -355,38 +222,25 @@ fn control(
     feedback: Receiver<Feedback>,
     job: &Job,
 ) {
-    let fps = job.fps;
-    let lookahead = ((fps * LOOKAHEAD_SECONDS).round() as usize).max(1);
-    let mut rate = RateControl::new(&job.settings, fps);
-    let mut pending = BTreeMap::new();
-    let mut window: VecDeque<Analyzed> = VecDeque::new();
-    let mut next_index = 0;
+    let mut scheduler = Scheduler::new(&job.settings, job.fps);
+    let mut coefficients = HashMap::new();
     let mut finished = false;
-    while !finished || !window.is_empty() {
+    while !finished || !scheduler.is_empty() {
         match analyzed.recv() {
             Ok(frame) => {
-                pending.insert(frame.index, frame);
-                while let Some(frame) = pending.remove(&next_index) {
-                    window.push_back(frame);
-                    next_index += 1;
-                }
+                coefficients.insert(frame.index, frame.coefficients);
+                scheduler.push(frame.index, frame.model);
             }
             Err(_) => finished = true,
         }
         for f in feedback.try_iter() {
-            rate.feedback(f.estimate, f.raw_estimate, f.actual, f.calibrate);
+            scheduler.feedback(&f);
         }
-        while window.len() > lookahead || (finished && !window.is_empty()) {
-            let models: Vec<&SizeModel> = window.iter().map(|f| &f.model).collect();
-            let decision = rate.decide(&models);
-            rate.commit(decision.estimate);
-            let frame = window.pop_front().expect("window is not empty");
+        while let Some(d) = scheduler.decide(finished) {
             let out = Decided {
-                index: frame.index,
-                coefficients: frame.coefficients,
-                quality: decision.quality,
-                estimate: decision.estimate,
-                raw_estimate: decision.raw_estimate,
+                index: d.index,
+                coefficients: coefficients.remove(&d.index).expect("analyzed frame"),
+                decision: d.decision,
             };
             if decided.send(out).is_err() {
                 return;
@@ -402,42 +256,25 @@ fn write_in_order(
     job: &Job,
     monitor: Option<&Monitor>,
 ) -> Result<Stats> {
-    let quality = job.settings.quality;
-    let mut stats = Stats::new(quality);
-    let mut bucket = Bucket::new(&job.settings, job.fps);
-    let mut pending = BTreeMap::new();
-    let mut next = 0;
+    let mut tally = Tally::new(&job.settings, job.fps);
+    let mut order = Reorder::default();
+    let mut written = 0;
     for frame in done {
-        pending.insert(frame.index, frame);
-        while let Some(frame) = pending.remove(&next) {
-            let len = frame.encoded.data.len();
-            if len > PLAYER_MAX_FRAME {
-                bail!(
-                    "frame {next} is {len} bytes even at quality {}, over the player's {PLAYER_MAX_FRAME}-byte limit; lower minquality or the size",
-                    frame.encoded.quality
-                );
-            }
+        order.push(frame.index, frame);
+        while let Some(frame) = order.pop() {
+            let f = tally.record(frame.index, &frame.encoded, &frame.decision)?;
             sink.write_all(&frame.encoded.data)
                 .context("writing to ffmpeg (mux)")?;
-            let _ = feedback.send(Feedback {
-                estimate: frame.estimate,
-                raw_estimate: frame.raw_estimate,
-                actual: len,
-                calibrate: frame.encoded.quality == frame.decided_quality,
-            });
-            bucket.add(len);
-            stats.add(&frame, quality);
-            next += 1;
+            let _ = feedback.send(f);
+            written += 1;
             if let Some(monitor) = monitor {
                 if monitor.cancel.load(Ordering::Relaxed) {
                     return Err(Cancelled.into());
                 }
-                (monitor.progress)(next as f64 / job.fps);
+                (monitor.progress)(written as f64 / job.fps);
             }
         }
     }
     sink.flush().context("writing to ffmpeg (mux)")?;
-    stats.peak_fullness = bucket.peak;
-    stats.buffer_overflows = bucket.overflows;
-    Ok(stats)
+    Ok(tally.finish())
 }

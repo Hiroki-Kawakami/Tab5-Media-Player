@@ -13,6 +13,7 @@ const BLOCK_BITS: f32 = 2.82;
 const HEADER_BYTES: f32 = 600.0;
 const STUFFING: f32 = 1.0 + 1.0 / 256.0;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct SizeModel {
     ac: [[u32; BINS]; 2],
     dc: [[u32; BINS]; 2],
@@ -33,6 +34,35 @@ fn magnitude_bits(quantized: f32) -> f32 {
 }
 
 impl SizeModel {
+    pub const WORDS: usize = 4 * BINS + 2;
+
+    pub fn to_words(&self) -> Vec<u32> {
+        let mut words = Vec::with_capacity(Self::WORDS);
+        for class in 0..2 {
+            words.extend(self.ac[class]);
+            words.extend(self.dc[class]);
+        }
+        words.extend(self.blocks);
+        words
+    }
+
+    pub fn from_words(words: &[u32]) -> Option<Self> {
+        if words.len() != Self::WORDS {
+            return None;
+        }
+        let mut model = Self {
+            ac: [[0; BINS]; 2],
+            dc: [[0; BINS]; 2],
+            blocks: [words[4 * BINS], words[4 * BINS + 1]],
+        };
+        for class in 0..2 {
+            let base = class * 2 * BINS;
+            model.ac[class].copy_from_slice(&words[base..base + BINS]);
+            model.dc[class].copy_from_slice(&words[base + BINS..base + 2 * BINS]);
+        }
+        Some(model)
+    }
+
     pub fn new(blocks: &[[i16; 64]]) -> Self {
         let mut model = Self {
             ac: [[0; BINS]; 2],

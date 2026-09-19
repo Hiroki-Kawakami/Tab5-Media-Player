@@ -34,7 +34,7 @@ const TEMPLATE = `
     <label class="field"><span>Preset</span><select data-ref="preset"></select></label>
     <label class="field"><span>Video</span><input data-ref="video" spellcheck="false" autocomplete="off" /></label>
     <label class="field"><span>Audio</span><input data-ref="audio" spellcheck="false" autocomplete="off" /></label>
-    <div class="field">
+    <div class="field" data-ref="outputField">
       <span>Output</span>
       <div class="output">
         <label><input type="radio" name="output" data-ref="outNext" checked /> Next to each input</label>
@@ -119,6 +119,7 @@ export class App {
       select.append(new Option(preset.name, preset.name, false, preset.name === this.settings.preset));
     }
     this.ref("help").textContent = [help.preset, help.video, help.audio].join("\n");
+    this.ref("outputField").hidden = this.backend.outputs !== "folder";
     this.showStatus(status);
     for (const action of this.backend.actions) {
       const button = element("button", "", action.label);

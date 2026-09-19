@@ -21,9 +21,8 @@ submodule.
 - [`docs/mpeg2.md`](docs/mpeg2.md) — the in-house MPEG-2 decoder: scope, the
   row-parallel two-core design, the PIE IDCT, and bit-exact checks against
   `ffmpeg -idct simple`.
-- [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI
-  and desktop app that convert videos for the player by driving the external
-  `ffmpeg`.
+- [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI,
+  desktop app and browser version that convert videos for the player.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button

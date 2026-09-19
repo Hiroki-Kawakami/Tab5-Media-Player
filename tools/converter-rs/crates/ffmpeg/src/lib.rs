@@ -17,8 +17,9 @@ use tab5conv_core::container::Container;
 use tab5conv_core::media::MediaInfo;
 use tab5conv_core::video::VideoPlan;
 
-pub use pipeline::Stats;
+pub use probe::probe;
 pub use process::{Cancelled, Monitor, Tools};
+pub use tab5conv_core::mjpeg::Stats;
 
 pub struct Conversion {
     tools: Tools,

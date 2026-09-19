@@ -8,12 +8,16 @@ import { App } from "./ui";
 
 async function createBackend(): Promise<Backend> {
   const mock = new URLSearchParams(location.search).get("backend") === "mock";
-  if ("__TAURI_INTERNALS__" in window && !mock) {
+  if (mock) {
+    const { MockBackend } = await import("./mock");
+    return new MockBackend();
+  }
+  if ("__TAURI_INTERNALS__" in window) {
     const { NativeBackend } = await import("./native");
     return new NativeBackend();
   }
-  const { MockBackend } = await import("./mock");
-  return new MockBackend();
+  const { BrowserBackend } = await import("./browser/backend");
+  return new BrowserBackend();
 }
 
 await new App(await createBackend(), document.getElementById("app")!).start();

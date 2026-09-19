@@ -40,6 +40,7 @@ function stem(name: string): string {
 
 export class MockBackend implements Backend {
   readonly name = "mock";
+  readonly outputs = "folder";
   readonly actions = [];
   private readonly cancelled = new Set<string>();
   private picked = 0;

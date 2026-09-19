@@ -32,7 +32,7 @@ Encoding keys apply only when the audio is encoded.
                       (default: the input's, within 16k-48k)
 ";
 
-const SAMPLE_RATES: [u32; 6] = [16000, 22050, 24000, 32000, 44100, 48000];
+pub const SAMPLE_RATES: [u32; 6] = [16000, 22050, 24000, 32000, 44100, 48000];
 const MAX_CHANNELS: u32 = 2;
 const MIN_SAMPLE_RATE: u32 = 16000;
 const MAX_SAMPLE_RATE: u32 = 48000;
@@ -102,6 +102,10 @@ pub fn from_spec(mut spec: Spec) -> Result<AudioSpec> {
 
 impl AudioSpec {
     pub fn plan(&self, input: Option<&media::Audio>) -> Result<AudioPlan> {
+        self.plan_for(input, &SAMPLE_RATES)
+    }
+
+    pub fn plan_for(&self, input: Option<&media::Audio>, aac_rates: &[u32]) -> Result<AudioPlan> {
         let Some(input) = input else {
             return Ok(AudioPlan::none("input has no audio"));
         };
@@ -110,7 +114,7 @@ impl AudioSpec {
             Self::Encode {
                 encoding,
                 keep: false,
-            } => encoding.plan(input, None),
+            } => encoding.plan(input, None, aac_rates),
             Self::Encode {
                 encoding,
                 keep: true,
@@ -119,7 +123,7 @@ impl AudioSpec {
                     label: format!("copy ({})", describe(input)),
                     action: AudioAction::Copy { index: input.index },
                 }),
-                Some(reason) => encoding.plan(input, Some(reason)),
+                Some(reason) => encoding.plan(input, Some(reason), aac_rates),
             },
         }
     }
@@ -239,9 +243,14 @@ impl Encoding {
         }
     }
 
-    fn plan(&self, input: &media::Audio, reason: Option<String>) -> Result<AudioPlan> {
+    fn plan(
+        &self,
+        input: &media::Audio,
+        reason: Option<String>,
+        aac_rates: &[u32],
+    ) -> Result<AudioPlan> {
         let encoded = match self {
-            Self::Aac(aac) => aac.encode(input)?,
+            Self::Aac(aac) => aac.encode(input, aac_rates)?,
             Self::Mp3(mp3) => mp3.encode(input)?,
         };
         let mut label = encoded.label;
@@ -285,8 +294,31 @@ impl Aac {
         Ok(Self { bitrate, format })
     }
 
-    fn encode(&self, input: &media::Audio) -> Result<Encoded> {
-        let (channels, sample_rate) = self.format.resolve(input);
+    fn encode(&self, input: &media::Audio, rates: &[u32]) -> Result<Encoded> {
+        let (channels, mut sample_rate) = self.format.resolve(input);
+        if !rates.contains(&sample_rate) {
+            let supported = || {
+                rates
+                    .iter()
+                    .map(|r| format!("{}k", *r as f64 / 1000.0))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            if rates.is_empty() {
+                bail!("aac: AAC cannot be encoded here");
+            }
+            if self.format.sample_rate.is_some() {
+                bail!(
+                    "aac: {sample_rate} Hz cannot be encoded here (supported: {})",
+                    supported()
+                );
+            }
+            sample_rate = rates
+                .iter()
+                .copied()
+                .find(|&r| r >= sample_rate)
+                .unwrap_or(*rates.last().expect("not empty"));
+        }
         Ok(Encoded {
             label: format!(
                 "AAC-LC {}, {channels} ch, {sample_rate} Hz",
@@ -569,6 +601,28 @@ mod tests {
         assert_eq!(p.index(), None);
         let p = parse("aac").unwrap().plan(None).unwrap();
         assert_eq!(p.label, "none (input has no audio)");
+    }
+
+    #[test]
+    fn aac_rates_can_be_limited() {
+        let low = input("aac", Some("LC"), 1, 8000);
+        let only = [44100, 48000];
+        let p = parse("aac").unwrap().plan_for(Some(&low), &only).unwrap();
+        assert_eq!(encoded(&p), (Codec::Aac { bitrate: 160_000 }, 1, 44100));
+        let p = parse("aac,keep=none")
+            .unwrap()
+            .plan_for(Some(&lc()), &only)
+            .unwrap();
+        assert_eq!(encoded(&p).2, 48000);
+        let err = parse("aac,keep=none,samplerate=22.05k")
+            .unwrap()
+            .plan_for(Some(&lc()), &only)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("supported: 44.1k, 48k"), "{err}");
+        assert!(parse("aac").unwrap().plan_for(Some(&low), &[]).is_err());
+        let p = parse("aac").unwrap().plan_for(Some(&lc()), &[]).unwrap();
+        assert_eq!(p.action, AudioAction::Copy { index: 1 });
     }
 
     #[test]

@@ -5,15 +5,19 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "wasm": "cargo build --manifest-path ../Cargo.toml -p tab5conv-wasm --release --target wasm32-unknown-unknown && wasm-bindgen --target web --out-dir src/wasm --out-name tab5conv ../target/wasm32-unknown-unknown/release/tab5conv_wasm.wasm",
+    "dev": "npm run wasm && vite",
+    "build": "npm run wasm && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "check:jpeg": "cargo build --manifest-path ../Cargo.toml -q --release -p tab5conv-wasm --example jpeg && node scripts/check-jpeg.mjs ../target/release/examples/jpeg",
+    "e2e": "cargo build --manifest-path ../Cargo.toml -q --release -p tab5conv && node scripts/e2e.mjs ../target/release/tab5conv"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.3"
   },
   "devDependencies": {
+    "playwright-core": "^1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0"
   }

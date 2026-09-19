@@ -8,6 +8,7 @@ mod framerate;
 mod jpeg;
 mod pipeline;
 mod probe;
+mod ratecontrol;
 mod size;
 mod spec;
 mod video;
@@ -135,24 +136,58 @@ fn report(stats: &pipeline::Stats, job: &video::MjpegJob) {
         eprintln!("mjpeg: no frames");
         return;
     }
+    let settings = &job.settings;
+    let frames = stats.frames as f64;
     let kib = |bytes: usize| bytes as f64 / 1024.0;
+    let seconds = frames / job.rate.as_f64();
     eprintln!(
-        "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1})",
+        "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1}), {:.2} Mbit/s average",
         stats.frames,
         kib(stats.total_bytes / stats.frames),
         kib(stats.min_bytes),
         kib(stats.max_bytes),
+        stats.total_bytes as f64 * 8.0 / seconds / 1e6,
     );
-    if stats.lowered > 0 {
+    eprintln!(
+        "mjpeg: quality {:.1} average, {} lowest, {} of {} frames below {}",
+        stats.quality_sum as f64 / frames,
+        stats.lowest_quality,
+        stats.lowered,
+        stats.frames,
+        settings.quality,
+    );
+    let estimated = stats.frames - stats.requantized;
+    if estimated > 0 {
         eprintln!(
-            "mjpeg: {} frames lowered from quality {} to fit (lowest {})",
-            stats.lowered, job.settings.quality, stats.lowest_quality
+            "mjpeg: size estimate off by {:.1}% on average, {:.1}% at worst",
+            stats.estimate_error_sum / estimated as f64 * 100.0,
+            stats.estimate_error_max * 100.0,
         );
     }
-    if stats.over_limit > 0 {
+    eprintln!(
+        "mjpeg: buffer peak {:.0}% of {} bytes at {} Mbit/s",
+        stats.peak_fullness / settings.buffer as f64 * 100.0,
+        settings.buffer,
+        settings.bitrate as f64 / 1e6,
+    );
+    if stats.buffer_overflows > 0 {
+        eprintln!(
+            "warning: {} frames went over the {} Mbit/s budget (buffer {} bytes)",
+            stats.buffer_overflows,
+            settings.bitrate as f64 / 1e6,
+            settings.buffer
+        );
+    }
+    if stats.requantized > 0 {
+        eprintln!(
+            "mjpeg: {} frames re-quantised to stay within maxframe={}",
+            stats.requantized, settings.max_frame
+        );
+    }
+    if stats.over_max_frame > 0 {
         eprintln!(
             "warning: {} frames exceed maxframe={} even at minquality={}",
-            stats.over_limit, job.settings.max_frame, job.settings.min_quality
+            stats.over_max_frame, settings.max_frame, settings.min_quality
         );
     }
 }

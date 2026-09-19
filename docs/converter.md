@@ -75,11 +75,19 @@ To check an output against the player's decoder, copy the stream out with
 
 ## MJPEG
 
-The encoder is our own (`src/jpeg/`), so it can choose the quality of each
-frame. `pipeline.rs` runs it between two ffmpeg processes:
+The encoder is our own (`src/jpeg/`). That puts the choice of quantisation
+between the DCT and the entropy coder, so the quality of each frame can be
+decided from the whole timeline without encoding anything twice.
+`pipeline.rs` runs it between two ffmpeg processes:
 
 ```
-ffmpeg (decode, fps, scale) --raw yuv420p--> JPEG encoder --JPEGs--> ffmpeg -f mjpeg -framerate R -i pipe:0 (+ input audio, -c:v copy)
+ffmpeg (decode, fps, scale)
+  -> reader
+  -> analysis workers  (DCT, size model)            one per core
+  -> rate controller   (quality per frame)          one thread, in order
+  -> encode workers    (quantise, Huffman, bits)    one per core
+  -> writer            (reorder, feed back sizes)   one thread
+  -> ffmpeg -f mjpeg -framerate R -i pipe:0 (+ input audio, -c:v copy)
 ```
 
 - **The output is always constant frame rate.** Raw frames carry no
@@ -87,18 +95,46 @@ ffmpeg (decode, fps, scale) --raw yuv420p--> JPEG encoder --JPEGs--> ffmpeg -f m
   therefore always applied, at the input's own rate if nothing lowers it.
 - **Frames are BT.601 full range**, which is what JFIF decoders assume. The
   scale filter converts with `out_color_matrix=bt601:out_range=full`.
-- **Frames are encoded in parallel** (one worker per core) and written in order.
-  180 frames of 720p take about 0.3 s.
+- **Both worker stages run in parallel; only the controller is serial**, and
+  it only evaluates size models. 270 frames of 720p take about 1.2 s. The DCT
+  runs once per frame; its coefficients wait for the controller as `i16` at
+  8x scale, about 2.8 MB per 720p frame.
 - **The default size is the panel (`long=1280,short=720`).** The hardware
   decodes it in time, and 720x1280 portrait is the direct path. The limits are
   the renderer's: width at most 2560, at most 1920x1088 pixels.
+- **The size model is a histogram of coefficients normalised by the Annex K
+  base tables** (`estimate.rs`). IJG scaling makes every quality's table
+  "base x scale", so the size at any quality comes from the histogram
+  alone: bits = 4.15 per non-zero AC + 1.06 x magnitude bits + 2.82 per block.
+  The constants were fitted by least squares on two 720p clips at quality
+  20-95. With them the estimate is 0.92-1.06 of the real size across that
+  range; before fitting it ran from 0.55 to 0.87, and the slope is what
+  matters, since the controller compares qualities with one model.
+- **`bitrate` is a leaky bucket, and a soft one.** It drains `bitrate/8` bytes
+  a second, and it may hold at most `buffer` bytes. The default buffer is the
+  player's read-ahead, 16 x 64 KB. The controller looks one second ahead and
+  gives each frame the highest quality at which that whole window, at one
+  quality, stays within the bucket. That lowers quality ahead of a heavy
+  stretch and keeps it from jumping about. Estimates are scaled by a running
+  ratio of real to estimated size that the writer feeds back; on real
+  footage the result is within about 1% on average. Nothing is guaranteed: a
+  stretch that needs more than `minquality` gives goes over, and the report
+  says so.
+- **The controller's bucket is capped at `buffer`.** An overshoot that has
+  already happened cannot be taken back. Without the cap, three seconds of
+  noise left the bucket 10x full, and the easy frames after it stayed at
+  `minquality` until it drained.
+- **The default `bitrate` is 24M**: well above what ordinary footage needs at
+  quality 80 (the 720p real-footage clip here needs about 11 Mbit/s), so it
+  only stops outliers from growing the file. Audio is not counted: it is small next to
+  the video, and counting it would tie video settings to audio ones.
 - **`maxframe` defaults to the player's hard limit, 1 MiB** (the
   `media_buffer` bounce area; larger packets are skipped), and cannot be set
-  above it. A frame over `maxframe` gets the highest quality from
-  `minquality` up that fits. That is a binary search that encodes the frame in
-  full for each candidate, because byte stuffing makes an estimate inexact;
-  the DCT is done once per frame. A frame still over the limit at
-  `minquality` is written with a warning, and one over 1 MiB stops the run.
+  above it. The controller respects it through the estimate. The one
+  re-encode left is in the encode worker: a frame that really comes out over
+  `maxframe` is re-quantised from its kept coefficients at the highest
+  quality that fits. A frame over the limit even at `minquality` is written
+  with a warning, and one over 1 MiB stops the run.
 - **Optimal Huffman tables are per frame** (libjpeg's
   `jpeg_gen_optimal_table`), about 14% smaller than the Annex K tables on
   720p footage, with identical pixels.

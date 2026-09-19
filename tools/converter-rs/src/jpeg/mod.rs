@@ -2,13 +2,17 @@
 // Copyright (c) 2026 Hiroki Kawakami
 
 mod dct;
+mod estimate;
 mod huffman;
 mod tables;
 
+pub use estimate::SizeModel;
 use huffman::Table;
 use tables::{QuantTables, ZIGZAG};
 
 const MAX_AC: i16 = 1023;
+const COEFFICIENT_SCALE: f32 = 8.0;
+const MCU_BLOCKS: usize = 6;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HuffmanMode {
@@ -17,8 +21,7 @@ pub enum HuffmanMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Settings {
-    pub quality: u8,
+pub struct Limits {
     pub min_quality: u8,
     pub max_frame: usize,
     pub huffman: HuffmanMode,
@@ -50,30 +53,41 @@ impl<'a> Frame<'a> {
     }
 }
 
+pub struct Coefficients {
+    width: usize,
+    height: usize,
+    blocks: Vec<[i16; 64]>,
+}
+
 pub struct Encoded {
     pub data: Vec<u8>,
     pub quality: u8,
     pub fits: bool,
 }
 
-pub fn encode(frame: &Frame, settings: &Settings) -> Encoded {
-    let blocks = transform(frame);
-    let at = |quality| encode_blocks(frame, &blocks, quality, settings.huffman);
+pub fn analyze(frame: &Frame) -> (Coefficients, SizeModel) {
+    let coefficients = transform(frame);
+    let model = SizeModel::new(&coefficients.blocks);
+    (coefficients, model)
+}
 
-    let first = at(settings.quality);
-    if first.len() <= settings.max_frame {
+pub fn encode(coefficients: &Coefficients, quality: u8, limits: &Limits) -> Encoded {
+    let at = |q| encode_blocks(coefficients, q, limits.huffman);
+    let first = at(quality);
+    if first.len() <= limits.max_frame {
         return Encoded {
             data: first,
-            quality: settings.quality,
+            quality,
             fits: true,
         };
     }
-    let (mut lo, mut hi) = (settings.min_quality, settings.quality.saturating_sub(1));
+    let min_quality = limits.min_quality.min(quality);
+    let (mut lo, mut hi) = (min_quality, quality.saturating_sub(1));
     let mut best = None;
-    while lo <= hi && hi >= settings.min_quality {
+    while lo <= hi && hi >= min_quality {
         let mid = lo + (hi - lo) / 2;
         let data = at(mid);
-        if data.len() <= settings.max_frame {
+        if data.len() <= limits.max_frame {
             best = Some((data, mid));
             lo = mid + 1;
         } else if mid == 0 {
@@ -89,23 +103,19 @@ pub fn encode(frame: &Frame, settings: &Settings) -> Encoded {
             fits: true,
         },
         None => {
-            let data = if settings.min_quality == settings.quality {
+            let data = if min_quality == quality {
                 first
             } else {
-                at(settings.min_quality)
+                at(min_quality)
             };
-            let fits = data.len() <= settings.max_frame;
+            let fits = data.len() <= limits.max_frame;
             Encoded {
                 data,
-                quality: settings.min_quality,
+                quality: min_quality,
                 fits,
             }
         }
     }
-}
-
-struct Blocks {
-    coefficients: Vec<[f32; 64]>,
 }
 
 fn block_at(plane: &[u8], stride: usize, rows: usize, bx: usize, by: usize) -> [f32; 64] {
@@ -116,41 +126,49 @@ fn block_at(plane: &[u8], stride: usize, rows: usize, bx: usize, by: usize) -> [
     })
 }
 
-fn transform(frame: &Frame) -> Blocks {
+fn stored(block: &[f32; 64]) -> [i16; 64] {
+    let coefficients = dct::forward(block);
+    coefficients.map(|c| (c * COEFFICIENT_SCALE).round() as i16)
+}
+
+fn transform(frame: &Frame) -> Coefficients {
     let (w, h) = (frame.width, frame.height);
     let (cw, ch) = (w / 2, h / 2);
     let mcus_x = w.div_ceil(16);
     let mcus_y = h.div_ceil(16);
-    let mut coefficients = Vec::with_capacity(mcus_x * mcus_y * 6);
+    let mut blocks = Vec::with_capacity(mcus_x * mcus_y * MCU_BLOCKS);
     for my in 0..mcus_y {
         for mx in 0..mcus_x {
             for (dx, dy) in [(0, 0), (8, 0), (0, 8), (8, 8)] {
-                let block = block_at(frame.y, w, h, mx * 16 + dx, my * 16 + dy);
-                coefficients.push(dct::forward(&block));
+                blocks.push(stored(&block_at(frame.y, w, h, mx * 16 + dx, my * 16 + dy)));
             }
             for plane in [frame.cb, frame.cr] {
-                let block = block_at(plane, cw, ch, mx * 8, my * 8);
-                coefficients.push(dct::forward(&block));
+                blocks.push(stored(&block_at(plane, cw, ch, mx * 8, my * 8)));
             }
         }
     }
-    Blocks { coefficients }
+    Coefficients {
+        width: w,
+        height: h,
+        blocks,
+    }
 }
 
-fn quantize(blocks: &Blocks, tables: &QuantTables) -> Vec<[i16; 64]> {
-    blocks
-        .coefficients
+fn quantize(coefficients: &Coefficients, tables: &QuantTables) -> Vec<[i16; 64]> {
+    coefficients
+        .blocks
         .iter()
         .enumerate()
-        .map(|(i, coef)| {
-            let table = if i % 6 < 4 {
+        .map(|(i, block)| {
+            let table = if i % MCU_BLOCKS < 4 {
                 &tables.luma
             } else {
                 &tables.chroma
             };
             std::array::from_fn(|k| {
                 let n = ZIGZAG[k];
-                let q = (coef[n] / table[n] as f32).round() as i16;
+                let divisor = table[n] as f32 * COEFFICIENT_SCALE;
+                let q = (block[n] as f32 / divisor).round() as i16;
                 if k == 0 { q } else { q.clamp(-MAX_AC, MAX_AC) }
             })
         })
@@ -183,7 +201,7 @@ enum Symbol {
 fn symbols(quantized: &[[i16; 64]], mut sink: impl FnMut(Symbol)) {
     let mut predictors = [0i32; 3];
     for (i, block) in quantized.iter().enumerate() {
-        let slot = i % 6;
+        let slot = i % MCU_BLOCKS;
         let component = slot.saturating_sub(3);
         let chroma = slot >= 4;
         let dc = block[0] as i32;
@@ -304,9 +322,9 @@ fn segment(out: &mut Vec<u8>, marker: u8, payload: &[u8]) {
     out.extend(payload);
 }
 
-fn encode_blocks(frame: &Frame, blocks: &Blocks, quality: u8, mode: HuffmanMode) -> Vec<u8> {
+fn encode_blocks(coefficients: &Coefficients, quality: u8, mode: HuffmanMode) -> Vec<u8> {
     let quant = QuantTables::for_quality(quality);
-    let quantized = quantize(blocks, &quant);
+    let quantized = quantize(coefficients, &quant);
     let tables = build_tables(&quantized, mode);
 
     let mut out = vec![0xFF, 0xD8];
@@ -318,8 +336,8 @@ fn encode_blocks(frame: &Frame, blocks: &Blocks, quality: u8, mode: HuffmanMode)
     segment(&mut out, 0xDB, &dqt);
 
     let mut sof = vec![8];
-    sof.extend((frame.height as u16).to_be_bytes());
-    sof.extend((frame.width as u16).to_be_bytes());
+    sof.extend((coefficients.height as u16).to_be_bytes());
+    sof.extend((coefficients.width as u16).to_be_bytes());
     sof.extend([3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
     segment(&mut out, 0xC0, &sof);
 
@@ -382,18 +400,45 @@ mod tests {
         data
     }
 
+    struct Settings {
+        quality: u8,
+        limits: Limits,
+    }
+
     fn settings(quality: u8, min_quality: u8, max_frame: usize, huffman: HuffmanMode) -> Settings {
         Settings {
             quality,
-            min_quality,
-            max_frame,
-            huffman,
+            limits: Limits {
+                min_quality,
+                max_frame,
+                huffman,
+            },
         }
     }
 
     fn encode_at(width: usize, height: usize, s: Settings) -> Encoded {
         let data = frame_data(width, height);
-        encode(&Frame::from_yuv420p(&data, width, height), &s)
+        let (coefficients, _) = analyze(&Frame::from_yuv420p(&data, width, height));
+        encode(&coefficients, s.quality, &s.limits)
+    }
+
+    #[test]
+    fn estimate_tracks_actual_size() {
+        let data = frame_data(256, 128);
+        let (coefficients, model) = analyze(&Frame::from_yuv420p(&data, 256, 128));
+        let limits = Limits {
+            min_quality: 1,
+            max_frame: usize::MAX,
+            huffman: HuffmanMode::Optimal,
+        };
+        let ratios: Vec<f32> = [30, 50, 70, 80, 90]
+            .iter()
+            .map(|&q| encode(&coefficients, q, &limits).data.len() as f32 / model.bytes(q))
+            .collect();
+        let (lo, hi) = ratios
+            .iter()
+            .fold((f32::MAX, 0f32), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+        assert!(hi / lo < 1.5, "{ratios:?}");
     }
 
     #[test]

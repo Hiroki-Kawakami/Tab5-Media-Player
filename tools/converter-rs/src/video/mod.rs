@@ -47,10 +47,14 @@ mpeg2  MPEG-2 video (mpeg2video), Main profile, progressive 4:2:0
 
 mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rate
   quality=N           1-100 (default 80)
+  minquality=N        lowest quality rate control may use (default 30)
+  bitrate=R           video bitrate to stay under, e.g. 12M (default 24M);
+                      quality drops where the estimate would exceed it
+  buffer=B            how far a burst may run ahead of bitrate, in bytes
+                      (default 1048576, the player's read-ahead)
   maxframe=B          largest frame in bytes, e.g. 80k (default and maximum
-                      1048576, the player's limit); frames over it get the
-                      highest quality that fits
-  minquality=N        lowest quality used to fit maxframe (default 30)
+                      1048576, the player's limit); a frame over it is
+                      re-quantised at a lower quality
   huffman=H           optimal (per-frame tables, default) or standard
 ";
 
@@ -64,7 +68,7 @@ const DECODER_LIMITS: Constraints = Constraints {
     default_short: None,
 };
 
-pub use mjpeg::{MjpegJob, PLAYER_MAX_FRAME};
+pub use mjpeg::{MjpegJob, PLAYER_MAX_FRAME, Settings as MjpegSettings};
 
 pub enum VideoOutput {
     Ffmpeg(Vec<String>),

@@ -38,7 +38,7 @@ struct Args {
     video: String,
 
     /// Audio codec and options, e.g. "aac,bitrate=96k"
-    #[arg(long, default_value = "auto", value_name = "SPEC")]
+    #[arg(long, default_value = "aac", value_name = "SPEC")]
     audio: String,
 
     /// Overwrite the output file if it exists

@@ -20,18 +20,19 @@ parsing is in `spec.rs`). One flag per codec option would multiply as codecs are
 added, and most options only mean something for one codec. Every key is
 checked: an unknown key, a repeated key or a bad value is an error, and the
 message lists the keys the codec accepts. Nothing is silently ignored, with
-the one intended exception described under `auto` below.
+the one intended exception described under `keep` below.
 
-`--audio auto`, the default, copies the input track when the player can decode
-it as is. That means AAC-LC or MP3 with at most 2 channels and 16-48 kHz. Anything
-else is encoded with `fallback` (`aac` or `mp3`), which also decides which
-encoder keys `auto` accepts.
-HE-AAC is re-encoded because only LC is copied. The encoder keys only apply
-when `auto` ends up encoding.
+`--audio aac` (the default) and `--audio mp3` take `keep=auto|none`. With
+`auto`, an input that is already the chosen codec is copied, provided the
+player can take it as is: AAC-LC (not HE-AAC) or MP3, at most 2 channels,
+16-48 kHz. Anything else is encoded, including the other codec, so the output
+codec is always the one asked for. There is no `keep=always`, which would
+copy tracks the player may not handle. The encoder keys only apply when the
+track ends up encoded.
 
 **Output audio is 16-48 kHz, whatever the codec.** On the device, driving the I2S
 output at 8 kHz makes audible noise. Lower-rate input is therefore resampled
-up to 16 kHz, and `auto` does not copy it. The device's MP3 decoder itself
+up to 16 kHz, and `keep=auto` does not copy it. The device's MP3 decoder itself
 played every rate down to 8 kHz, MPEG-2.5 included.
 
 ## MP3

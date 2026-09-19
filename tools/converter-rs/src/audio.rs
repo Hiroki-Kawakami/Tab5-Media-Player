@@ -9,20 +9,21 @@ use crate::spec::{Spec, int_in, one_of, quantity};
 pub const HELP: &str = "\
 --audio <codec>[,key=value]...
 
-auto   copy the input audio when it is AAC-LC or MP3 with at most 2 channels
-       and 16-48 kHz, otherwise encode it with the fallback codec (default)
-  fallback=C          aac or mp3 (default aac); the fallback's keys are
-                      accepted too and apply only when auto encodes
-aac    encode AAC-LC
+aac    AAC-LC (default)
+  keep=K              auto (default): copy an input that is already AAC-LC
+                      with at most 2 channels at 16-48 kHz; none: always encode
   bitrate=R           e.g. 96k (default 160k)
   channels=N, samplerate=R
-mp3    encode MP3 (libmp3lame)
+mp3    MP3 (libmp3lame)
+  keep=K              auto (default): copy an input that is already MP3 with
+                      at most 2 channels at 16-48 kHz; none: always encode
   bitrate=R           CBR; 32k-320k at 32k-48k (default 192k),
                       8k-160k at 16k-24k (default 160k)
   vbr=N               VBR quality 0-9, lower is better; replaces bitrate
   channels=N, samplerate=R
 none   no audio
 
+Encoding keys apply only when the audio is encoded.
   channels=N          1 or 2 (default: the input's, at most 2)
   samplerate=R        16k, 22.05k, 24k, 32k, 44.1k or 48k
                       (default: the input's, within 16k-48k)
@@ -49,8 +50,7 @@ pub struct AudioPlan {
 }
 
 pub enum AudioSpec {
-    Auto(Encoding),
-    Encode(Encoding),
+    Encode { encoding: Encoding, keep: bool },
     None,
 }
 
@@ -58,21 +58,16 @@ pub fn parse(text: &str) -> Result<AudioSpec> {
     let mut spec = Spec::parse(text)?;
     let codec = spec.codec.clone();
     let (audio, keys) = match codec.as_str() {
-        "auto" => {
-            let fallback = spec
-                .take("fallback", |v| one_of(v, &["aac", "mp3"]))?
-                .unwrap_or("aac");
-            let encoding = Encoding::take(fallback, &mut spec)?;
-            let keys = [&["fallback"][..], encoding.keys()].concat();
-            (AudioSpec::Auto(encoding), keys)
-        }
         "aac" | "mp3" => {
+            let keep = spec
+                .take("keep", |v| one_of(v, &["auto", "none"]))?
+                .is_none_or(|keep| keep == "auto");
             let encoding = Encoding::take(&codec, &mut spec)?;
-            let keys = encoding.keys().to_vec();
-            (AudioSpec::Encode(encoding), keys)
+            let keys = [&["keep"][..], encoding.keys()].concat();
+            (AudioSpec::Encode { encoding, keep }, keys)
         }
         "none" => (AudioSpec::None, Vec::new()),
-        other => bail!("unknown audio codec '{other}' (codecs: auto, aac, mp3, none)"),
+        other => bail!("unknown audio codec '{other}' (codecs: aac, mp3, none)"),
     };
     spec.finish(&keys)?;
     Ok(audio)
@@ -85,8 +80,14 @@ impl AudioSpec {
         };
         match self {
             Self::None => Ok(AudioPlan::none("--audio none")),
-            Self::Encode(encoding) => encoding.plan(input, None),
-            Self::Auto(encoding) => match copy_blocker(input) {
+            Self::Encode {
+                encoding,
+                keep: false,
+            } => encoding.plan(input, None),
+            Self::Encode {
+                encoding,
+                keep: true,
+            } => match copy_blocker(input, encoding) {
                 None => Ok(AudioPlan {
                     index: Some(input.index),
                     encoder: None,
@@ -121,11 +122,10 @@ fn describe(input: &probe::Audio) -> String {
     }
 }
 
-fn copy_blocker(input: &probe::Audio) -> Option<String> {
-    let copyable = match input.codec_name.as_str() {
-        "aac" => input.profile.as_deref() == Some("LC"),
-        "mp3" => true,
-        _ => false,
+fn copy_blocker(input: &probe::Audio, encoding: &Encoding) -> Option<String> {
+    let copyable = match encoding {
+        Encoding::Aac(_) => input.codec_name == "aac" && input.profile.as_deref() == Some("LC"),
+        Encoding::Mp3(_) => input.codec_name == "mp3",
     };
     if !copyable {
         Some(format!("input is {}", describe(input)))
@@ -348,50 +348,60 @@ mod tests {
     }
 
     #[test]
-    fn auto_copies_aac_lc_and_mp3() {
-        let p = plan("auto", &lc());
+    fn keep_copies_the_same_codec() {
+        let p = plan("aac", &lc());
         assert_eq!(p.args, ["-c:a", "copy"]);
         assert_eq!(p.label, "copy (AAC-LC)");
         assert!(p.encoder.is_none());
-        let p = plan("auto,bitrate=96k", &input("mp3", None, 1, 44100));
+        let p = plan("mp3,bitrate=96k", &input("mp3", None, 1, 44100));
         assert_eq!(p.args, ["-c:a", "copy"]);
-        let p = plan("auto,fallback=mp3,vbr=2", &lc());
-        assert_eq!(p.args, ["-c:a", "copy"]);
+        assert_eq!(p.label, "copy (MP3)");
     }
 
     #[test]
-    fn auto_encodes_what_it_cannot_copy() {
-        let p = plan("auto", &input("aac", Some("HE-AAC"), 2, 48000));
+    fn keep_encodes_a_different_codec() {
+        let p = plan("aac", &input("mp3", None, 2, 44100));
         assert_eq!(p.encoder, Some("aac"));
-        assert!(p.label.ends_with("(input is HE-AAC)"), "{}", p.label);
-        let p = plan("auto", &input("aac", Some("LC"), 6, 48000));
-        assert!(p.label.ends_with("(input has 6 channels)"), "{}", p.label);
-        assert!(has(&p, ["-ac", "2"]));
-        let p = plan("auto", &input("mp3", None, 2, 96000));
-        assert!(has(&p, ["-ar", "48000"]));
-        let p = plan("auto,fallback=mp3", &input("mp3", None, 1, 8000));
-        assert!(p.label.ends_with("(input is 8000 Hz)"), "{}", p.label);
-        assert!(has(&p, ["-ar", "16000"]));
-        let p = plan("auto,bitrate=96k", &input("opus", None, 2, 48000));
+        assert!(p.label.ends_with("(input is MP3)"), "{}", p.label);
+        let p = plan("mp3", &lc());
+        assert_eq!(p.encoder, Some("libmp3lame"));
+        assert!(p.label.ends_with("(input is AAC-LC)"), "{}", p.label);
+        let p = plan("aac,bitrate=96k", &input("opus", None, 2, 48000));
         assert!(has(&p, ["-b:a", "96000"]));
         assert!(p.label.ends_with("(input is opus)"), "{}", p.label);
     }
 
     #[test]
-    fn auto_fallback_mp3() {
-        let opus = input("opus", None, 2, 48000);
-        let p = plan("auto,fallback=mp3", &opus);
-        assert_eq!(p.encoder, Some("libmp3lame"));
-        assert!(has(&p, ["-b:a", "192000"]));
-        let p = plan("auto,fallback=mp3,vbr=2,channels=1", &opus);
+    fn keep_encodes_what_the_player_cannot_take() {
+        let p = plan("aac", &input("aac", Some("HE-AAC"), 2, 48000));
+        assert_eq!(p.encoder, Some("aac"));
+        assert!(p.label.ends_with("(input is HE-AAC)"), "{}", p.label);
+        let p = plan("aac", &input("aac", Some("LC"), 6, 48000));
+        assert!(p.label.ends_with("(input has 6 channels)"), "{}", p.label);
+        assert!(has(&p, ["-ac", "2"]));
+        let p = plan("mp3", &input("mp3", None, 2, 96000));
+        assert!(has(&p, ["-ar", "48000"]));
+        let p = plan("mp3", &input("mp3", None, 1, 8000));
+        assert!(p.label.ends_with("(input is 8000 Hz)"), "{}", p.label);
+        assert!(has(&p, ["-ar", "16000"]));
+    }
+
+    #[test]
+    fn keep_none_always_encodes() {
+        let p = plan("aac,keep=none", &lc());
+        assert_eq!(p.encoder, Some("aac"));
+        assert!(!p.label.contains("("), "{}", p.label);
+        let p = plan(
+            "mp3,keep=none,vbr=2,channels=1",
+            &input("mp3", None, 2, 44100),
+        );
         assert!(has(&p, ["-q:a", "2"]));
         assert!(has(&p, ["-ac", "1"]));
-        assert!(p.label.ends_with("(input is opus)"), "{}", p.label);
     }
 
     #[test]
     fn aac_always_encodes() {
-        let p = plan("aac,channels=1,samplerate=44.1k", &lc());
+        let p = plan("aac,keep=none,channels=1,samplerate=44.1k", &lc());
         assert_eq!(p.encoder, Some("aac"));
         assert_eq!(
             p.args,
@@ -401,7 +411,7 @@ mod tests {
 
     #[test]
     fn mp3_always_encodes() {
-        let p = plan("mp3", &input("mp3", None, 2, 44100));
+        let p = plan("mp3,keep=none", &input("mp3", None, 2, 44100));
         assert_eq!(p.encoder, Some("libmp3lame"));
         assert_eq!(
             p.args,
@@ -419,7 +429,7 @@ mod tests {
         assert_eq!(p.label, "MP3 192 kbit/s CBR, 2 ch, 44100 Hz");
         let p = plan("mp3,samplerate=22.05k", &lc());
         assert!(has(&p, ["-b:a", "160000"]));
-        let p = plan("mp3", &input("mp3", None, 1, 16000));
+        let p = plan("mp3,keep=none", &input("mp3", None, 1, 16000));
         assert!(has(&p, ["-b:a", "160000"]));
         let p = plan("mp3,vbr=0,samplerate=22.05k", &lc());
         assert_eq!(
@@ -454,14 +464,19 @@ mod tests {
         assert!(spec("mp3,bitrate=128500").is_err());
         let low = input("mp3", None, 1, 16000);
         assert!(parse("mp3").unwrap().plan(Some(&low)).is_ok());
-        assert!(parse("mp3,bitrate=192k").unwrap().plan(Some(&low)).is_err());
+        assert!(
+            parse("mp3,keep=none,bitrate=192k")
+                .unwrap()
+                .plan(Some(&low))
+                .is_err()
+        );
     }
 
     #[test]
     fn none_and_missing_input() {
         let p = plan("none", &lc());
         assert!(p.index.is_none() && p.args.is_empty());
-        let p = parse("auto").unwrap().plan(None).unwrap();
+        let p = parse("aac").unwrap().plan(None).unwrap();
         assert_eq!(p.label, "none (input has no audio)");
     }
 
@@ -479,8 +494,12 @@ mod tests {
         assert!(parse("mp3,bitrate=128k,vbr=2").is_err());
         assert!(parse("mp3,vbr=10").is_err());
         assert!(parse("mp3,fallback=aac").is_err());
-        assert!(parse("auto,fallback=opus").is_err());
-        let err = parse("auto,vbr=2").err().unwrap().to_string();
-        assert!(err.contains("unknown key 'vbr'"), "{err}");
+        assert!(parse("auto").is_err());
+        assert!(parse("aac,keep=always").is_err());
+        let err = parse("aac,vbr=2").err().unwrap().to_string();
+        assert!(
+            err.contains("unknown key 'vbr'") && err.contains("keep"),
+            "{err}"
+        );
     }
 }

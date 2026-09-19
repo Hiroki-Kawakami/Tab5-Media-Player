@@ -1,8 +1,8 @@
 # Converter (`tools/converter-rs`)
 
 `tab5conv` turns an arbitrary video into a file the player is guaranteed to
-open. Video is H.264 or progressive MPEG-2 (4:2:0 8-bit), and audio is AAC-LC or
-MP3. Output is MP4 by default, or MKV when the output name ends in
+open. Video is H.264, progressive MPEG-2 (4:2:0 8-bit) or MJPEG, and audio is
+AAC-LC or MP3. Output is MP4 by default, or MKV when the output name ends in
 `.mkv`.
 
 ```sh
@@ -73,6 +73,49 @@ To check an output against the player's decoder, copy the stream out with
 `-c copy -f mpeg2video` and follow the bit-exact procedure in
 [`mpeg2.md`](mpeg2.md#verifying).
 
+## MJPEG
+
+The encoder is our own (`src/jpeg/`), so it can choose the quality of each
+frame. `pipeline.rs` runs it between two ffmpeg processes:
+
+```
+ffmpeg (decode, fps, scale) --raw yuv420p--> JPEG encoder --JPEGs--> ffmpeg -f mjpeg -framerate R -i pipe:0 (+ input audio, -c:v copy)
+```
+
+- **The output is always constant frame rate.** Raw frames carry no
+  timestamps, so the muxer rebuilds them from `-framerate`. The `fps` filter is
+  therefore always applied, at the input's own rate if nothing lowers it.
+- **Frames are BT.601 full range**, which is what JFIF decoders assume. The
+  scale filter converts with `out_color_matrix=bt601:out_range=full`.
+- **Frames are encoded in parallel** (one worker per core) and written in order.
+  180 frames of 720p take about 0.3 s.
+- **The default size is the panel (`long=1280,short=720`).** The hardware
+  decodes it in time, and 720x1280 portrait is the direct path. The limits are
+  the renderer's: width at most 2560, at most 1920x1088 pixels.
+- **`maxframe` defaults to the player's hard limit, 1 MiB** (the
+  `media_buffer` bounce area; larger packets are skipped), and cannot be set
+  above it. A frame over `maxframe` gets the highest quality from
+  `minquality` up that fits. That is a binary search that encodes the frame in
+  full for each candidate, because byte stuffing makes an estimate inexact;
+  the DCT is done once per frame. A frame still over the limit at
+  `minquality` is written with a warning, and one over 1 MiB stops the run.
+- **Optimal Huffman tables are per frame** (libjpeg's
+  `jpeg_gen_optimal_table`), about 14% smaller than the Annex K tables on
+  720p footage, with identical pixels.
+- **The tree depth can exceed 32 before length limiting.** libjpeg sizes its
+  histogram for 32; skewed counts can go deeper, so ours is sized to the real
+  depth.
+- **Quantisation uses the Annex K tables with IJG quality scaling**, so
+  `quality` means what it means in libjpeg. They spend less on chroma than
+  ffmpeg's `mjpeg` encoder, whose flatter tables score about 3 dB better in
+  RGB PSNR at the same size (44.5 vs 45.0 dB luma, 39 vs 43 dB chroma at
+  about 46 KiB per 720p frame). At `quality=100` the output is 69 dB PSNR
+  against the encoder's input, so the encoder itself loses nothing.
+
+To compare quality, decode both sides to raw frames first. The `psnr` filter
+pairs frames by timestamp, and an MP4 (1/1200000 time base) against an MKV
+source pairs the wrong frames and reports nonsense.
+
 ## ffmpeg is a command, not a library
 
 The tool runs the user's `ffmpeg`/`ffprobe` from `PATH` instead of linking
@@ -84,10 +127,8 @@ whatever ffmpeg the user has. `require_encoders` checks
 `ffmpeg -encoders` up front, so a build without `libx264` fails with a clear
 message instead of partway through.
 
-The MJPEG encoder that is planned will be written in-house so it can pick a
-quality per frame. It will sit between two ffmpeg processes connected by pipes:
-raw YUV comes out of the first, and the second muxes the result with
-`-c:v copy`.
+MJPEG is the exception: its encoder is built in (see [MJPEG](#mjpeg)), so
+ffmpeg only decodes and muxes.
 
 ## Output size
 

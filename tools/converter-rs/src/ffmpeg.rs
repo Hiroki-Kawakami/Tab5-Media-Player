@@ -4,7 +4,7 @@
 use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 
 use anyhow::{Context, Result, bail};
 
@@ -59,6 +59,21 @@ pub fn probe_json(input: &Path) -> Result<String> {
     ];
     let output = capture(FFPROBE, &args)?;
     String::from_utf8(output.stdout).context("ffprobe printed non-UTF-8 output")
+}
+
+pub fn spawn(args: &[OsString], stdin: Stdio, stdout: Stdio) -> Result<Child> {
+    Command::new(FFMPEG)
+        .args(args)
+        .stdin(stdin)
+        .stdout(stdout)
+        .spawn()
+        .map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                anyhow::anyhow!("{FFMPEG} not found in PATH; install ffmpeg first")
+            } else {
+                anyhow::Error::new(e).context(format!("failed to run {FFMPEG}"))
+            }
+        })
 }
 
 pub fn run(args: &[OsString]) -> Result<()> {

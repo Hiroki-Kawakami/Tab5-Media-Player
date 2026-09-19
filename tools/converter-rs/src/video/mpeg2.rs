@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use super::{PictureSpec, VideoPlan};
+use super::{DECODER_LIMITS, PictureSpec, VideoOutput, VideoPlan};
 use crate::probe;
 use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
 
@@ -26,7 +26,7 @@ pub struct Mpeg2 {
 
 impl Mpeg2 {
     pub fn take(spec: &mut Spec) -> Result<Self> {
-        let picture = PictureSpec::take(spec)?;
+        let picture = PictureSpec::take(spec, &DECODER_LIMITS)?;
         let qscale = spec.take("qscale", |v| int_in(v, 1, 31))?;
         let bitrate = spec.take("bitrate", quantity)?;
         let rate = match (qscale, bitrate) {
@@ -53,7 +53,7 @@ impl Mpeg2 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("mpeg2", video)?;
+        let picture = self.picture.resolve("mpeg2", video, false, "")?;
         let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [
@@ -91,7 +91,7 @@ impl Mpeg2 {
 
         Ok(VideoPlan {
             index: video.index,
-            encoder: "mpeg2video",
+            encoder: Some("mpeg2video"),
             label: format!(
                 "MPEG-2 {}, {rate}, {} B pictures, {} GOP of {keyint} frames{}",
                 picture.label,
@@ -99,7 +99,7 @@ impl Mpeg2 {
                 if self.closed_gop { "closed" } else { "open" },
                 if self.hq { ", hq" } else { "" },
             ),
-            args,
+            output: VideoOutput::Ffmpeg(args),
         })
     }
 }

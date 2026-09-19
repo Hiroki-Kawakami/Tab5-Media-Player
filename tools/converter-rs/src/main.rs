@@ -5,6 +5,8 @@ mod audio;
 mod command;
 mod ffmpeg;
 mod framerate;
+mod jpeg;
+mod pipeline;
 mod probe;
 mod size;
 mod spec;
@@ -87,9 +89,7 @@ fn run(args: Args) -> Result<()> {
         bail!("{} already exists (use -y to overwrite)", output.display());
     }
 
-    let encoders: Vec<&str> = std::iter::once(video.encoder)
-        .chain(audio.encoder)
-        .collect();
+    let encoders: Vec<&str> = video.encoder.into_iter().chain(audio.encoder).collect();
     ffmpeg::require_encoders(&encoders)?;
 
     eprintln!(
@@ -108,12 +108,53 @@ fn run(args: Args) -> Result<()> {
         video: &video,
         audio: &audio,
     };
-    let ffmpeg_args = job.ffmpeg_args();
-    if args.dry_run {
-        println!("{}", ffmpeg::command_line(&ffmpeg_args));
-        return Ok(());
+    match job.commands() {
+        command::Commands::Single(ffmpeg_args) => {
+            if args.dry_run {
+                println!("{}", ffmpeg::command_line(&ffmpeg_args));
+                return Ok(());
+            }
+            ffmpeg::run(&ffmpeg_args)
+        }
+        command::Commands::Piped { decode, mux, job } => {
+            if args.dry_run {
+                println!("{} \\", ffmpeg::command_line(&decode));
+                println!("  | (built-in MJPEG encoder) \\");
+                println!("  | {}", ffmpeg::command_line(&mux));
+                return Ok(());
+            }
+            let stats = pipeline::run(&decode, &mux, job)?;
+            report(&stats, job);
+            Ok(())
+        }
     }
-    ffmpeg::run(&ffmpeg_args)
+}
+
+fn report(stats: &pipeline::Stats, job: &video::MjpegJob) {
+    if stats.frames == 0 {
+        eprintln!("mjpeg: no frames");
+        return;
+    }
+    let kib = |bytes: usize| bytes as f64 / 1024.0;
+    eprintln!(
+        "mjpeg: {} frames, {:.1} KiB average (min {:.1}, max {:.1})",
+        stats.frames,
+        kib(stats.total_bytes / stats.frames),
+        kib(stats.min_bytes),
+        kib(stats.max_bytes),
+    );
+    if stats.lowered > 0 {
+        eprintln!(
+            "mjpeg: {} frames lowered from quality {} to fit (lowest {})",
+            stats.lowered, job.settings.quality, stats.lowest_quality
+        );
+    }
+    if stats.over_limit > 0 {
+        eprintln!(
+            "warning: {} frames exceed maxframe={} even at minquality={}",
+            stats.over_limit, job.settings.max_frame, job.settings.min_quality
+        );
+    }
 }
 
 fn main() -> ExitCode {

@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use super::{PictureSpec, VideoPlan};
+use super::{DECODER_LIMITS, PictureSpec, VideoOutput, VideoPlan};
 use crate::probe;
 use crate::spec::{Spec, int_in, one_of, quantity, seconds};
 
@@ -37,7 +37,7 @@ pub struct H264 {
 
 impl H264 {
     pub fn take(spec: &mut Spec) -> Result<Self> {
-        let picture = PictureSpec::take(spec)?;
+        let picture = PictureSpec::take(spec, &DECODER_LIMITS)?;
         let profile = spec
             .take("profile", |v| one_of(v, &PROFILES))?
             .unwrap_or("high");
@@ -62,7 +62,7 @@ impl H264 {
     }
 
     pub fn plan(&self, video: &probe::Video) -> Result<VideoPlan> {
-        let picture = self.picture.resolve("h264", video)?;
+        let picture = self.picture.resolve("h264", video, false, "")?;
         let keyint = picture.keyint(self.keyint);
 
         let mut args: Vec<String> = [
@@ -93,12 +93,12 @@ impl H264 {
 
         Ok(VideoPlan {
             index: video.index,
-            encoder: "libx264",
+            encoder: Some("libx264"),
             label: format!(
                 "H.264 {} {}, {rate}, keyframe every {keyint} frames",
                 self.profile, picture.label
             ),
-            args,
+            output: VideoOutput::Ffmpeg(args),
         })
     }
 }

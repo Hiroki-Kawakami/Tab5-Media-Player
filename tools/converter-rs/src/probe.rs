@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::ffmpeg;
+use crate::framerate::Rate;
 
 #[derive(Deserialize)]
 struct ProbeOutput {
@@ -50,7 +51,7 @@ pub struct Video {
     pub index: u32,
     pub display_width: f64,
     pub display_height: f64,
-    pub fps: Option<f64>,
+    pub fps: Option<Rate>,
 }
 
 pub struct Audio {
@@ -64,6 +65,11 @@ pub struct Audio {
 pub struct MediaInfo {
     pub video: Video,
     pub audio: Option<Audio>,
+}
+
+fn frame_rate(text: &str) -> Option<Rate> {
+    let (num, den) = text.split_once('/')?;
+    Rate::new(num.parse().ok()?, den.parse().ok()?)
 }
 
 fn ratio(text: &str, separator: char) -> Option<f64> {
@@ -97,7 +103,7 @@ fn video_info(stream: &Stream) -> Result<Video> {
 
     let fps = [&stream.avg_frame_rate, &stream.r_frame_rate]
         .into_iter()
-        .find_map(|r| r.as_deref().and_then(|s| ratio(s, '/')));
+        .find_map(|r| r.as_deref().and_then(frame_rate));
 
     Ok(Video {
         index: stream.index,
@@ -161,7 +167,7 @@ mod tests {
         assert_eq!(info.video.index, 1);
         assert_eq!(info.video.display_width, 480.0);
         assert!((info.video.display_height - 853.33).abs() < 0.01);
-        assert!((info.video.fps.unwrap() - 29.97).abs() < 0.01);
+        assert_eq!(info.video.fps, Rate::new(30000, 1001));
         let audio = info.audio.unwrap();
         assert_eq!(
             (audio.index, audio.channels, audio.sample_rate),

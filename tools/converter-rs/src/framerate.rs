@@ -17,6 +17,10 @@ pub struct Rate {
 }
 
 impl Rate {
+    pub fn new(num: u64, den: u64) -> Option<Self> {
+        (num > 0 && den > 0).then(|| Self { num, den }.reduced())
+    }
+
     fn parse(value: &str) -> Result<Self> {
         let rate = if let Some((num, den)) = NTSC_RATES
             .iter()
@@ -63,11 +67,11 @@ impl Rate {
         }
     }
 
-    fn as_f64(self) -> f64 {
+    pub fn as_f64(self) -> f64 {
         self.num as f64 / self.den as f64
     }
 
-    fn filter_value(self) -> String {
+    pub fn ffmpeg_value(self) -> String {
         if self.den == 1 {
             self.num.to_string()
         } else {
@@ -90,8 +94,8 @@ enum Mode {
 pub struct FrameRateSpec(Mode);
 
 pub struct FrameRate {
-    rate: Option<Rate>,
-    pub fps: f64,
+    filter: Option<Rate>,
+    pub rate: Rate,
     pub label: String,
 }
 
@@ -106,31 +110,38 @@ impl FrameRateSpec {
         }))
     }
 
-    pub fn resolve(&self, source: Option<f64>) -> FrameRate {
-        let rate = match self.0 {
+    pub fn resolve(&self, source: Option<Rate>) -> FrameRate {
+        let filter = match self.0 {
             Mode::Exact(rate) => Some(rate),
             Mode::Max(max) => match source {
-                Some(fps) if fps <= max.as_f64() + TOLERANCE => None,
+                Some(src) if src.as_f64() <= max.as_f64() + TOLERANCE => None,
                 _ => Some(max),
             },
         };
-        let fps = rate
-            .map(Rate::as_f64)
-            .or(source)
-            .unwrap_or(DEFAULT_MAX.as_f64());
+        let rate = filter.or(source).unwrap_or(DEFAULT_MAX);
         let label = match source {
-            Some(src) if (fps - src).abs() > TOLERANCE => {
-                format!("{} fps (from {})", describe(fps), describe(src))
-            }
-            _ => format!("{} fps", describe(fps)),
+            Some(src) if (rate.as_f64() - src.as_f64()).abs() > TOLERANCE => format!(
+                "{} fps (from {})",
+                describe(rate.as_f64()),
+                describe(src.as_f64())
+            ),
+            _ => format!("{} fps", describe(rate.as_f64())),
         };
-        FrameRate { rate, fps, label }
+        FrameRate {
+            filter,
+            rate,
+            label,
+        }
     }
 }
 
 impl FrameRate {
     pub fn filter(&self) -> Option<String> {
-        self.rate.map(|r| format!("fps={}", r.filter_value()))
+        self.filter.map(|r| format!("fps={}", r.ffmpeg_value()))
+    }
+
+    pub fn cfr_filter(&self) -> String {
+        format!("fps={}", self.rate.ffmpeg_value())
     }
 }
 
@@ -142,7 +153,11 @@ mod tests {
         Rate::parse(value)
     }
 
-    fn resolve(options: &str, source: Option<f64>) -> FrameRate {
+    fn r(num: u64, den: u64) -> Option<Rate> {
+        Rate::new(num, den)
+    }
+
+    fn resolve(options: &str, source: Option<Rate>) -> FrameRate {
         let mut spec = Spec::parse(&format!("h264{options}")).unwrap();
         let framerate = FrameRateSpec::take(&mut spec).unwrap();
         spec.finish(&KEYS).unwrap();
@@ -189,42 +204,43 @@ mod tests {
 
     #[test]
     fn default_caps_at_30() {
-        let r = resolve("", Some(60.0));
-        assert_eq!(r.filter().as_deref(), Some("fps=30"));
-        assert_eq!(r.fps, 30.0);
-        assert_eq!(r.label, "30 fps (from 60)");
-        let r = resolve("", Some(30000.0 / 1001.0));
-        assert_eq!(r.filter(), None);
-        assert_eq!(r.label, "29.97 fps");
-        let r = resolve("", Some(24.0));
-        assert_eq!(r.filter(), None);
-        assert_eq!(r.fps, 24.0);
+        let fr = resolve("", r(60, 1));
+        assert_eq!(fr.filter().as_deref(), Some("fps=30"));
+        assert_eq!(fr.rate.as_f64(), 30.0);
+        assert_eq!(fr.label, "30 fps (from 60)");
+        let fr = resolve("", r(30000, 1001));
+        assert_eq!(fr.filter(), None);
+        assert_eq!(fr.cfr_filter(), "fps=30000/1001");
+        assert_eq!(fr.label, "29.97 fps");
+        let fr = resolve("", r(24, 1));
+        assert_eq!(fr.filter(), None);
+        assert_eq!(fr.rate.as_f64(), 24.0);
     }
 
     #[test]
     fn maxfps_only_lowers() {
-        let r = resolve(",maxfps=24", Some(60000.0 / 1001.0));
-        assert_eq!(r.filter().as_deref(), Some("fps=24"));
-        assert_eq!(r.label, "24 fps (from 59.94)");
-        assert_eq!(resolve(",maxfps=60", Some(59.94)).filter(), None);
+        let fr = resolve(",maxfps=24", r(60000, 1001));
+        assert_eq!(fr.filter().as_deref(), Some("fps=24"));
+        assert_eq!(fr.label, "24 fps (from 59.94)");
+        assert_eq!(resolve(",maxfps=60", r(60000, 1001)).filter(), None);
     }
 
     #[test]
     fn unknown_source_rate_is_capped() {
-        let r = resolve("", None);
-        assert_eq!(r.filter().as_deref(), Some("fps=30"));
-        assert_eq!(r.fps, 30.0);
-        assert_eq!(r.label, "30 fps");
+        let fr = resolve("", None);
+        assert_eq!(fr.filter().as_deref(), Some("fps=30"));
+        assert_eq!(fr.rate.as_f64(), 30.0);
+        assert_eq!(fr.label, "30 fps");
     }
 
     #[test]
     fn fps_is_exact() {
-        let r = resolve(",fps=29.97", Some(15.0));
-        assert_eq!(r.filter().as_deref(), Some("fps=30000/1001"));
-        assert_eq!(r.label, "29.97 fps (from 15)");
-        let r = resolve(",fps=30", Some(30.0));
-        assert_eq!(r.filter().as_deref(), Some("fps=30"));
-        assert_eq!(r.label, "30 fps");
+        let fr = resolve(",fps=29.97", r(15, 1));
+        assert_eq!(fr.filter().as_deref(), Some("fps=30000/1001"));
+        assert_eq!(fr.label, "29.97 fps (from 15)");
+        let fr = resolve(",fps=30", r(30, 1));
+        assert_eq!(fr.filter().as_deref(), Some("fps=30"));
+        assert_eq!(fr.label, "30 fps");
     }
 
     #[test]

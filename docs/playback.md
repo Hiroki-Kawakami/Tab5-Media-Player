@@ -15,15 +15,15 @@ decisions that are expensive to reverse later were taken now.
 ## Layers
 
 ```
-PlayerScreen        LVGL overlay, transport UI
+PlayerScreen        LVGL bar (Partial, straight into FB 0), transport UI
   │ player_open(path) / play / seek(us) ...
 Player              command task, state machine, media clock, pacing, loop
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
   (Avi/Mkv/Mp4)       │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
-  │                   │         overlay ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
-media_buffer          │           └─▶ compose overlay ─▶ present
+  │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
+media_buffer          │           └─▶ present
   (arena)             └──▶ audio_out (PCM / MP3 / ADPCM / AAC / Opus) ──▶ bsp_audio_write
 ```
 
@@ -38,7 +38,7 @@ media_buffer          │           └─▶ compose overlay ─▶ present
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, MKV and MP4 adapters |
 | `app/playback/` | `Player`: reader, audio and pacing tasks |
-| `app/video/` | `video_presenter` (placement, framebuffers, overlay, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
+| `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/player_screen.*` | the full-screen player UI |
 
@@ -69,9 +69,10 @@ replace that inside the same function.
 **The presenter places, the renderer draws.** `video_presenter` owns
 everything that does not depend on the codec: the fit (output rotation, a scale of
 `n/16`, the output rect), which framebuffer is next, clearing the letterbox,
-composing the overlay and presenting. A `VideoRenderer` turns a packet into a
-`VideoFrame` (`decode`) and puts a frame into a `RenderTarget` (framebuffer,
-rotation, `n`, rect, source size) with `draw`. `draw(nullptr, …)` redraws the
+the area the UI leaves to the video and presenting. A `VideoRenderer` turns a
+packet into a `VideoFrame` (`decode`) and puts a frame into a `RenderTarget`
+(framebuffer, rotation, `n`, rect, clip, source size) with `draw`, writing
+nothing outside the clip. `draw(nullptr, …)` redraws the
 held frame. MJPEG's `decode` only reads the header and the JPEG is decoded
 inside `draw`; H.264's `decode` does the real work and `draw` is one PPA call.
 
@@ -80,8 +81,9 @@ inside `draw`; H.264's `decode` does the real work and `draw` is one PPA call.
   as well as down. The rect is `source × n / 16` rounded down, which is the size
   the driver produces, so centering matches what lands in the framebuffer.
   Strips are 16 rows, so every strip boundary scales to a whole row and the
-  pipeline's check never rejects this scale. The simulator's PPA shim rounds
-  instead of truncating and can be a pixel off.
+  pipeline's check never rejects this scale. The simulator's PPA shim
+  truncates the same way, so a clipped draw (see [The overlay](#the-overlay))
+  cannot spill a pixel into the bar there either.
 - **The output rotation is the UI rotation plus the source rotation**, both
   counter-clockwise quarter turns (see [Source rotation](#source-rotation)).
   `place()` fits the undecoded source with that sum, so PPA rotates once.
@@ -101,7 +103,7 @@ inside `draw`; H.264's `decode` does the real work and `draw` is one PPA call.
 - **The renderer owns each packet it is given** and releases it exactly once.
   MJPEG holds the last drawn packet until the next one is drawn, or until
   `discard()` / `close()`, so a redraw decodes it again. The framebuffer
-  cannot be copied back because the overlay is already composed into it. One
+  cannot be copied back because the bar may already cover part of it. One
   of the four ring slots is therefore always held. A failed draw releases the
   new packet and keeps the old one. H.264 cannot work this way, because a
   packet cannot be decoded twice once later frames have used its picture: it
@@ -484,7 +486,7 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `media_reader` | 4 | `Demuxer::read` → video ring (4 slots) / audio ring (8 slots) |
 | `media_readahead` | 3 | 64 KB aligned read-ahead into the arena |
 | `player` | 5 | commands, pacing, submit to the presenter |
-| `video_presenter` | 6 | (MJPEG: decode →) PPA → compose overlay → present, core 0 |
+| `video_presenter` | 6 | (MJPEG: decode →) PPA → present, core 0 |
 | `video_decoder` | 2 | H.264 decode (parse, prediction, residual) or half of the MPEG-2 rows, core 0 |
 | `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
 | `mpeg2_rows` | 2 | the other half of the MPEG-2 rows, core 1 |
@@ -501,10 +503,6 @@ tasks that use a whole core. At 720p they never block, and above the reader
 also sleeps 20 ms after 500 ms without blocking, which keeps `IDLE0` fed for
 the task watchdog. Taking a harness capture while a heavy clip plays still
 trips the watchdog, since the capture itself runs on core 0 for seconds.
-
-- **The overlay costs frame rate.** With the bar shown, every frame is also
-  blended with it, and a 360p clip that plays at 30 fps with the bar hidden
-  falls to about 20 fps on screen (the rest are decoded but not shown).
 
 `media_audio` has a 20 KB stack because the decoders run on it. Opus's CELT
 decoder keeps its work buffers in stack VLAs and overflowed the 4 KB that was
@@ -557,31 +555,50 @@ wrap.
 
 `video_presenter` owns the framebuffers while the player is open. The main
 LVGL display is hidden. The controls are a separate LVGL display
-(`DisplayPresentMode::Deferred`) along the bottom edge as the user sees it:
-160 px in landscape, 240 px in portrait, where the button row wraps. The
-presenter composes it over each picture before presenting.
+(`DisplayRenderMode::Partial`) along the bottom edge as the user sees it:
+160 px in landscape, 240 px in portrait, where the button row wraps.
 
+- **While the bar is shown, video and LVGL share framebuffer 0 and the video
+  tears.** Composing the bar into every frame tied LVGL's rendering to the
+  video's buffer swaps: a slider drawn between two swaps came out torn, the
+  copy cost frame rate (a 360p clip fell from 30 to 20 fps), and it grew with
+  the bar. Now `video_presenter_set_ui_insets()` gives the presenter the edges
+  the UI owns; it stops swapping, draws every frame into framebuffer 0 clipped
+  to the rest, and LVGL blits only what changed straight into the same
+  framebuffer. Hidden, the insets are zero and the three-buffer swap (no
+  tearing) is back.
+- **Framebuffer 0, because both BSPs agree on it.** The device's partial blits
+  go to the framebuffer last flushed, the simulator's always to 0, and a
+  partial flush presents index 0 on both.
+- **The clip is a rectangle.** Insets can cover several edges (a bar on top
+  and bottom works), not a hole in the middle: one PPA block cannot skip its
+  centre. MJPEG passes it to `jpeg_ppa_pipeline` as `out_clip` (strips outside
+  it never reach PPA), and it disables the direct decode; H.264 and MPEG-2
+  narrow the PPA input block (`PackedYuvScaler`).
+- **The clip edge can leave a few black pixels.** A source pixel that straddles
+  the edge is not drawn (YUV420 blocks round to even pixels too), so up to two
+  scaled source pixels next to the bar stay black. Entering the mode clears a
+  band that wide along each clip edge inside the video, so no stale picture is
+  left there.
+- **Ordering is what keeps the two writers apart.** `set_ui_insets()` waits for
+  the worker to apply it, so the bar is only made visible once the video no
+  longer draws there, and hiding waits for LVGL's last blit
+  (`bsp_display_wait_draw()`) before handing the edge back. The bar is created
+  hidden (`DisplayManagerConfig::visible`), otherwise its first render would
+  land on whatever is on screen before the presenter starts.
 - **Rotating recreates the bar.** Its logical size changes with the rotation,
-  so `PlayerScreen::rotate` detaches it from the presenter
-  (`video_presenter_set_overlay(nullptr)` waits for the worker), deletes it,
-  sets the presenter's rotation and creates a new one. The presenter applies a
-  rotation between frames and draws the held frame again.
-- **The video sets the update rate.** LVGL only marks the overlay dirty on
-  `LV_EVENT_RENDER_READY`, and the next frame picks it up. While paused, the
-  presenter wakes every 100 ms and presents a dirty overlay on its own.
-  Otherwise the Play button would never change.
-- **`compose()` cannot erase, and neither can a render.** Both write only their
-  own rect. Each framebuffer has a "letterbox dirty" bit. The bits are set when
-  the video rect changes, the rotation changes, the bar is replaced, or the bar
-  is hidden. Just before a framebuffer is drawn into, the area outside the video
-  rect is cleared and its bit dropped. The framebuffer on screen is never
-  touched. A full-panel video has nothing to clear. Hiding the bar also redraws
-  the held frame (`video_presenter_repaint()`).
+  so `PlayerScreen::rotate` deletes it, sets the presenter's rotation, creates
+  a new one and applies its insets. The presenter applies a rotation between
+  frames and draws the held frame again.
 - **CPU writes to a framebuffer are synced to the cache immediately.** PPA and
   the JPEG decoder invalidate their output without writing it back, so a
   cleared area still in the cache would be lost.
+- **The letterbox is cleared per framebuffer.** Each framebuffer has a
+  "letterbox dirty" bit, set when the video rect, the rotation or the insets change. Just before a
+  framebuffer is drawn into, the area outside the video rect (within the clip)
+  is cleared and its bit dropped.
 - **Everything the worker does holds `s_idle`**: drawing, redrawing,
-  presenting, and swapping the overlay. `video_presenter_flush()` takes it
+  presenting, and applying new insets. `video_presenter_flush()` takes it
   before `discard()`, so the held slot is released before `reader_stop()`
   refills the free queues, and never twice. After a flush there is nothing to
   redraw until the next frame; a redraw request in that window blanks the

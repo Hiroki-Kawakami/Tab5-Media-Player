@@ -37,11 +37,37 @@ static bsp_rect_t bar_area(bsp_rotation_t rotation, bsp_size_t panel) {
     }
 }
 
+static VideoInsets bar_insets(bsp_rotation_t rotation) {
+    const int32_t height = is_portrait(rotation) ? kPortraitBarHeight : kLandscapeBarHeight;
+    VideoInsets insets;
+    switch (rotation) {
+    case BSP_ROTATION_90:  insets.right = height; break;
+    case BSP_ROTATION_180: insets.top = height; break;
+    case BSP_ROTATION_270: insets.left = height; break;
+    default:               insets.bottom = height; break;
+    }
+    return insets;
+}
+
+static void show_bar(lv_display_t *bar, bsp_rotation_t rotation) {
+    video_presenter_set_ui_insets(bar_insets(rotation));
+    display_manager.set_visible(bar, true);
+}
+
+static void hide_bar(lv_display_t *bar) {
+    display_manager.set_visible(bar, false);
+    bsp_display_wait_draw();
+    video_presenter_set_ui_insets({});
+}
+
 static void set_bar_visible(bool visible) {
-    if (!s_bar || visible == s_bar_visible) return;
+    if (!s_bar || !s_active || visible == s_bar_visible) return;
     s_bar_visible = visible;
-    display_manager.set_visible(s_bar, visible);
-    if (!visible) video_presenter_repaint();
+    if (visible) {
+        show_bar(s_bar, s_active->rotation());
+    } else {
+        hide_bar(s_bar);
+    }
 }
 
 static void outside_touch(const bsp_touch_point_t *, int count, void *) {
@@ -63,20 +89,17 @@ void PlayerScreen::build() {
 
 bool PlayerScreen::openOverlay() {
     DisplayManagerConfig config = {};
-    config.present_mode = DisplayPresentMode::Deferred;
+    config.present_mode = DisplayPresentMode::Immediate;
+    config.render_mode = DisplayRenderMode::Partial;
     config.make_default = false;
+    config.visible = false;
     config.viewport.rotation = rotation_;
     config.viewport.output_area = bar_area(rotation_, bsp_display_get_size());
     if (display_manager.create_display(config, &overlay_) != ESP_OK) {
         overlay_ = nullptr;
         return false;
     }
-    lv_display_add_event_cb(
-        overlay_, [](lv_event_t *) { video_presenter_mark_overlay_dirty(); },
-        LV_EVENT_RENDER_READY, nullptr);
-
     buildOverlay(lv_display_get_screen_active(overlay_), is_portrait(rotation_));
-    display_manager.set_visible(overlay_, s_bar_visible);
     s_bar = overlay_;
     refresh();
     return true;
@@ -98,11 +121,14 @@ void PlayerScreen::closeOverlay() {
 
 void PlayerScreen::rotate(bsp_rotation_t rotation) {
     if (rotation == rotation_) return;
-    video_presenter_set_overlay(nullptr);
     closeOverlay();
     rotation_ = rotation;
     video_presenter_set_rotation(rotation);
-    if (openOverlay()) video_presenter_set_overlay(overlay_);
+    if (!openOverlay()) {
+        video_presenter_set_ui_insets({});
+    } else if (s_bar_visible) {
+        show_bar(overlay_, rotation_);
+    }
 }
 
 void PlayerScreen::eject(const std::string &mount_point) {
@@ -123,7 +149,7 @@ void PlayerScreen::onEnter() {
         showStartError(video_presenter_error());
         return;
     }
-    video_presenter_set_overlay(overlay_);
+    show_bar(overlay_, rotation_);
     ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
         static_cast<PlayerScreen *>(arg)->rotate(rotation);
     }, this);
@@ -145,9 +171,8 @@ void PlayerScreen::onExit() {
     if (!overlay_) return;
     display_manager.set_outside_touch_callback(nullptr);
     player_close();
-    video_presenter_end();
-    video_presenter_set_overlay(nullptr);
     closeOverlay();
+    video_presenter_end();
     ui_orientation_set_listener(nullptr, nullptr);
     media_player_release_sram();
 }

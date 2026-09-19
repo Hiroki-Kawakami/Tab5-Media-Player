@@ -36,7 +36,8 @@ static ppa_srm_rotation_angle_t ppa_rotation(bsp_rotation_t rotation) {
 }
 
 static bool covers_panel_unscaled(const RenderTarget &target) {
-    return target.rotation == BSP_ROTATION_0 &&
+    return !render_target_clipped(target) &&
+           target.rotation == BSP_ROTATION_0 &&
            target.scale_n == kScaleDenominator &&
            target.rect.origin.x == 0 && target.rect.origin.y == 0 &&
            target.rect.size.width == target.panel.width &&
@@ -136,6 +137,15 @@ bool MjpegRenderer::draw(VideoFrame *frame, const RenderTarget &target, std::str
         if (frame) drop(frame);
         return false;
     }
+    const bsp_rect_t visible = render_target_visible(target);
+    if (!visible.size.width) {
+        if (frame) {
+            discard();
+            held_ = *frame;
+            *frame = {};
+        }
+        return true;
+    }
     const Path path = covers_panel_unscaled(target) ? Path::Direct : Path::Pipeline;
     if (path != path_) {
         path_ = path;
@@ -190,6 +200,11 @@ bool MjpegRenderer::decode_scaled(const uint8_t *data, std::size_t len,
     transform.scale_y = scale;
     transform.out_offset_x = (uint32_t)target.rect.origin.x;
     transform.out_offset_y = (uint32_t)target.rect.origin.y;
+    if (render_target_clipped(target)) {
+        const bsp_rect_t visible = render_target_visible(target);
+        transform.out_clip = { (uint32_t)visible.origin.x, (uint32_t)visible.origin.y,
+                               (uint32_t)visible.size.width, (uint32_t)visible.size.height };
+    }
 
     const esp_err_t err = jpeg_ppa_pipeline_process(pipeline_, data, len, &output, &transform,
                                                     nullptr);

@@ -19,6 +19,7 @@ public:
     void onEnter() override;
     void onExit() override;
     static void eject(const std::string &mount_point);
+    bsp_rotation_t rotation() const { return rotation_; }
 
 private:
     bool openOverlay();

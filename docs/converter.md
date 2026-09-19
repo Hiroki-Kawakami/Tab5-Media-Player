@@ -1,7 +1,7 @@
 # Converter (`tools/converter-rs`)
 
 `tab5conv` turns an arbitrary video into a file the player is guaranteed to
-open. For now the only video codec is H.264 (4:2:0 8-bit) and the only audio
+open. Video is H.264 or progressive MPEG-2 (4:2:0 8-bit), and the only audio
 encoder is AAC-LC. Output is MP4 by default, or MKV when the output name ends in
 `.mkv`.
 
@@ -15,7 +15,7 @@ nix develop -c cargo run --manifest-path tools/converter-rs/Cargo.toml -- --vide
 ## Codec specs
 
 `--video` and `--audio` each take one string, `<codec>[,key=value]...`, and the
-codec's own module interprets the keys (`video.rs`, `audio.rs`; the shared
+codec's own module interprets the keys (`video/`, `audio.rs`; the shared
 parsing is in `spec.rs`). One flag per codec option would multiply as codecs are
 added, and most options only mean something for one codec. Every key is
 checked: an unknown key, a repeated key or a bad value is an error, and the
@@ -27,6 +27,34 @@ it as is. That means AAC-LC or MP3 with at most 2 channels and 48 kHz. Anything
 else is encoded as AAC-LC.
 HE-AAC is re-encoded because only LC is copied. `auto` takes the `aac` keys,
 but they only apply when it ends up encoding.
+
+## MPEG-2
+
+ffmpeg's `mpeg2video` defaults are wrong for the player: 200 kbit/s, no B
+pictures and a 12-frame GOP. So `mpeg2` sets every one of those itself
+(`qscale=4`, 2 B pictures, 2 s GOP).
+
+- **`bframes` stops at 3**, the most the decoder has been checked against.
+  B pictures are also what the player drops when it runs late.
+- **GOPs are closed by default.** After a seek the decoder drops B pictures
+  that refer to the previous GOP, so an open GOP loses a few frames after
+  every seek. ffmpeg refuses closed GOPs while scene-change detection is on, so
+  `gop=closed` also passes `-sc_threshold 1000000000`, and cuts get no I
+  picture of their own. `gop=open` brings scene-change detection back.
+- **`hq=yes` adds `-mbd rd -trellis 1 -intra_vlc 1`**, which only changes the
+  encoder's choices and costs the decoder nothing. On 640x360 real footage it
+  cut the size by 11% at `qscale=4` (PSNR 0.3 dB lower), gave +0.2 dB at the
+  same bitrate, and roughly doubled encode time.
+- **Interlace tools are never enabled.** The decoder rejects field pictures and
+  field prediction, and `-alternate_scan` makes ffmpeg flag frames as
+  non-progressive (see [`mpeg2.md`](mpeg2.md#scope)).
+- **The frame rate is left as it is.** `mpeg2video` accepts rates that MPEG-2
+  has no code for (15 and 12 fps, for example), and the player times frames by
+  the container's timestamps anyway.
+
+To check an output against the player's decoder, copy the stream out with
+`-c copy -f mpeg2video` and follow the bit-exact procedure in
+[`mpeg2.md`](mpeg2.md#verifying).
 
 ## ffmpeg is a command, not a library
 
@@ -48,9 +76,9 @@ raw YUV comes out of the first, and the second muxes the result with
 
 The size keys (`size.rs`) are shared by every video codec. `long`/`short` exist
 so that one command line works for both landscape and portrait sources. Each
-codec supplies its own constraints: the rounding unit (2 for H.264) and the
-player's limits for that codec. H.264's limits are each side at most 1280 and
-at most 3600 macroblocks.
+codec supplies its own constraints: the rounding unit and the player's limits
+for that codec. H.264 and MPEG-2 share the same constraints: a rounding unit of
+2, each side at most 1280, and at most 3600 macroblocks.
 
 - **The default is `long=640,scale=contain`**, because the decoders are tuned
   for 360p (see [`h264.md`](h264.md)).

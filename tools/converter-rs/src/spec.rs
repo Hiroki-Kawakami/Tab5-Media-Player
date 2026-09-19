@@ -114,6 +114,14 @@ pub fn seconds(value: &str) -> Result<f64> {
     Ok(v)
 }
 
+pub fn yes_no(value: &str) -> Result<bool> {
+    match value {
+        "yes" => Ok(true),
+        "no" => Ok(false),
+        _ => bail!("expected yes or no"),
+    }
+}
+
 pub fn one_of<'a>(value: &str, choices: &[&'a str]) -> Result<&'a str> {
     choices
         .iter()

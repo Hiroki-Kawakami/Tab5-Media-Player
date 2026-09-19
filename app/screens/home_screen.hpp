@@ -4,15 +4,43 @@
  */
 
 #pragma once
-#include "screen_manager.hpp"
-#include "widgets.hpp"
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+#include "esp_err.h"
+#include "screen.hpp"
+#include "screens/home/home_page.hpp"
 
-class HomeScreen : public NavigationScreen {
+class HomeScreen : public Screen {
 public:
     void build() override;
+    void push(std::shared_ptr<HomePage> page);
+    void pop();
+    void eject(const std::string &mount_point);
 
 private:
-    void open_sd_card();
-    void open_usb_drive();
+    struct MenuItem {
+        const char *icon;
+        const char *label;
+        std::shared_ptr<HomePage> (HomeScreen::*open)();
+    };
+    static const MenuItem kMenu[];
+
+    std::vector<std::shared_ptr<HomePage>> stack_;
+    std::size_t selected_ = SIZE_MAX;
+    bool landscape_ = false;
+    HomePage *visible_ = nullptr;
+
+    bool is_landscape() const;
+    void navigate(std::function<void()> change);
+    void layout();
+    void build_menu(lv_obj_t *pane);
+    void build_page(lv_obj_t *pane);
+    void select(std::size_t index);
+    std::shared_ptr<HomePage> open_sd_card();
+    std::shared_ptr<HomePage> open_usb_drive();
     void show_mount_error(const char *title, const char *message, esp_err_t err);
 };

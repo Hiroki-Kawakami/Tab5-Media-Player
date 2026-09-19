@@ -79,8 +79,9 @@ internal RAM.
 `app/ui_orientation.cpp` follows `bsp_imu_get_orientation()` for all four
 rotations; `UNKNOWN` and `FACE_UP/DOWN` keep the current one. With no listener
 it rotates the main display with `display_manager.set_rotation`, which the
-Partial render mode supports and which swaps the LVGL resolution. Home and the
-file browser have no landscape layout; their portrait layout just stretches.
+Partial render mode supports and which swaps the LVGL resolution. Home has its
+own landscape layout (see [Home screen](#home-screen)); the player handles
+rotation itself.
 
 While the player is open it registers itself as the listener and the main
 display is left alone. `set_rotation` re-hands the draw buffers to LVGL, and
@@ -91,13 +92,36 @@ decoder is gone and before the display is shown again.
 Opening the player keeps whatever rotation the UI already has; the video's
 aspect does not choose it.
 
+## Home screen
+
+`HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu
+(SD Card, USB Drive, later settings) and the file browser are not separate
+screens but a page stack inside it (`app/screens/home/`), because landscape
+shows both at once: the menu on the left, the top page on the right. Portrait
+shows either the menu (empty stack) or the top page full-screen, which is the
+same navigation the separate screens used to give.
+
+Every navigation, rotation and eject rebuilds the whole view on the next LVGL
+tick rather than in place. Navigation is triggered from a click on a row or
+back button that the rebuild deletes, and the list calls back into the page
+that a pop destroys, so neither can happen inside the event. Pages outlive
+their views: a `FileBrowserPage` keeps its entries and scroll offset, so going
+back or rotating does not re-read the directory.
+
+Landscape is decided from the Home root's size, not `ui_orientation_current()`:
+while the player is open the IMU rotation moves on but the main display does
+not, and Home only relayouts when the display actually changes.
+
+A USB disconnect removes every page under `/usb` from the stack, and closes the
+player if it is playing from there.
+
 ## SD card
 
 The card is mounted at `/sdcard` when the Home screen's SD Card button is
 pressed, not at boot, so a card inserted after power-on still works and a
 missing card surfaces as a modal rather than a log line. It is never unmounted.
 
-`FileBrowserScreen` classifies entries by `dirent::d_type` rather than `stat`:
+`FileBrowserPage` classifies entries by `dirent::d_type` rather than `stat`:
 on FAT every `stat` is another directory scan, which adds up on a folder of
 hundreds of files. Entries starting with `.` are skipped, which also hides the
 `._*` AppleDouble files macOS leaves on cards.
@@ -133,10 +157,11 @@ the component's own task because `msc_host_install_device` needs the MSC
 background task to process events and would deadlock inside its callback.
 
 Pulling a mounted drive does not unmount it. The player may still hold a file
-open, and FAT must not be unregistered under an open fd; the disconnect only
-sends `player_eject("/usb")`, which stops playback with "storage removed". The
+open, and FAT must not be unregistered under an open fd; the disconnect sends
+`player_eject("/usb")`, which stops reading at once, then closes a player on a
+`/usb` file and drops the `/usb` pages from Home. The
 stale mount is released by the next `usb_msc_mount`, which runs from Home after
-the player and browser are gone. A drive plugged in while a stale mount is held
+the player and the `/usb` pages are gone. A drive plugged in while a stale mount is held
 is installed at that point too.
 
 `CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` puts the USB transfer buffers in

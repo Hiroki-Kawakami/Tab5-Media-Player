@@ -4,15 +4,19 @@
  */
 
 #pragma once
+#include <cstddef>
 #include <string>
 #include <vector>
-#include "screen_manager.hpp"
+#include "home_page.hpp"
 #include "widgets.hpp"
 
-class FileBrowserScreen : public NavigationScreen, private ListDataSource {
+class FileBrowserPage : public HomePage, private ListDataSource {
 public:
-    FileBrowserScreen(std::string path, std::string title);
-    void build() override;
+    FileBrowserPage(std::string path, std::string title);
+    const std::string &title() const override { return title_; }
+    void build(lv_obj_t *contents) override;
+    void save_state() override;
+    bool is_under(const std::string &mount_point) const override;
 
 private:
     struct Entry {
@@ -24,6 +28,10 @@ private:
     std::string path_;
     std::string title_;
     std::vector<Entry> entries_;
+    bool loaded_ = false;
+    bool opened_ = false;
+    lv_obj_t *list_ = nullptr;
+    int32_t scroll_y_ = 0;
 
     bool load_entries();
 

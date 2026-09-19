@@ -11,7 +11,9 @@
 #include "bench/h264_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
 #include "playback/player.hpp"
+#include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
+#include "screens/player_screen.hpp"
 #include "ui_orientation.hpp"
 #include "usb_msc.h"
 
@@ -21,6 +23,7 @@ static constexpr std::size_t kMediaArenaBytes = 4 * 1024 * 1024;
 
 alignas(64) static uint8_t s_shared_sram[kSharedSramBytes];
 static lv_display_t *s_main;
+static std::weak_ptr<HomeScreen> s_home;
 
 static SharedSram shared_sram() {
     const std::size_t half = kSharedSramBytes / 2;
@@ -89,7 +92,14 @@ void app_entry() {
     mpeg2_bench_register();
 
     err = usb_msc_init([](usb_msc_event_t event, void *) {
-        if (event == USB_MSC_EVENT_DISCONNECTED) player_eject(kUsbMountPoint);
+        if (event != USB_MSC_EVENT_DISCONNECTED) return;
+        player_eject(kUsbMountPoint);
+        lv_lock();
+        lv_async_call([] {
+            PlayerScreen::eject(kUsbMountPoint);
+            if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
+        });
+        lv_unlock();
     }, nullptr);
     if (err != ESP_OK) ESP_LOGE(TAG, "usb msc init: %s", esp_err_to_name(err));
 #ifdef ESP_PLATFORM
@@ -99,7 +109,9 @@ void app_entry() {
 
     lv_async_call([] {
         ui_orientation_start(s_main);
-        screen_manager.load(std::make_shared<HomeScreen>());
+        auto home = std::make_shared<HomeScreen>();
+        s_home = home;
+        screen_manager.load(home);
         bsp_display_set_brightness(80);
     });
 }

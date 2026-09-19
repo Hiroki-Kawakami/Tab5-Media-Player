@@ -21,6 +21,7 @@ static constexpr uint32_t kRefreshPeriodMs = 300;
 static lv_display_t *s_bar;
 static bool s_bar_visible;
 static bool s_outside_down;
+static PlayerScreen *s_active;
 
 static bool is_portrait(bsp_rotation_t rotation) {
     return rotation == BSP_ROTATION_0 || rotation == BSP_ROTATION_180;
@@ -104,7 +105,12 @@ void PlayerScreen::rotate(bsp_rotation_t rotation) {
     if (openOverlay()) video_presenter_set_overlay(overlay_);
 }
 
+void PlayerScreen::eject(const std::string &mount_point) {
+    if (s_active && path_is_under(s_active->path_, mount_point)) s_active->back();
+}
+
 void PlayerScreen::onEnter() {
+    s_active = this;
     rotation_ = ui_orientation_current();
     s_bar_visible = true;
     s_outside_down = false;
@@ -131,6 +137,7 @@ void PlayerScreen::onEnter() {
 }
 
 void PlayerScreen::onExit() {
+    if (s_active == this) s_active = nullptr;
     if (timer_) {
         lv_timer_delete(timer_);
         timer_ = nullptr;

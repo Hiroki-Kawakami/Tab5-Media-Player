@@ -5,52 +5,182 @@
 
 #include "home_screen.hpp"
 
-#include <string>
+#include <algorithm>
+#include <iterator>
 #include "bsp.h"
-#include "file_browser_screen.hpp"
 #include "media_player.hpp"
+#include "screens/home/file_browser_page.hpp"
+#include "screens/home/grouped_list.hpp"
 #include "usb_msc.h"
+#include "widgets.hpp"
 
-void HomeScreen::build() {
-    createNavigation("Tab5-Media-Player");
+static constexpr int32_t kMenuWidth = 400;
 
-    auto sd_card = lv_button_create(contents_, LV_BUTTON_STYLE_PRIMARY);
-    lv_obj_set_width(sd_card, LV_PCT(100));
-    lv_button_set_text(sd_card, LV_SYMBOL_SD_CARD "  SD Card");
-    lv_obj_add_event_fn(sd_card, LV_EVENT_CLICKED, [this](lv_event_t *) { open_sd_card(); });
+const HomeScreen::MenuItem HomeScreen::kMenu[] = {
+    {LV_SYMBOL_SD_CARD, "SD Card", &HomeScreen::open_sd_card},
+    {LV_SYMBOL_USB, "USB Drive", &HomeScreen::open_usb_drive},
+};
 
-    auto usb_drive = lv_button_create(contents_, LV_BUTTON_STYLE_PRIMARY);
-    lv_obj_set_width(usb_drive, LV_PCT(100));
-    lv_button_set_text(usb_drive, LV_SYMBOL_USB "  USB Drive");
-    lv_obj_add_event_fn(usb_drive, LV_EVENT_CLICKED, [this](lv_event_t *) { open_usb_drive(); });
+static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
+    auto pane = lv_container_create(parent, bg_color);
+    lv_obj_set_flex_flow(pane, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_size(pane, LV_PCT(100), LV_PCT(100));
+    lv_obj_remove_flag(pane, LV_OBJ_FLAG_SCROLLABLE);
+    return pane;
 }
 
-void HomeScreen::open_sd_card() {
+void HomeScreen::build() {
+    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_all(root_, 0, 0);
+    lv_obj_set_style_pad_column(root_, 0, 0);
+    lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
+        if (is_landscape() != landscape_) navigate([] {});
+    });
+    layout();
+}
+
+void HomeScreen::push(std::shared_ptr<HomePage> page) {
+    page->home_ = this;
+    navigate([this, page] { stack_.push_back(page); });
+}
+
+void HomeScreen::pop() {
+    navigate([this] {
+        if (!stack_.empty()) stack_.pop_back();
+        if (stack_.empty()) selected_ = SIZE_MAX;
+    });
+}
+
+void HomeScreen::eject(const std::string &mount_point) {
+    auto under = [mount_point](const std::shared_ptr<HomePage> &page) {
+        return page->is_under(mount_point);
+    };
+    if (std::none_of(stack_.begin(), stack_.end(), under)) return;
+    navigate([this, under] {
+        stack_.erase(std::find_if(stack_.begin(), stack_.end(), under), stack_.end());
+        if (stack_.empty()) selected_ = SIZE_MAX;
+    });
+}
+
+bool HomeScreen::is_landscape() const {
+    return lv_obj_get_width(root_) > lv_obj_get_height(root_);
+}
+
+void HomeScreen::navigate(std::function<void()> change) {
+    std::weak_ptr<Screen> weak = weak_from_this();
+    lv_async_call([this, weak, change = std::move(change)] {
+        if (weak.expired()) return;
+        if (visible_) visible_->save_state();
+        visible_ = nullptr;
+        lv_obj_clean(root_);
+        change();
+        layout();
+    });
+}
+
+void HomeScreen::layout() {
+    landscape_ = is_landscape();
+    if (!landscape_) {
+        auto pane = pane_create(root_, lv_color_white());
+        if (stack_.empty()) {
+            build_menu(pane);
+        } else {
+            build_page(pane);
+        }
+        return;
+    }
+
+    auto menu = pane_create(root_, lv_color_white());
+    lv_obj_set_width(menu, kMenuWidth);
+    build_menu(menu);
+    lv_ver_separator_create(root_);
+    auto page = pane_create(root_, lv_color_white());
+    lv_obj_set_width(page, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(page, 1);
+    build_page(page);
+}
+
+void HomeScreen::build_menu(lv_obj_t *pane) {
+    lv_obj_set_style_bg_color(pane, lv_color_hex(0xeeeeee), 0);
+    auto navigation = lv_navigation_create(pane);
+    lv_navigation_title_create(navigation, "Tab5MediaPlayer");
+
+    auto contents = lv_spacer_create(pane, LV_PCT(100), LV_SIZE_CONTENT, 1);
+    lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(contents, 24, 0);
+    lv_obj_set_style_pad_row(contents, 12, 0);
+
+    auto section = lv_grouped_section_create(contents, "Storage");
+    for (std::size_t i = 0; i < std::size(kMenu); i++) {
+        auto row = lv_grouped_row_create(section, kMenu[i].icon, kMenu[i].label);
+        lv_grouped_row_set_arrow_visible(row, !landscape_);
+        lv_obj_set_state(row, LV_STATE_CHECKED, landscape_ && selected_ == i);
+        lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [this, i](lv_event_t *) { select(i); });
+    }
+}
+
+void HomeScreen::build_page(lv_obj_t *pane) {
+    if (stack_.empty()) {
+        lv_obj_set_style_bg_color(pane, lv_color_hex(0xeeeeee), 0);
+        return;
+    }
+
+    auto navigation = lv_navigation_create(pane, LV_NAVIGATION_STYLE_LIST);
+    auto contents = lv_spacer_create(pane, LV_PCT(100), LV_SIZE_CONTENT, 1);
+    lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);
+
+    HomePage *page = stack_.back().get();
+    if (!landscape_ || stack_.size() > 1) {
+        lv_navigation_back_create(navigation, page->title().c_str(),
+                                  [this](lv_event_t *) { pop(); });
+    } else {
+        lv_navigation_title_create(navigation, page->title().c_str());
+    }
+    page->build(contents);
+    visible_ = page;
+}
+
+void HomeScreen::select(std::size_t index) {
+    if (selected_ == index && !stack_.empty()) {
+        navigate([this] { stack_.resize(1); });
+        return;
+    }
+    auto page = (this->*kMenu[index].open)();
+    if (!page) return;
+    page->home_ = this;
+    navigate([this, index, page] {
+        stack_.assign(1, page);
+        selected_ = index;
+    });
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_sd_card() {
     if (!bsp_sd_is_mounted()) {
         bsp_sd_mount_config_t config = {};
         config.psram_bounce_buffer = true;
         esp_err_t err = bsp_sd_mount(kSdMountPoint, &config);
         if (err != ESP_OK) {
             show_mount_error("SD Card", "Failed to mount SD card", err);
-            return;
+            return nullptr;
         }
     }
-    screen_manager.push(std::make_shared<FileBrowserScreen>(kSdMountPoint, "SD Card"));
+    return std::make_shared<FileBrowserPage>(kSdMountPoint, "SD Card");
 }
 
-void HomeScreen::open_usb_drive() {
+std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
     if (!usb_msc_is_mounted()) {
         esp_err_t err = usb_msc_mount(kUsbMountPoint, 0);
         if (err == ESP_ERR_NOT_FOUND) {
             show_mount_error("USB Drive", "No USB drive connected", ESP_OK);
-            return;
+            return nullptr;
         }
         if (err != ESP_OK) {
             show_mount_error("USB Drive", "Failed to mount USB drive", err);
-            return;
+            return nullptr;
         }
     }
-    screen_manager.push(std::make_shared<FileBrowserScreen>(kUsbMountPoint, "USB Drive"));
+    return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
 }
 
 void HomeScreen::show_mount_error(const char *title, const char *message, esp_err_t err) {

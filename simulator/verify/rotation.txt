@@ -1,5 +1,5 @@
 settle
-tap 360 163
+tap 360 226
 settle
 tap 360 252
 settle

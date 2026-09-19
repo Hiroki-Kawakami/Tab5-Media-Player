@@ -18,6 +18,7 @@ public:
     void build() override;
     void onEnter() override;
     void onExit() override;
+    static void eject(const std::string &mount_point);
 
 private:
     bool openOverlay();

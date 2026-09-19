@@ -5,6 +5,7 @@
 
 #pragma once
 #include <cstddef>
+#include <string>
 #include "bsp.h"
 
 inline constexpr std::size_t kSharedSramBytes = 245760;
@@ -17,6 +18,11 @@ struct SharedSram {
     void *halves[2];
     std::size_t half_bytes;
 };
+
+inline bool path_is_under(const std::string &path, const std::string &mount_point) {
+    if (path.compare(0, mount_point.size(), mount_point) != 0) return false;
+    return path.size() == mount_point.size() || path[mount_point.size()] == '/';
+}
 
 void app_entry();
 

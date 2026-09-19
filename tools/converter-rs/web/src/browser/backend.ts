@@ -84,7 +84,7 @@ export class BrowserBackend implements Backend {
     if (missing.length > 0) {
       return { ok: false, text: "This browser cannot convert", detail: `Missing: ${missing.join(", ")}` };
     }
-    return { ok: true, text: "Converts in this browser", detail: "WebCodecs, MJPEG only" };
+    return { ok: true, text: "Converts in this browser", detail: "WebCodecs, MJPEG and MPEG-2" };
   }
 
   presets(): Promise<PresetInfo[]> {

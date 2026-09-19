@@ -8,12 +8,15 @@ pub mod framerate;
 pub mod jpeg;
 pub mod media;
 pub mod mjpeg;
+pub mod mpeg2;
 pub mod pcm;
 pub mod preset;
 pub mod ratecontrol;
+pub mod resample;
 pub mod size;
 pub mod spec;
 pub mod video;
+pub mod yuv;
 
 use anyhow::Result;
 

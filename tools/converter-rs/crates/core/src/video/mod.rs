@@ -38,14 +38,17 @@ h264   H.264 (libx264), 4:2:0 8-bit; B pictures are never references and one
   keyint=S            keyframe interval in seconds (default 4)
   preset=P            x264 preset (default medium)
 
-mpeg2  MPEG-2 video (mpeg2video), Main profile, progressive 4:2:0
+mpeg2  MPEG-2 video, Main profile, progressive 4:2:0 (mpeg2video; the browser
+       version has its own encoder)
   qscale=N            1-31, lower is better (default 8)
-  bitrate=R           e.g. 2M; replaces qscale
+  bitrate=R           e.g. 2M; replaces qscale (not in the browser)
   bframes=N           consecutive B pictures, 0-3 (default 2)
-  keyint=S            I picture interval in seconds (default 2)
+  keyint=S            I picture interval in seconds (default 2, at most 600
+                      frames)
   gop=G               closed or open (default closed); closed turns off
-                      scene-change I pictures
-  hq=B                yes or no (default yes): -mbd rd -trellis 1 -intra_vlc 1
+                      scene-change I pictures (the browser needs closed)
+  hq=B                yes or no (default yes): rate-distortion decisions, a
+                      slower encode (-mbd rd -trellis 1 -intra_vlc 1)
 
 mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rate
        (default)

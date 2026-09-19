@@ -3,6 +3,7 @@
 
 mod bytes;
 pub mod demux;
+mod h264;
 pub mod interleave;
 pub mod io;
 mod mkv;

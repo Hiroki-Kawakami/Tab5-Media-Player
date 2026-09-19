@@ -16,17 +16,24 @@ use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, HuffmanMode, Limit
 use tab5conv_core::media::MediaInfo;
 use tab5conv_core::mjpeg::{Reorder, Scheduler, Tally};
 use tab5conv_core::ratecontrol::Decision;
+use tab5conv_core::resample::Resampler;
 use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
 use tab5conv_core::video::{Color, VideoCodec, VideoPlan};
+use tab5conv_core::yuv::Output;
 use tab5conv_core::{Specs, audio, color, pcm, preset, video};
 use wasm_bindgen::prelude::*;
 
-const VIDEO_TRACK: usize = 0;
+mod mpeg2;
+
+use mpeg2::{Config, Mpeg2Mux, Pictures, yuv_geometry};
+use tab5conv_core::color::Matrix;
+
+pub(crate) const VIDEO_TRACK: usize = 0;
 const AUDIO_TRACK: usize = 1;
 const VIDEO_TIMESCALE: u32 = 1_200_000;
 const MAX_INTERLEAVE_BYTES: usize = 256 << 20;
 
-fn js_error(err: anyhow::Error) -> JsError {
+pub(crate) fn js_error(err: anyhow::Error) -> JsError {
     JsError::new(&format!("{err:#}"))
 }
 
@@ -235,6 +242,7 @@ struct PlanInfo {
     video_codec: &'static str,
     picture: PictureInfo,
     audio: AudioInfo,
+    unsupported: Option<String>,
 }
 
 struct Planned {
@@ -323,6 +331,7 @@ fn plan_info(info: &MediaInfo, planned: &Planned) -> PlanInfo {
             channels,
             sample_rate,
         },
+        unsupported: browser_support(planned),
     }
 }
 
@@ -513,16 +522,27 @@ pub struct DecisionOut {
     pub quality: u8,
 }
 
-#[wasm_bindgen]
-pub struct Job {
-    muxer: Mp4Muxer<JsSink>,
+struct MjpegJob {
     scheduler: Scheduler,
     tally: Tally,
     settings: MjpegSettings,
-    rate: Rate,
-    selector: FrameSelector,
     decisions: HashMap<usize, Decision>,
     order: Reorder<Encoded>,
+}
+
+enum VideoJob {
+    Mjpeg(Box<MjpegJob>),
+    Mpeg2 { config: Config, mux: Mpeg2Mux },
+}
+
+#[wasm_bindgen]
+pub struct Job {
+    muxer: Mp4Muxer<JsSink>,
+    video: VideoJob,
+    geometry: Vec<f64>,
+    source_color: Option<[f64; 2]>,
+    rate: Rate,
+    selector: FrameSelector,
     interleaver: Interleaver,
     has_audio: bool,
     audio_rate: u32,
@@ -530,16 +550,97 @@ pub struct Job {
     encoded: u64,
 }
 
-fn mux_tracks(info: &demux::Info, planned: &Planned) -> anyhow::Result<Vec<MuxTrack>> {
+fn source_matrix(info: &demux::Info, index: u32) -> Option<Matrix> {
+    let color = info.tracks.get(index as usize).and_then(|t| match &t.kind {
+        TrackKind::Video(v) => v.color,
+        _ => None,
+    });
+    color.and_then(|c| mpeg2::matrix_from_code(c.matrix as f64))
+}
+
+fn video_job(info: &demux::Info, planned: &Planned) -> anyhow::Result<VideoJob> {
     let p = &planned.video.picture;
+    let fps = p.rate.as_f64();
+    Ok(match &planned.video.codec {
+        VideoCodec::Mjpeg(settings) => VideoJob::Mjpeg(Box::new(MjpegJob {
+            scheduler: Scheduler::new(settings, fps),
+            tally: Tally::new(settings, fps),
+            settings: *settings,
+            decisions: HashMap::new(),
+            order: Reorder::default(),
+        })),
+        VideoCodec::Mpeg2(params) => {
+            let matrix = source_matrix(info, planned.video.index);
+            let config = Config::new(p.width, p.height, p.rate, params, matrix)?;
+            let mux = Mpeg2Mux::new(&config);
+            VideoJob::Mpeg2 { config, mux }
+        }
+        VideoCodec::H264(_) => {
+            bail!(
+                "the browser version does not write H.264; use the desktop app or the CLI, or choose another preset"
+            )
+        }
+    })
+}
+
+fn source_color(info: &demux::Info, index: u32) -> Option<[f64; 2]> {
+    let track = info.tracks.get(index as usize)?;
+    let TrackKind::Video(video) = &track.kind else {
+        return None;
+    };
+    match video.color {
+        Some(c) => Some([
+            f64::from(c.matrix),
+            f64::from(u8::from(c.full_range == Some(true))),
+        ]),
+        None if track.codec == Codec::H264 => Some([2.0, 0.0]),
+        None => None,
+    }
+}
+
+fn source_rotation(info: &demux::Info, index: u32) -> u32 {
+    match info.tracks.get(index as usize).map(|t| &t.kind) {
+        Some(TrackKind::Video(v)) => v.rotation,
+        _ => 0,
+    }
+}
+
+fn browser_support(planned: &Planned) -> Option<String> {
+    let p = &planned.video.picture;
+    match &planned.video.codec {
+        VideoCodec::Mjpeg(_) => None,
+        VideoCodec::Mpeg2(params) => Config::new(p.width, p.height, p.rate, params, None)
+            .err()
+            .map(|e| format!("{e:#}")),
+        VideoCodec::H264(_) => {
+            Some("the browser version does not write H.264; use the desktop app or the CLI, or choose another preset".into())
+        }
+    }
+}
+
+fn mux_tracks(
+    info: &demux::Info,
+    planned: &Planned,
+    video: &VideoJob,
+) -> anyhow::Result<Vec<MuxTrack>> {
+    let p = &planned.video.picture;
+    let (codec, timescale) = match video {
+        VideoJob::Mjpeg(_) => (MuxCodec::Mjpeg, VIDEO_TIMESCALE),
+        VideoJob::Mpeg2 { config, mux, .. } => (
+            MuxCodec::Mpeg2 {
+                header: tab5conv_core::mpeg2::sequence_header(&config.settings),
+            },
+            mux.timescale(),
+        ),
+    };
     let mut tracks = vec![MuxTrack {
-        codec: MuxCodec::Mjpeg,
+        codec,
         kind: MuxKind::Video {
             width: p.width,
             height: p.height,
             display_rotation: p.rotation.and_then(|r| r.display_rotation),
         },
-        timescale: VIDEO_TIMESCALE,
+        timescale,
     }];
     match planned.audio.action {
         AudioAction::None => {}
@@ -602,26 +703,29 @@ impl Job {
         write_at: Function,
     ) -> Result<Job, JsError> {
         let planned = plan(&media.info, preset, video, audio, &aac_rates).map_err(js_error)?;
-        let VideoCodec::Mjpeg(settings) = planned.video.codec else {
-            return Err(JsError::new(
-                "only MJPEG can be encoded in the browser for now",
-            ));
-        };
-        let tracks = mux_tracks(media.demuxer.info(), &planned).map_err(js_error)?;
+        let info = media.demuxer.info();
+        let video = video_job(info, &planned).map_err(js_error)?;
+        let tracks = mux_tracks(info, &planned, &video).map_err(js_error)?;
         let has_audio = tracks.len() > 1;
         let audio_rate = tracks.get(AUDIO_TRACK).map_or(0, |t| t.timescale);
         let rate = planned.video.picture.rate;
-        let fps = rate.as_f64();
-        let muxer = Mp4Muxer::new(JsSink { write, write_at }, tracks).map_err(js_error)?;
+        let mut muxer = Mp4Muxer::new(JsSink { write, write_at }, tracks).map_err(js_error)?;
+        if let VideoJob::Mpeg2 { mux, .. } = &video {
+            muxer.set_skip(VIDEO_TRACK, mux.skip()).map_err(js_error)?;
+        }
+        let index = planned.video.index;
+        let output = match video {
+            VideoJob::Mjpeg(_) => Output::Bt601Full,
+            VideoJob::Mpeg2 { .. } => Output::Limited,
+        };
+        let geometry = yuv_geometry(&planned.video.picture, source_rotation(info, index), output);
         Ok(Self {
             muxer,
-            scheduler: Scheduler::new(&settings, fps),
-            tally: Tally::new(&settings, fps),
-            settings,
+            video,
+            geometry,
+            source_color: source_color(info, index),
             rate,
             selector: FrameSelector::new(rate),
-            decisions: HashMap::new(),
-            order: Reorder::default(),
             interleaver: Interleaver::new(if has_audio { 2 } else { 1 }, MAX_INTERLEAVE_BYTES),
             has_audio,
             audio_rate,
@@ -630,12 +734,50 @@ impl Job {
         })
     }
 
-    pub fn limits(&self) -> Vec<u32> {
-        vec![
-            self.settings.min_quality as u32,
-            self.settings.max_frame as u32,
-            u32::from(self.settings.huffman == HuffmanMode::Optimal),
-        ]
+    fn mjpeg(&mut self) -> Result<&mut MjpegJob, JsError> {
+        match &mut self.video {
+            VideoJob::Mjpeg(job) => Ok(job),
+            _ => Err(JsError::new("not an MJPEG job")),
+        }
+    }
+
+    pub fn limits(&mut self) -> Result<Vec<u32>, JsError> {
+        let settings = &self.mjpeg()?.settings;
+        Ok(vec![
+            settings.min_quality as u32,
+            settings.max_frame as u32,
+            u32::from(settings.huffman == HuffmanMode::Optimal),
+        ])
+    }
+
+    #[wasm_bindgen(js_name = yuvGeometry)]
+    pub fn yuv_geometry(&self) -> Vec<f64> {
+        self.geometry.clone()
+    }
+
+    #[wasm_bindgen(js_name = sourceColor)]
+    pub fn source_color(&self) -> Option<Vec<f64>> {
+        self.source_color.map(|c| c.to_vec())
+    }
+
+    #[wasm_bindgen(js_name = mpeg2Config)]
+    pub fn mpeg2_config(&self) -> Option<Vec<f64>> {
+        match &self.video {
+            VideoJob::Mpeg2 { config, .. } => Some(config.to_words()),
+            _ => None,
+        }
+    }
+
+    #[wasm_bindgen(js_name = setMatrix)]
+    pub fn set_matrix(&mut self, bt709: bool) -> Result<(), JsError> {
+        let VideoJob::Mpeg2 { config, .. } = &mut self.video else {
+            return Ok(());
+        };
+        config.settings.matrix = Some(if bt709 { Matrix::Bt709 } else { Matrix::Bt601 });
+        let header = tab5conv_core::mpeg2::sequence_header(&config.settings);
+        self.muxer
+            .set_codec(VIDEO_TRACK, MuxCodec::Mpeg2 { header })
+            .map_err(js_error)
     }
 
     pub fn repeats(&mut self, pts_us: f64) -> u32 {
@@ -650,18 +792,21 @@ impl Job {
     #[wasm_bindgen(js_name = pushModel)]
     pub fn push_model(&mut self, index: u32, words: &[u32]) -> Result<(), JsError> {
         let model = SizeModel::from_words(words).ok_or_else(|| JsError::new("bad size model"))?;
-        self.scheduler.push(index as usize, model);
+        self.mjpeg()?.scheduler.push(index as usize, model);
         Ok(())
     }
 
     #[wasm_bindgen(js_name = nextDecision)]
-    pub fn next_decision(&mut self, finished: bool) -> Option<DecisionOut> {
-        let decided = self.scheduler.decide(finished)?;
-        self.decisions.insert(decided.index, decided.decision);
-        Some(DecisionOut {
+    pub fn next_decision(&mut self, finished: bool) -> Result<Option<DecisionOut>, JsError> {
+        let job = self.mjpeg()?;
+        let Some(decided) = job.scheduler.decide(finished) else {
+            return Ok(None);
+        };
+        job.decisions.insert(decided.index, decided.decision);
+        Ok(Some(DecisionOut {
             index: decided.index as u32,
             quality: decided.decision.quality,
-        })
+        }))
     }
 
     #[wasm_bindgen(js_name = addFrame)]
@@ -672,7 +817,12 @@ impl Job {
         quality: u8,
         fits: bool,
     ) -> Result<u32, JsError> {
-        self.order.push(
+        let rate = self.rate;
+        let mut encoded_count = self.encoded;
+        let VideoJob::Mjpeg(job) = &mut self.video else {
+            return Err(JsError::new("not an MJPEG job"));
+        };
+        job.order.push(
             index as usize,
             Encoded {
                 data,
@@ -680,20 +830,20 @@ impl Job {
                 fits,
             },
         );
-        while let Some(encoded) = self.order.pop() {
-            let index = self.encoded as usize;
-            let decision = self
+        while let Some(encoded) = job.order.pop() {
+            let index = encoded_count as usize;
+            let decision = job
                 .decisions
                 .remove(&index)
                 .ok_or_else(|| JsError::new(&format!("frame {index} has no decision")))?;
-            let feedback = self
+            let feedback = job
                 .tally
                 .record(index, &encoded, &decision)
                 .map_err(js_error)?;
-            self.scheduler.feedback(&feedback);
+            job.scheduler.feedback(&feedback);
             let (start, end) = (
-                self.video_ticks(self.encoded),
-                self.video_ticks(self.encoded + 1),
+                mjpeg_ticks(rate, encoded_count),
+                mjpeg_ticks(rate, encoded_count + 1),
             );
             self.interleaver.push(
                 VIDEO_TRACK,
@@ -702,24 +852,51 @@ impl Job {
                     data: encoded.data,
                     duration: (end - start) as u32,
                     key: true,
+                    offset: 0,
                 },
             );
-            self.encoded += 1;
+            encoded_count += 1;
         }
+        self.encoded = encoded_count;
         self.write_ready().map_err(js_error)?;
         Ok(self.encoded as u32)
     }
 
-    fn video_ticks(&self, frame: u64) -> u64 {
-        let ticks = frame as u128 * VIDEO_TIMESCALE as u128 * self.rate.den() as u128;
-        let num = self.rate.num() as u128;
-        ((ticks * 2 + num) / (num * 2)) as u64
+    #[wasm_bindgen(js_name = addPictures)]
+    pub fn add_pictures(
+        &mut self,
+        gop: u32,
+        data: &[u8],
+        sizes: &[u32],
+        indexes: &[u32],
+        kinds: &[u8],
+        finished: bool,
+    ) -> Result<u32, JsError> {
+        let VideoJob::Mpeg2 { mux, .. } = &mut self.video else {
+            return Err(JsError::new("not an MPEG-2 job"));
+        };
+        let pictures = Pictures {
+            data,
+            sizes,
+            indexes,
+            kinds,
+        };
+        mux.add(gop, pictures, finished, &mut self.interleaver)
+            .map_err(js_error)?;
+        self.encoded = mux.written();
+        self.write_ready().map_err(js_error)?;
+        Ok(self.encoded as u32)
     }
 
     fn write_ready(&mut self) -> anyhow::Result<()> {
         while let Some((track, sample)) = self.interleaver.pop() {
-            self.muxer
-                .write(track, &sample.data, sample.duration, sample.key)?;
+            self.muxer.write_with_offset(
+                track,
+                &sample.data,
+                sample.duration,
+                sample.key,
+                sample.offset,
+            )?;
         }
         Ok(())
     }
@@ -743,6 +920,7 @@ impl Job {
                 data,
                 duration,
                 key: true,
+                offset: 0,
             },
         );
         self.write_ready().map_err(js_error)
@@ -756,15 +934,57 @@ impl Job {
     }
 
     pub fn finish(mut self) -> Result<String, JsError> {
+        if let VideoJob::Mpeg2 { mux, .. } = &self.video
+            && !mux.is_idle()
+        {
+            return Err(JsError::new("mpeg2: pictures were left unwritten"));
+        }
         self.interleaver.close_all();
         self.write_ready().map_err(js_error)?;
         self.muxer.finish().map_err(js_error)?;
-        Ok(json(
-            &self
-                .tally
-                .finish()
-                .report(&self.settings, self.rate.as_f64()),
-        ))
+        let fps = self.rate.as_f64();
+        let report = match self.video {
+            VideoJob::Mjpeg(job) => job.tally.finish().report(&job.settings, fps),
+            VideoJob::Mpeg2 { mux, .. } => mux.report(fps),
+        };
+        Ok(json(&report))
+    }
+}
+
+fn mjpeg_ticks(rate: Rate, frame: u64) -> u64 {
+    let ticks = frame as u128 * VIDEO_TIMESCALE as u128 * rate.den() as u128;
+    let num = rate.num() as u128;
+    ((ticks * 2 + num) / (num * 2)) as u64
+}
+
+#[wasm_bindgen]
+pub struct Downscaler {
+    resampler: Resampler,
+    out: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl Downscaler {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        src_width: usize,
+        src_height: usize,
+        dst_width: usize,
+        dst_height: usize,
+    ) -> Downscaler {
+        Self {
+            resampler: Resampler::new(src_width, src_height, dst_width, dst_height),
+            out: vec![0; dst_width * dst_height * 4],
+        }
+    }
+
+    pub fn rgba(&mut self, src: &[u8]) -> Result<Vec<u8>, JsError> {
+        let (w, h) = self.resampler.src;
+        if src.len() != w * h * 4 {
+            return Err(JsError::new("downscale: frame has the wrong size"));
+        }
+        self.resampler.rgba(src, &mut self.out);
+        Ok(self.out.clone())
     }
 }
 

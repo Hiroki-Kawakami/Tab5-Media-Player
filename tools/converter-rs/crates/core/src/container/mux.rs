@@ -15,6 +15,7 @@ const MATRIX_W: u32 = 0x4000_0000;
 #[derive(Clone, Debug, PartialEq)]
 pub enum MuxCodec {
     Mjpeg,
+    Mpeg2 { header: Vec<u8> },
     Aac { config: Vec<u8> },
     Mp3,
 }
@@ -43,11 +44,19 @@ struct TrackState {
     config: MuxTrack,
     sizes: Vec<u32>,
     durations: Vec<(u32, u32)>,
+    offsets: Vec<(u32, u32)>,
     unsynced: Vec<u32>,
     chunks: Vec<(u64, u32)>,
     bytes: u64,
     duration: u64,
+    end: u64,
     skip: u32,
+}
+
+impl TrackState {
+    fn presented(&self) -> u64 {
+        self.end.saturating_sub(self.skip as u64)
+    }
 }
 
 pub struct Mp4Muxer<S: Sink> {
@@ -156,10 +165,12 @@ impl<S: Sink> Mp4Muxer<S> {
                     config,
                     sizes: Vec::new(),
                     durations: Vec::new(),
+                    offsets: Vec::new(),
                     unsynced: Vec::new(),
                     chunks: Vec::new(),
                     bytes: 0,
                     duration: 0,
+                    end: 0,
                     skip: 0,
                 })
                 .collect(),
@@ -186,6 +197,17 @@ impl<S: Sink> Mp4Muxer<S> {
     }
 
     pub fn write(&mut self, track: usize, data: &[u8], duration: u32, key: bool) -> Result<()> {
+        self.write_with_offset(track, data, duration, key, 0)
+    }
+
+    pub fn write_with_offset(
+        &mut self,
+        track: usize,
+        data: &[u8],
+        duration: u32,
+        key: bool,
+        offset: u32,
+    ) -> Result<()> {
         let Some(state) = self.tracks.get_mut(track) else {
             bail!("no track {track}");
         };
@@ -205,7 +227,14 @@ impl<S: Sink> Mp4Muxer<S> {
             Some((count, delta)) if *delta == duration => *count += 1,
             _ => state.durations.push((1, duration)),
         }
+        match state.offsets.last_mut() {
+            Some((count, value)) if *value == offset => *count += 1,
+            _ => state.offsets.push((1, offset)),
+        }
         state.bytes += size as u64;
+        state.end = state
+            .end
+            .max(state.duration + offset as u64 + duration as u64);
         state.duration += duration as u64;
         self.pos += size as u64;
         Ok(())
@@ -224,13 +253,7 @@ impl<S: Sink> Mp4Muxer<S> {
         let movie_duration = self
             .tracks
             .iter()
-            .map(|t| {
-                scale(
-                    t.duration.saturating_sub(t.skip as u64),
-                    t.config.timescale,
-                    MOVIE_TIMESCALE,
-                )
-            })
+            .map(|t| scale(t.presented(), t.config.timescale, MOVIE_TIMESCALE))
             .max()
             .unwrap_or(0);
         let long = self.pos > u32::MAX as u64;
@@ -257,8 +280,7 @@ impl<S: Sink> Mp4Muxer<S> {
 
 fn trak(w: &mut Writer, id: u32, track: &TrackState, long: bool) {
     let config = &track.config;
-    let presented = track.duration.saturating_sub(track.skip as u64);
-    let movie_duration = scale(presented, config.timescale, MOVIE_TIMESCALE);
+    let movie_duration = scale(track.presented(), config.timescale, MOVIE_TIMESCALE);
     let (video, width, height, rotation) = match config.kind {
         MuxKind::Video {
             width,
@@ -364,7 +386,7 @@ fn sample_entry(w: &mut Writer, id: u32, track: &TrackState) {
         0
     };
     match (&config.kind, &config.codec) {
-        (MuxKind::Video { width, height, .. }, _) => {
+        (MuxKind::Video { width, height, .. }, codec) => {
             w.boxed(b"mp4v", |w| {
                 w.zeros(6);
                 w.u16(1);
@@ -378,7 +400,10 @@ fn sample_entry(w: &mut Writer, id: u32, track: &TrackState) {
                 w.zeros(32);
                 w.u16(0x0018);
                 w.u16(0xFFFF);
-                esds(w, id, 0x6C, 0x11, bitrate, &[]);
+                match codec {
+                    MuxCodec::Mpeg2 { header } => esds(w, id, 0x61, 0x11, bitrate, header),
+                    _ => esds(w, id, 0x6C, 0x11, bitrate, &[]),
+                }
             });
         }
         (
@@ -419,6 +444,15 @@ fn stbl(w: &mut Writer, id: u32, track: &TrackState, long: bool) {
                 w.u32(delta);
             }
         });
+        if track.offsets.iter().any(|&(_, offset)| offset != 0) {
+            w.full(b"ctts", 0, 0, |w| {
+                w.u32(track.offsets.len() as u32);
+                for &(count, offset) in &track.offsets {
+                    w.u32(count);
+                    w.u32(offset);
+                }
+            });
+        }
         if !track.unsynced.is_empty() {
             let synced: Vec<u32> = (1..=track.sizes.len() as u32)
                 .filter(|n| track.unsynced.binary_search(n).is_err())

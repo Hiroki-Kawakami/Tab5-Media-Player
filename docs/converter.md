@@ -19,7 +19,7 @@ version), so the tool is a workspace:
 
 | crate | holds |
 |---|---|
-| `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control, MP4/MKV demuxing and MP4 muxing (`container/`) |
+| `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control, the browser's MPEG-2 encoder (`mpeg2/`), frame scaling and colour conversion (`resample.rs`, `yuv.rs`), MP4/MKV demuxing and MP4 muxing (`container/`) |
 | `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline, batch output naming |
 | `crates/cli` | `tab5conv` itself |
 | `crates/gui` | the desktop app (Tauri); its UI is `web/` |
@@ -87,10 +87,10 @@ nix develop -c bash -c 'cd tools/converter-rs/web && npm run check:jpeg'  # wasm
 ```
 
 The same UI runs with `web/src/browser/` as its backend: an engine worker
-(demux, WebCodecs decoding, scaling and rotation on an `OffscreenCanvas`,
-rate control, muxing) and a pool of encoder workers (MJPEG analysis and
-encoding). The output is written to the origin private file system and
-then downloaded.
+(demux, WebCodecs decoding, rate control, muxing), scale workers (each
+decoded frame's YUV to the stored picture) and a pool of encoder workers
+(MJPEG analysis and encoding, or whole MPEG-2 GOPs). The output is written
+to the origin private file system and then downloaded.
 
 - **Containers are our own, not ffmpeg.wasm or a JS library** (licence and
   size). `core/src/container/` reads MP4/MOV and MKV/WebM and writes MP4.
@@ -110,20 +110,52 @@ then downloaded.
   decoder and encoder queues are long; the interleaver's own limit
   (256 MiB queued) is only a guard against a track that stops producing.
   `npm run e2e` checks the lag against the CLI's. The video timescale is
-  1/1200000, the same as the CLI's MJPEG output.
-- **Only MJPEG is written for now**, with the CLI's encoder and rate control
-  (`core/src/mjpeg.rs` holds the loop both use). Only size models travel
+  the CLI's: 1/1200000 for MJPEG, and for MPEG-2 the one ffmpeg picks (the
+  rate's numerator, doubled until it reaches 10000).
+- **Only MJPEG and MPEG-2 are written; H.264 is left to the CLI and the
+  desktop app** (`tiny`). The browser's own H.264 encoder may be
+  Baseline-only, and without B pictures the player has nothing to drop when
+  it runs late (see [H.264](#h264)); `small` already converts in the browser
+  at several times real time. MPEG-2 has its own
+  encoder, see [below](#the-browsers-mpeg-2-encoder). MJPEG uses the CLI's
+  encoder and rate control (`core/src/mjpeg.rs` holds the loop both use). Only size models travel
   between workers; each frame's coefficients stay in the worker that will
   encode it. `+simd128` (`.cargo/config.toml`) leaves the output identical
   to the native encoder.
-- **No `willReadFrequently` on the canvas.** It makes the canvas CPU-backed
-  and `drawImage` then took 16 ms a frame; without it a 30 s 1080p clip
-  converts in about 6 s instead of 16 s.
-- **Container colour tags are passed as `VideoDecoderConfig.colorSpace`.**
-  Chrome ignored a WebM's `smpte170m` otherwise (24 dB against the CLI,
-  44 dB with it). Untagged HD is still read as BT.709 by the browser and as
-  BT.601 by ffmpeg, so files made by ffmpeg without tags differ by about
-  25 dB; real footage is tagged.
+- **Frames are taken as YUV, not drawn to a canvas.** `scale.worker.ts`
+  gets each `VideoFrame`, copies its planes out with `copyTo` (I420, NV12,
+  I422 and I444), and `core/src/yuv.rs` scales, rotates, crops and
+  converts them into the stored picture: the source's own values for
+  MPEG-2, BT.601 full range for MJPEG. Only frames `copyTo` cannot give in
+  8-bit YUV go through the canvas and RGB. `core/tests/resample.rs` checks
+  the result against ffmpeg's `scale`/`crop`/`transpose` chain (67-75 dB)
+  and its matrix conversion (48-58 dB).
+  - **Chrome's canvas cannot downscale.** `drawImage` and
+    `createImageBitmap` always resample with a 2x2 bilinear, whatever
+    `imageSmoothingQuality` or `resizeQuality` say (`"pixelated"` gave
+    byte-identical output). Beyond 2x pixels are skipped: a pattern with
+    every third pixel white came out all black at 1/3, and 1080p to 360p
+    broke thin lines. `core/src/resample.rs` is a separable bicubic like
+    ffmpeg's default `scale` (49-54 dB against it); the canvas fallback uses
+    it too for reductions beyond 2x.
+  - **Chrome's colour conversion cannot be steered.** It decodes untagged
+    HD H.264 as BT.709, while ffmpeg (and so the CLI) takes it as BT.601,
+    and it ignored a `colorSpace` in `VideoDecoderConfig` for H.264 on
+    macOS (passing BT.601, a matrix only or nothing gave byte-identical
+    output). Through RGB an untagged 1080p clip came out at 23.6 dB against
+    the source instead of the CLI's 31.0, and MPEG-2 lost 1-1.5 dB of
+    chroma to the round trip. The colour now comes from the container's
+    tags or the H.264 SPS (`container/h264.rs`; ffmpeg's MP4s carry it only
+    there), untagged H.264 is BT.601 limited range as in ffmpeg, and other
+    untagged codecs fall back to the frame's `colorSpace`. Container tags
+    are still passed to the decoder for the canvas fallback: Chrome ignored a
+    WebM's `smpte170m` otherwise.
+  - **No `willReadFrequently` on the fallback canvas.** It makes the canvas
+    CPU-backed and `drawImage` then took 16 ms a frame.
+  - **The scale workers get at most 8 frames at a time**; decoder frames
+    held elsewhere can stall the decoder. The resampler's weights are
+    fixed-point tables applied in two passes, the shape a wasm SIMD loop or
+    a WebGPU shader would take.
 - **Chrome encodes AAC only at 44.1 and 48 kHz** (checked on macOS). The
   browser plans audio with `AudioSpec::plan_for`, which raises an unset
   sample rate to the next supported one and rejects an explicit one it
@@ -141,7 +173,10 @@ then downloaded.
   builds in the shell); `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER` points
   at its `wasm-ld` instead.
 - **`npm run e2e` uses the installed Google Chrome** through
-  `playwright-core`; Playwright's own Chromium has no H.264 or AAC.
+  `playwright-core`; Playwright's own Chromium has no H.264 or AAC. It
+  serves `dist/`, so run `npm run build` first. It converts the inputs with
+  the `default` and `small` presets and compares both with the CLI, all
+  three planes above 35 dB.
 
 ## Several inputs
 
@@ -278,10 +313,69 @@ pictures and a 12-frame GOP. So `mpeg2` sets every one of those itself
 - **The frame rate is left as it is.** `mpeg2video` accepts rates that MPEG-2
   has no code for (15 and 12 fps, for example), and the player times frames by
   the container's timestamps anyway.
+- **GOPs stop at 600 frames.** `mpeg2video` cuts anything longer to 600 with
+  a warning, so the plan does the same and the label says what is written.
 
 To check an output against the player's decoder, copy the stream out with
 `-c copy -f mpeg2video` and follow the bit-exact procedure in
 [`mpeg2.md`](mpeg2.md#verifying).
+
+### The browser's MPEG-2 encoder
+
+`core/src/mpeg2/` writes what the player's decoder takes and nothing more:
+frame pictures, frame prediction and frame DCT, one slice per macroblock
+row, the default matrices, `intra_vlc_format=1`, half-pel motion. The CLI
+keeps using `mpeg2video`.
+
+```sh
+nix develop -c cargo build --release --manifest-path tools/converter-rs/Cargo.toml -p tab5conv-core --example mpeg2
+tools/converter-rs/target/release/examples/mpeg2 640 360 30 8 2 60 1 out.m2v recon.yuv < in.yuv   # W H FPS QSCALE BFRAMES KEYINT HQ
+```
+
+- **It reconstructs with the same integer IDCT as `ffmpeg -idct simple`**,
+  mismatch control included, so its reference pictures are byte-identical
+  to what `mpeg2_dec` and ffmpeg decode and nothing drifts.
+  `core/tests/mpeg2.rs` checks the reconstruction against ffmpeg for the
+  elementary stream and the muxed MP4. The example writes the
+  reconstruction, to compare with `mpeg2_dec_test` as in
+  [`mpeg2.md`](mpeg2.md#verifying); I/P/B, 1-3 B pictures, `qscale` 1-31,
+  640x360, 1280x720, 720x1280 and 350x198 all matched.
+- **`hq` means rate-distortion decisions**: every candidate (intra,
+  forward, backward, both, skip) is coded and the cheapest
+  `SSE + λ·bits` wins, with a trellis over each block's run/level codes.
+  λ is `0.85·qscale²`, what `mpeg2video` uses with `-mbd rd`. `hq=no`
+  picks the mode by SAD.
+- **Against `mpeg2video` with the CLI's settings** (`qscale=8`, 2 B
+  pictures, `hq`), same input: 1.5% larger at the same PSNR on real footage
+  scaled to 360p, 16-46% smaller on `testsrc2` at 360p, 720p and 720x1280.
+- **`f_code` is chosen per picture** from the vectors motion estimation
+  found (at most ±63.5 pixels), so slow pictures do not pay for range they
+  do not use.
+- **Vectors never point outside the coded picture.** A B picture's skip
+  reuses the previous macroblock's vector, which can point outside at the
+  current position; such a skip is not taken.
+- **One worker encodes one closed GOP.** Splitting pictures by rows would
+  need `SharedArrayBuffer`, i.e. COOP/COEP headers that GitHub Pages cannot
+  send. So the browser rejects `gop=open` (a GOP would depend on the
+  previous one). `bitrate=` is rejected too: `qscale` gives the sizes the
+  player needs, so the browser has no rate control. Adding it would mean a
+  budget per GOP decided before the GOP is dispatched, with the actual
+  sizes fed back late.
+- **Up to 256 MiB of frames are queued for the encoders.** Every worker
+  needs its own GOP's frames waiting to be busy. At 720p that limits the
+  parallelism to about three GOPs of 60 frames.
+- **The source's matrix is kept and tagged** in `sequence_display_extension`;
+  an untagged source stays untagged, as the CLI's `mpeg2video` output does.
+- **Against the CLI** (`small`, ffmpeg-scaled source as the reference): the
+  same PSNR within ±0.1 dB luma and slightly better chroma, at 59-89% of the
+  bitrate, on `testsrc2` (tagged and untagged) and real footage.
+- **Muxing with B pictures.** Samples are in decode order with `ctts`, and
+  an edit list starts the track one frame in, as ffmpeg writes it. The
+  edit's length is the end of the last composition time, not the sum of the
+  sample durations; the sum cut the last frame off.
+- **Speed** (Chrome, 10-core Mac): a 30 s 1080p clip converts to `small` in
+  about 5.5 s and to 720p in about 12 s. The MJPEG default takes about
+  9.7 s, 2 s more than through the canvas, for the bicubic 1080p to 720p.
 
 ## MJPEG
 

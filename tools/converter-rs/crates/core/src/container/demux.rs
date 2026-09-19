@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 
 use super::io::Source;
-use super::{mkv, mp4};
+use super::{h264, mkv, mp4};
 use crate::framerate::Rate;
 use crate::media::{self, MediaInfo};
 
@@ -269,13 +269,26 @@ pub fn open<S: Source>(mut source: S) -> Result<Demuxer<S>> {
         bail!("file is too short");
     }
     source.read_at(0, &mut head)?;
-    if head[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
-        return Ok(Demuxer::Mkv(mkv::Demuxer::open(source)?));
+    let mut demuxer = if head[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        Demuxer::Mkv(mkv::Demuxer::open(source)?)
+    } else if mp4::is_mp4(&head) {
+        Demuxer::Mp4(mp4::Demuxer::open(source)?)
+    } else {
+        bail!("unsupported container (only MP4, MOV, MKV and WebM can be read)")
+    };
+    let info = match &mut demuxer {
+        Demuxer::Mp4(d) => d.info_mut(),
+        Demuxer::Mkv(d) => d.info_mut(),
+    };
+    for track in &mut info.tracks {
+        if let TrackKind::Video(video) = &mut track.kind
+            && video.color.is_none()
+            && track.codec == Codec::H264
+        {
+            video.color = h264::avcc_color(&track.extradata);
+        }
     }
-    if mp4::is_mp4(&head) {
-        return Ok(Demuxer::Mp4(mp4::Demuxer::open(source)?));
-    }
-    bail!("unsupported container (only MP4, MOV, MKV and WebM can be read)")
+    Ok(demuxer)
 }
 
 impl<S: Source> Demuxer<S> {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-mod dct;
+pub(crate) mod dct;
 mod estimate;
 mod huffman;
 mod tables;

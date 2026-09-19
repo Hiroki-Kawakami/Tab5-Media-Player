@@ -698,6 +698,10 @@ impl<S: Source> Demuxer<S> {
         &self.info
     }
 
+    pub(super) fn info_mut(&mut self) -> &mut Info {
+        &mut self.info
+    }
+
     pub fn select(&mut self, tracks: &[u32]) {
         for (i, samples) in self.tracks.iter_mut().enumerate() {
             samples.selected = tracks.contains(&(i as u32));

@@ -9,6 +9,7 @@ use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
 
 pub const KEYS: [&str; 6] = ["qscale", "bitrate", "bframes", "keyint", "gop", "hq"];
 const MAX_BFRAMES: u32 = 3;
+pub const MAX_GOP: u32 = 600;
 const DEFAULT_QSCALE: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,7 +68,7 @@ impl Mpeg2 {
         let picture = self
             .picture
             .resolve("mpeg2", video, false, Color::Source, None)?;
-        let keyint = picture.keyint(self.keyint);
+        let keyint = picture.keyint(self.keyint).min(MAX_GOP);
         let rate = match self.rate {
             Rate::Qscale(q) => format!("qscale {q}"),
             Rate::Bitrate(bitrate) => format!("{} kbit/s", bitrate as f64 / 1000.0),
@@ -138,6 +139,11 @@ mod tests {
                 hq: false,
             }
         );
+    }
+
+    #[test]
+    fn gop_is_capped_like_ffmpeg() {
+        assert_eq!(params("mpeg2,keyint=60").keyint, MAX_GOP);
     }
 
     #[test]

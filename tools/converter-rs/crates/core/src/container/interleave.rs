@@ -8,6 +8,7 @@ pub struct Sample {
     pub data: Vec<u8>,
     pub duration: u32,
     pub key: bool,
+    pub offset: u32,
 }
 
 pub struct Interleaver {
@@ -71,6 +72,7 @@ mod tests {
             data: vec![0; 100],
             duration: 1,
             key: true,
+            offset: 0,
         }
     }
 

@@ -6,9 +6,11 @@ settle
 tap 360 428
 wait 1200
 capture rotation_portrait_poster.jpg
-tap 221 1113
+tap 316 1136
 wait 1000
 capture rotation_portrait_playing.jpg
+tap 316 1136
+wait 300
 imu rot90
 wait 800
 capture rotation_90.jpg
@@ -23,7 +25,7 @@ wait 600
 capture rotation_180_bar_hidden.jpg
 tap 360 640
 wait 600
-tap 654 166
+tap 676 1240
 settle
 capture rotation_180_list.jpg
 imu rot90

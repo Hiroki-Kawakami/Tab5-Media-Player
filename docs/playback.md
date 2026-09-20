@@ -554,9 +554,23 @@ wrap.
 ## The overlay
 
 `video_presenter` owns the framebuffers while the player is open. The main
-LVGL display is hidden. The controls are a separate LVGL display
-(`DisplayRenderMode::Partial`) along the bottom edge as the user sees it:
-160 px in landscape, 240 px in portrait, where the button row wraps.
+LVGL display is hidden. The controls are two separate LVGL displays
+(`DisplayRenderMode::Partial`) along the top and bottom edges as the user sees
+them: an 80 px top bar, and a bottom bar of 160 px in landscape and 272 px in
+portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resources.md)).
+
+- **The bars hide themselves after 4 s without a touch while playing.**
+  Inactivity is `lv_display_get_inactive_time(nullptr)`, which covers both
+  bars; a touch on the video goes through the outside-touch callback instead,
+  so it calls `lv_display_trigger_activity` itself. Holding a slider still
+  sends no touch events, so a pressed slider blocks hiding explicitly. When
+  playback finishes or fails the bars come back on their own, otherwise a clip
+  that ended hidden leaves nothing on screen to act on.
+- **Time and seek position refresh on a 500 ms timer but redraw at most once a
+  second.** LVGL invalidates on every `lv_label_set_text`, so the labels are
+  only set when the displayed second changes; `lv_slider_set_value` already
+  returns early on an unchanged value. Nothing is refreshed while hidden
+  (a hidden display drops invalidations anyway).
 
 - **While the bar is shown, video and LVGL share framebuffer 0 and the video
   tears.** Composing the bar into every frame tied LVGL's rendering to the
@@ -586,9 +600,9 @@ LVGL display is hidden. The controls are a separate LVGL display
   (`bsp_display_wait_draw()`) before handing the edge back. The bar is created
   hidden (`DisplayManagerConfig::visible`), otherwise its first render would
   land on whatever is on screen before the presenter starts.
-- **Rotating recreates the bar.** Its logical size changes with the rotation,
-  so `PlayerScreen::rotate` deletes it, sets the presenter's rotation, creates
-  a new one and applies its insets. The presenter applies a rotation between
+- **Rotating recreates the bars.** Their logical size changes with the rotation,
+  so `PlayerScreen::rotate` deletes them, sets the presenter's rotation, creates
+  new ones and applies their insets. The presenter applies a rotation between
   frames and draws the held frame again.
 - **CPU writes to a framebuffer are synced to the cache immediately.** PPA and
   the JPEG decoder invalidate their output without writing it back, so a
@@ -659,7 +673,10 @@ LVGL display is hidden. The controls are a separate LVGL display
 `simulator/verify/player.txt` goes Home → SD Card → `Movies/`, then exercises
 poster, play, pause, hiding and showing the bar, seek, restart, loop and back
 on `Movies/clip.avi`. It then plays `Movies/ffmpeg.avi`. It injects `imu rot90`
-once the player is open, so the bar coordinates are the landscape ones.
+once the player is open, so the bar coordinates are the landscape ones. The bars
+hide 4 s after the last touch while playing, so a script that plays longer than
+that before tapping a control taps the video first to bring them back (unless the
+clip has finished, which shows them again).
 `simulator/verify/rotation.txt` plays `Movies/portrait.avi` (720x1280, the
 direct path) and turns it through all four rotations, then checks the list
 after going back. `simulator/verify/mkv.txt` turns `Movies/rotated.mkv`

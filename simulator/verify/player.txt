@@ -9,10 +9,10 @@ wait 1200
 imu rot90
 wait 800
 capture player_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 800
 capture player_playing.jpg
-tap 612 1060
+tap 640 1080
 wait 400
 capture player_paused.jpg
 tap 300 640
@@ -21,24 +21,30 @@ capture player_bar_hidden.jpg
 tap 300 640
 wait 600
 capture player_bar_shown.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 400
 wait 300
 up
 wait 1000
 capture player_seek.jpg
-tap 612 892
+tap 640 1210
 wait 800
 capture player_restart.jpg
-tap 612 800
+tap 640 860
 wait 300
-tap 612 1060
+tap 640 1080
 wait 3500
 capture player_looped.jpg
-tap 612 1213
+wait 2000
+capture player_autohide.jpg
+tap 300 640
+wait 600
+tap 640 1080
+wait 300
+tap 40 1235
 settle
 capture player_left.jpg
 imu rot0
@@ -48,9 +54,11 @@ tap 360 340
 wait 1200
 imu rot90
 wait 800
-tap 612 1060
+tap 640 1080
 wait 1500
 capture player_ffmpeg.jpg
-tap 612 1213
+tap 640 1080
+wait 300
+tap 40 1235
 settle
 imu release

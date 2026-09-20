@@ -9,21 +9,21 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_h264_aac_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mp4_h264_aac_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mp4_h264_aac_seek.jpg
 wait 4000
 capture mp4_h264_aac_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -33,21 +33,21 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_tail_mp3_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mp4_tail_mp3_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mp4_tail_mp3_seek.jpg
 wait 4000
 capture mp4_tail_mp3_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -57,21 +57,21 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_mjpeg_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mp4_mjpeg_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mp4_mjpeg_seek.jpg
 wait 4000
 capture mp4_mjpeg_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -81,10 +81,10 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_opus_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 5500
 capture mp4_opus_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -94,10 +94,10 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_pcm_mov_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 5500
 capture mp4_pcm_mov_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -116,10 +116,10 @@ wait 800
 capture mp4_rotated_180.jpg
 imu rot270
 wait 800
-tap 108 220
+tap 80 200
 wait 2000
 capture mp4_rotated_270_playing.jpg
-tap 108 67
+tap 680 44
 settle
 imu rot0
 wait 800
@@ -129,10 +129,10 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_noaudio_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 4000
 capture mp4_noaudio_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -141,12 +141,14 @@ tap 360 720
 wait 1200
 imu rot90
 wait 800
-tap 612 800
+tap 640 860
 wait 300
-tap 612 1060
+tap 640 1080
 wait 8000
 capture mp4_coarse_looped.jpg
-tap 612 1213
+tap 300 640
+wait 600
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -156,21 +158,21 @@ wait 1200
 imu rot90
 wait 800
 capture mp4_separate_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mp4_separate_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mp4_separate_seek.jpg
 wait 4000
 capture mp4_separate_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -179,18 +181,18 @@ tap 360 880
 wait 1200
 imu rot90
 wait 800
-tap 612 1060
+tap 640 1080
 wait 2000
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 2000
 capture mp4_separate_big_seek.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800

@@ -9,21 +9,21 @@ wait 1200
 imu rot90
 wait 800
 capture mpeg2_ibbp_mp3_avi_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mpeg2_ibbp_mp3_avi_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mpeg2_ibbp_mp3_avi_seek.jpg
 wait 4000
 capture mpeg2_ibbp_mp3_avi_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -33,21 +33,21 @@ wait 1200
 imu rot90
 wait 800
 capture mpeg2_ibbp_aac_mkv_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mpeg2_ibbp_aac_mkv_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mpeg2_ibbp_aac_mkv_seek.jpg
 wait 4000
 capture mpeg2_ibbp_aac_mkv_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -57,21 +57,21 @@ wait 1200
 imu rot90
 wait 800
 capture mpeg2_ibbp_aac_mp4_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mpeg2_ibbp_aac_mp4_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mpeg2_ibbp_aac_mp4_seek.jpg
 wait 4000
 capture mpeg2_ibbp_aac_mp4_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -81,21 +81,21 @@ wait 1200
 imu rot90
 wait 800
 capture mpeg2_ip_mp3_avi_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mpeg2_ip_mp3_avi_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mpeg2_ip_mp3_avi_seek.jpg
 wait 4000
 capture mpeg2_ip_mp3_avi_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -105,21 +105,21 @@ wait 1200
 imu rot90
 wait 800
 capture mpeg2_720p_mkv_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 1500
 capture mpeg2_720p_mkv_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1500
 capture mpeg2_720p_mkv_seek.jpg
 wait 3000
 capture mpeg2_720p_mkv_end.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800

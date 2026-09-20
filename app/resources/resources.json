@@ -1,0 +1,33 @@
+{
+  "font": {
+    "icon_72": {
+      "size": 72,
+      "icon": {
+        "TABLER_PLAYER_PLAY": "tabler/player-play.svg",
+        "TABLER_PLAYER_PAUSE": "tabler/player-pause.svg"
+      }
+    },
+    "icon_48": {
+      "size": 48,
+      "icon": {
+        "TABLER_PLAYER_TRACK_PREV": "tabler/player-track-prev.svg",
+        "TABLER_PLAYER_TRACK_NEXT": "tabler/player-track-next.svg"
+      }
+    },
+    "icon_36": {
+      "size": 36,
+      "icon": {
+        "TABLER_CHEVRON_LEFT": "tabler/chevron-left.svg",
+        "TABLER_INFO_CIRCLE": "tabler/info-circle.svg",
+        "TABLER_ADJUSTMENTS_HORIZONTAL": "tabler/adjustments-horizontal.svg",
+        "TABLER_REPEAT": "tabler/repeat.svg",
+        "TABLER_REPEAT_ONCE": "tabler/repeat-once.svg",
+        "TABLER_REPEAT_OFF": "tabler/repeat-off.svg",
+        "TABLER_VOLUME": "tabler/volume.svg",
+        "TABLER_VOLUME_2": "tabler/volume-2.svg",
+        "TABLER_VOLUME_3": "tabler/volume-3.svg",
+        "TABLER_VOLUME_4": "tabler/volume-4.svg"
+      }
+    }
+  }
+}

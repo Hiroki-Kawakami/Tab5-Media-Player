@@ -8,21 +8,21 @@ wait 1500
 capture h264_avi_poster.jpg
 imu rot90
 wait 800
-tap 612 1060
+tap 640 1080
 wait 2000
 capture h264_avi_playing.jpg
-tap 612 1060
+tap 640 1080
 wait 400
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1200
 capture h264_avi_seek.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -32,23 +32,25 @@ wait 1500
 imu rot90
 wait 800
 capture h264_mkv_poster.jpg
-tap 612 800
+tap 640 860
 wait 300
-tap 612 1060
+tap 640 1080
 wait 2500
 capture h264_mkv_playing.jpg
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 540
+move 600 330
 wait 300
 up
 wait 1500
 capture h264_mkv_seek.jpg
 wait 4500
 capture h264_mkv_looped.jpg
-tap 612 1213
+tap 300 640
+wait 600
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -58,9 +60,9 @@ wait 1500
 capture h264_720p_portrait.jpg
 imu rot270
 wait 800
-tap 108 220
+tap 80 200
 wait 2500
 capture h264_720p_playing.jpg
-tap 108 67
+tap 680 44
 settle
 imu release

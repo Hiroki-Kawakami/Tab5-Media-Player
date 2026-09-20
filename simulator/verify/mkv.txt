@@ -17,10 +17,10 @@ wait 800
 capture mkv_rotated_180.jpg
 imu rot270
 wait 800
-tap 108 220
+tap 80 200
 wait 1500
 capture mkv_rotated_270_playing.jpg
-tap 108 67
+tap 680 44
 settle
 imu rot0
 wait 800
@@ -30,26 +30,29 @@ wait 1200
 imu rot90
 wait 800
 capture mkv_poster.jpg
-tap 612 1060
+tap 640 1080
 wait 800
 capture mkv_playing.jpg
-tap 612 1060
+tap 640 1080
 wait 400
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 1000
 capture mkv_seek.jpg
-tap 612 800
+tap 640 860
 wait 300
-tap 612 1060
+tap 640 1080
 wait 3500
 capture mkv_looped.jpg
-tap 612 1213
+wait 2000
+tap 300 640
+wait 600
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -58,9 +61,9 @@ tap 360 640
 wait 1200
 imu rot90
 wait 800
-tap 612 1060
+tap 640 1080
 wait 5500
 capture mkv_pcm_finished.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu release

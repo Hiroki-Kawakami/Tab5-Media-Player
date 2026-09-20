@@ -584,6 +584,12 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 - **Framebuffer 0, because both BSPs agree on it.** The device's partial blits
   go to the framebuffer last flushed, the simulator's always to 0, and a
   partial flush presents index 0 on both.
+- **The bars render in RGB565 while the panel stays RGB888.**
+  `DisplayManagerConfig::color_format` picks the LVGL format independently of
+  the panel; the BSP blit converts on the way in (Partial needs
+  `BSP_DISPLAY_CAP_CONVERT`, which the MIPI DSI panel and the simulator have).
+  The video is the content that wants the extra bits, not the controls, and
+  565 halves both the draw buffers and the bytes LVGL writes per redraw.
 - **The clip is a rectangle.** Insets can cover several edges (a bar on top
   and bottom works), not a hole in the middle: one PPA block cannot skip its
   centre. MJPEG passes it to `jpeg_ppa_pipeline` as `out_clip` (strips outside

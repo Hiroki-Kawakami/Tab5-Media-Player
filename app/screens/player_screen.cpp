@@ -192,6 +192,7 @@ bool PlayerScreen::openOverlay() {
     DisplayManagerConfig config = {};
     config.present_mode = DisplayPresentMode::Immediate;
     config.render_mode = DisplayRenderMode::Partial;
+    config.color_format = LV_COLOR_FORMAT_RGB565;
     config.make_default = false;
     config.visible = false;
     config.viewport.rotation = rotation_;

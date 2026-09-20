@@ -247,7 +247,10 @@ void PlayerScreen::setMode(UiMode mode) {
         lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
-    if (mode != UiMode::Info) lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
+    if (mode != UiMode::Info) {
+        lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
+        player_suspend_video(false);
+    }
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
@@ -370,9 +373,11 @@ void PlayerScreen::showStartError(const std::string &message) {
 
 void PlayerScreen::populateInfo() {
     if (!info_) return;
+    player_suspend_video(false);
     lv_obj_clean(info_);
     player_info_panel_build(info_, name_, player_media_summary(),
-                            [this] { requestMode(UiMode::Bars); });
+                            [this] { requestMode(UiMode::Bars); },
+                            [](bool scrolling) { player_suspend_video(scrolling); });
     lv_obj_update_layout(info_);
 }
 

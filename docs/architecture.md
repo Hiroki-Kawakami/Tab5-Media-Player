@@ -155,6 +155,14 @@ time it is shown instead of being refreshed in place. It is also the only part
 of the overlay that scrolls: three sections do not fit the panel on either
 orientation.
 
+Scrolling it is the one place where the UI and the video are both busy at once,
+and on the board neither keeps up: the scroll crawls and playback stalls. So a
+scroll suspends the video — `player_suspend_video()` drops video packets as
+they come due instead of decoding them, which leaves the reader pacing the file
+as before and the audio playing, and the picture picks up at the next keyframe
+when the scroll ends. It is cleared whenever the panel is built or left, since
+a panel torn down mid-scroll never sends the closing event.
+
 ## Home screen
 
 `HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu

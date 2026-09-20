@@ -193,9 +193,14 @@ static void build_audio(lv_obj_t *contents, const MediaSummary &summary) {
 }
 
 void player_info_panel_build(lv_obj_t *root, const std::string &name, const MediaSummary &summary,
-                             std::function<void()> on_close) {
+                             std::function<void()> on_close,
+                             std::function<void(bool)> on_scroll) {
     auto contents = player_panel_build(root, "Media Info", std::move(on_close));
     lv_obj_set_scroll_dir(contents, LV_DIR_VER);
+    lv_obj_add_event_fn(contents, LV_EVENT_SCROLL_BEGIN,
+                        [on_scroll](lv_event_t *) { on_scroll(true); });
+    lv_obj_add_event_fn(contents, LV_EVENT_SCROLL_END,
+                        [on_scroll](lv_event_t *) { on_scroll(false); });
 
     build_general(contents, name, summary);
     if (!summary.valid) return;

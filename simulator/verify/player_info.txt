@@ -62,7 +62,17 @@ wait 500
 tap 676 40
 wait 800
 capture player_info_h264.jpg
+down 360 1000
+wait 30
+move 360 820
+wait 30
+move 360 700
+wait 30
+up
+wait 600
 tap 668 692
+wait 1000
+capture player_info_resumed.jpg
 wait 600
 settle
 tap 40 40

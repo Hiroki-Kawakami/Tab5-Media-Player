@@ -106,10 +106,11 @@ Home out once instead of rotating it afterwards.
 
 ## Player overlay
 
-The bars and the settings panel are LVGL objects on one full-screen display of
-its own, created when the player opens. It cannot be the main display: during
-playback the main display's draw buffers are the SRAM the decoder took (see
-[Shared SRAM buffer](#shared-sram-buffer)), so LVGL has nowhere to render.
+The bars and the two panels (Settings and Media Info) are LVGL objects on one
+full-screen display of its own, created when the player opens. It cannot be the
+main display: during playback the main display's draw buffers are the SRAM the
+decoder took (see [Shared SRAM buffer](#shared-sram-buffer)), so LVGL has
+nowhere to render.
 `buffer.lines` is kept small because only the bars are ever invalidated; the
 default of a quarter screen would be idle PSRAM.
 
@@ -136,16 +137,23 @@ one of the two, which holds as long as LVGL never invalidates the video area:
   with a black band the size of a bar, visible until the next frame overwrites
   it — which, paused, never comes.
 
-Switching between the bars, the settings panel and nothing at all is then plain
-LVGL plus a clip change, in this order: hide what is leaving, `lv_refr_now` and
+Switching between the bars, a panel and nothing at all is then plain LVGL plus
+a clip change, in this order: hide what is leaving, `lv_refr_now` and
 `bsp_display_wait_draw` so it is painted out, move the insets, and only then
 show what is arriving. Either half in the other order lets the video draw over
 the UI, or leaves the UI's last pixels sitting in the video area.
 
-The panel holds the settings that can be changed mid-playback: Color Mode is
-not one of them, because reconfiguring the panel format tears the video path
-down. Bars and panel are never up at the same time, so the volume they both
-show is read again when one of them is shown rather than kept in sync.
+The Settings panel holds the settings that can be changed mid-playback: Color
+Mode is not one of them, because reconfiguring the panel format tears the video
+path down. Bars and panels are never up at the same time, so the volume they
+both show is read again when one of them is shown rather than kept in sync.
+
+Media Info takes the same area as Settings, so both are one case in the inset
+logic. Its rows come from a `MediaSummary` the player freezes when the file
+opens, and which rows exist at all depends on the file, so it is rebuilt every
+time it is shown instead of being refreshed in place. It is also the only part
+of the overlay that scrolls: three sections do not fit the panel on either
+orientation.
 
 ## Home screen
 

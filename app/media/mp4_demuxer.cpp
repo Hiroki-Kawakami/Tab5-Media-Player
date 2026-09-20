@@ -86,6 +86,7 @@ bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena) {
 
     info_.audio.codec = map_audio(mp4->audio.codec);
     info_.audio.sample_rate = mp4->audio.sample_rate;
+    info_.audio.bitrate_bps = mp4->audio.bitrate_bps;
     info_.audio.channels = mp4->audio.channels;
     info_.audio.bits = mp4->audio.bits_per_sample;
     info_.audio.codec_private.assign(mp4->audio.codec_private,

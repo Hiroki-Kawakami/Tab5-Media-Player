@@ -86,6 +86,7 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
 
     info_.audio.codec = map_audio(avi->audio.codec);
     info_.audio.sample_rate = avi->audio.sample_rate;
+    info_.audio.bitrate_bps = avi->audio.bitrate_bps;
     info_.audio.channels = avi->audio.channels;
     info_.audio.bits = avi->audio.bits_per_sample;
     info_.audio.block_align = avi->audio.block_align;

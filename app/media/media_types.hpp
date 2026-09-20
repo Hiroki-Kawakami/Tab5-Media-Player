@@ -32,6 +32,7 @@ struct TrackInfo {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t sample_rate = 0;
+    uint32_t bitrate_bps = 0;
     uint8_t channels = 0;
     uint8_t bits = 0;
     uint16_t block_align = 0;

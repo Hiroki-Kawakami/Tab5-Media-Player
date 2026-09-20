@@ -6,6 +6,7 @@
 #include "player_screen.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
+#include "screens/player/info_panel.hpp"
 #include "screens/player/settings_panel.hpp"
 #include "settings.hpp"
 #include "video/video_presenter.hpp"
@@ -20,8 +21,8 @@
 static constexpr int32_t kTopBarHeight = 80;
 static constexpr int32_t kLandscapeBottomHeight = 160;
 static constexpr int32_t kPortraitBottomHeight = 272;
-static constexpr int32_t kPortraitSettingsHeight = 640;
-static constexpr int32_t kLandscapeSettingsWidth = 560;
+static constexpr int32_t kPortraitPanelHeight = 640;
+static constexpr int32_t kLandscapePanelWidth = 560;
 static constexpr uint32_t kRefreshPeriodMs = 500;
 static constexpr uint32_t kAutoStartPollMs = 100;
 static constexpr uint32_t kAutoHideMs = 4000;
@@ -136,10 +137,11 @@ VideoInsets PlayerScreen::insets() const {
         add_inset(insets, panel_edge(Edge::Bottom, rotation_), bottom_height(rotation_));
         break;
     case UiMode::Settings:
+    case UiMode::Info:
         if (is_portrait(rotation_)) {
-            add_inset(insets, panel_edge(Edge::Bottom, rotation_), kPortraitSettingsHeight);
+            add_inset(insets, panel_edge(Edge::Bottom, rotation_), kPortraitPanelHeight);
         } else {
-            add_inset(insets, panel_edge(Edge::Right, rotation_), kLandscapeSettingsWidth);
+            add_inset(insets, panel_edge(Edge::Right, rotation_), kLandscapePanelWidth);
         }
         break;
     default:
@@ -171,6 +173,8 @@ void PlayerScreen::closeOverlay() {
     top_bar_ = nullptr;
     bottom_bar_ = nullptr;
     settings_ = nullptr;
+    info_ = nullptr;
+    info_button_ = nullptr;
     title_label_ = nullptr;
     play_label_ = nullptr;
     repeat_label_ = nullptr;
@@ -210,13 +214,19 @@ void PlayerScreen::buildUi() {
     buildBottomBar(bottom_bar_, portrait);
 
     settings_ = portrait
-        ? create_bar(screen, lv_pct(100), kPortraitSettingsHeight, LV_ALIGN_BOTTOM_MID)
-        : create_bar(screen, kLandscapeSettingsWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+        ? create_bar(screen, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(screen, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
     player_settings_panel_build(settings_, [this] { requestMode(UiMode::Bars); });
+
+    info_ = portrait
+        ? create_bar(screen, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(screen, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    if (mode_ == UiMode::Info) populateInfo();
 
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
+    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
 
     /* A bar sits where it was created until the layout runs, and every area it
      * leaves on the way is painted with the screen behind it -- black, over the
@@ -237,6 +247,7 @@ void PlayerScreen::setMode(UiMode mode) {
         lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    if (mode != UiMode::Info) lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
@@ -248,6 +259,9 @@ void PlayerScreen::setMode(UiMode mode) {
     } else if (mode == UiMode::Settings) {
         lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
         lv_obj_remove_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    } else if (mode == UiMode::Info) {
+        populateInfo();
+        lv_obj_remove_flag(info_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode == UiMode::Hidden) return;
     lv_display_trigger_activity(ui_);
@@ -279,6 +293,8 @@ void PlayerScreen::rotate(bsp_rotation_t rotation) {
         lv_obj_invalidate(bottom_bar_);
     } else if (mode_ == UiMode::Settings) {
         lv_obj_invalidate(settings_);
+    } else if (mode_ == UiMode::Info) {
+        lv_obj_invalidate(info_);
     }
     refresh();
 }
@@ -352,6 +368,14 @@ void PlayerScreen::showStartError(const std::string &message) {
     });
 }
 
+void PlayerScreen::populateInfo() {
+    if (!info_) return;
+    lv_obj_clean(info_);
+    player_info_panel_build(info_, name_, player_media_summary(),
+                            [this] { requestMode(UiMode::Bars); });
+    lv_obj_update_layout(info_);
+}
+
 void PlayerScreen::buildTopBar(lv_obj_t *parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -383,8 +407,11 @@ void PlayerScreen::buildTopBar(lv_obj_t *parent) {
 
     lv_spacer_create(parent, 1, 1, 1);
 
-    lv_obj_t *info = create_icon_button(parent, kIconButton, &icon_36, TABLER_INFO_CIRCLE);
-    lv_obj_add_state(info, LV_STATE_DISABLED);
+    info_button_ = create_icon_button(parent, kIconButton, &icon_36, TABLER_INFO_CIRCLE);
+    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !player_media_summary().valid);
+    lv_obj_add_event_fn(info_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        requestMode(UiMode::Info);
+    });
 
     lv_obj_update_layout(parent);
     const int32_t room = lv_obj_get_width(parent) - 2 * kTopBarPadding - kTopBarPadding -
@@ -625,6 +652,7 @@ void PlayerScreen::refresh() {
     const PlayerStatus status = player_status();
     const bool playing = status.state == PlayerState::Playing;
     if (playing != playing_) setPlayIcon(playing);
+    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !player_media_summary().valid);
 
     const bool known = status.duration_us > 0 && status.state != PlayerState::Loading;
     setTime(total_label_, &shown_total_s_, known ? status.duration_us : -1);

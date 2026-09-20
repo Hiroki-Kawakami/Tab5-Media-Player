@@ -1,0 +1,80 @@
+settle
+tap 360 226
+settle
+tap 360 252
+settle
+tap 360 252
+wait 2000
+tap 360 640
+wait 500
+capture player_info_bars.jpg
+tap 676 40
+wait 800
+capture player_info_portrait.jpg
+down 360 1000
+wait 30
+move 360 820
+wait 30
+move 360 700
+wait 30
+up
+wait 600
+capture player_info_scrolled.jpg
+imu rot90
+wait 1500
+capture player_info_landscape.jpg
+imu rot0
+wait 1500
+tap 668 692
+wait 800
+capture player_info_closed.jpg
+settle
+tap 40 40
+settle
+tap 360 480
+wait 2000
+tap 360 640
+wait 500
+tap 676 40
+wait 800
+down 360 1000
+wait 30
+move 360 820
+wait 30
+move 360 700
+wait 30
+up
+wait 600
+capture player_info_mkv.jpg
+tap 668 692
+wait 600
+settle
+tap 40 40
+settle
+tap 50 60
+settle
+tap 360 480
+settle
+tap 360 160
+wait 2000
+tap 360 640
+wait 500
+tap 676 40
+wait 800
+capture player_info_h264.jpg
+tap 668 692
+wait 600
+settle
+tap 40 40
+settle
+tap 50 60
+settle
+tap 360 640
+wait 2000
+tap 676 40
+wait 800
+capture player_info_unavailable.jpg
+settle
+tap 40 40
+settle
+imu release

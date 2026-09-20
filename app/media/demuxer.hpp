@@ -20,6 +20,7 @@ public:
     virtual bool seek(int64_t pts_us, int64_t *landed_us) = 0;
     virtual bool keyframeBefore(int64_t, int64_t *) const { return false; }
 
+    off_t bytes() const { return buffer_ ? mb_size(buffer_) : 0; }
     void release(uint32_t ref) { mb_release(buffer_, ref); }
     void releaseAll() { mb_release_all(buffer_); }
     void interrupt(bool interrupted) { mb_interrupt(buffer_, interrupted); }
@@ -37,4 +38,5 @@ bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<ui
                            uint8_t *nal_length_size);
 
 bool demuxer_supports(const char *name);
+const char *demuxer_format_name(const std::string &path);
 std::unique_ptr<Demuxer> demuxer_create(const std::string &path);

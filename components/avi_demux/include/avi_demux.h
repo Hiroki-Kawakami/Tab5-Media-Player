@@ -45,6 +45,7 @@ typedef struct {
     struct {
         avi_audio_codec_t codec;
         uint32_t sample_rate;
+        uint32_t bitrate_bps;
         uint32_t max_frame_bytes;
         uint8_t channels;
         uint8_t bits_per_sample;

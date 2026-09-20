@@ -44,6 +44,7 @@ typedef struct {
     struct {
         mp4_audio_codec_t codec;
         uint32_t sample_rate;
+        uint32_t bitrate_bps;
         uint8_t channels;
         uint8_t bits_per_sample;
         const uint8_t *codec_private;

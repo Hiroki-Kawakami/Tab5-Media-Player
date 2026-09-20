@@ -225,6 +225,7 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
                 demux->info.audio.codec = audio_codec_of(wave.format_tag);
                 demux->info.audio.channels = (uint8_t)wave.channels;
                 demux->info.audio.sample_rate = wave.samples_per_sec;
+                demux->info.audio.bitrate_bps = wave.avg_bytes_per_sec * 8;
                 demux->info.audio.bits_per_sample =
                     wave.bits_per_sample ? (uint8_t)wave.bits_per_sample : 16;
                 demux->info.audio.block_align = wave.block_align;

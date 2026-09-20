@@ -15,15 +15,16 @@ namespace {
 
 struct Format {
     const char *suffix;
+    const char *name;
     std::unique_ptr<Demuxer> (*create)();
 };
 
 constexpr Format kFormats[] = {
-    { ".avi", avi_demuxer_create },
-    { ".mkv", mkv_demuxer_create },
-    { ".mp4", mp4_demuxer_create },
-    { ".m4v", mp4_demuxer_create },
-    { ".mov", mp4_demuxer_create },
+    { ".avi", "AVI", avi_demuxer_create },
+    { ".mkv", "Matroska", mkv_demuxer_create },
+    { ".mp4", "MP4", mp4_demuxer_create },
+    { ".m4v", "MP4", mp4_demuxer_create },
+    { ".mov", "QuickTime", mp4_demuxer_create },
 };
 
 bool starts_with_start_code(const uint8_t *data, std::size_t size) {
@@ -84,6 +85,11 @@ bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<ui
 
 bool demuxer_supports(const char *name) {
     return format_of(name) != nullptr;
+}
+
+const char *demuxer_format_name(const std::string &path) {
+    const Format *format = format_of(path.c_str());
+    return format ? format->name : "";
 }
 
 std::unique_ptr<Demuxer> demuxer_create(const std::string &path) {

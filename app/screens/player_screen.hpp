@@ -24,7 +24,7 @@ public:
 
 private:
     enum class RepeatMode { Off, All, One };
-    enum class UiMode { Hidden, Bars, Settings };
+    enum class UiMode { Hidden, Bars, Settings, Info };
 
     bool openOverlay();
     void closeOverlay();
@@ -33,6 +33,7 @@ private:
     void setMode(UiMode mode);
     void requestMode(UiMode mode);
     VideoInsets insets() const;
+    void populateInfo();
     void buildTopBar(lv_obj_t *parent);
     void buildBottomBar(lv_obj_t *parent, bool portrait);
     void buildTransport(lv_obj_t *parent, bool repeat_only);
@@ -62,6 +63,8 @@ private:
     lv_obj_t *top_bar_ = nullptr;
     lv_obj_t *bottom_bar_ = nullptr;
     lv_obj_t *settings_ = nullptr;
+    lv_obj_t *info_ = nullptr;
+    lv_obj_t *info_button_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;

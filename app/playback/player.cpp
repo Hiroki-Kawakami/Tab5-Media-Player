@@ -92,6 +92,7 @@ static bool s_loop;
 static std::atomic<bool> s_reader_eof{false};
 
 static PlayerState s_state = PlayerState::Idle;
+static MediaSummary s_summary;
 static std::string s_error;
 static std::string s_audio_note;
 static CodecId s_audio_codec = CodecId::None;
@@ -350,6 +351,7 @@ static void close_source() {
 
 static void reset_timeline() {
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_summary = {};
     s_audio_note.clear();
     s_audio_codec = CodecId::None;
     s_video_codec = CodecId::None;
@@ -412,7 +414,38 @@ static void handle_open(const std::string &path) {
     std::string note;
     s_have_audio = audio_out_open(info.audio, info.video.codec == CodecId::Mjpeg, &note);
 
+    MediaSummary summary;
+    summary.valid = true;
+    summary.container = demuxer_format_name(path);
+    summary.file_bytes = s_demuxer->bytes();
+    summary.duration_us = info.duration_us;
+    summary.seekable = info.seekable;
+    summary.video.codec = info.video.codec;
+    summary.video.width = info.video.width;
+    summary.video.height = info.video.height;
+    summary.video.frame_interval_us = info.frame_interval_us;
+    summary.video.rotation = info.video.rotation;
+    if (info.video.codec == CodecId::H264 && !info.video.codec_private.empty()) {
+        h264_dec_stream_info_t stream = {};
+        const char *failure = nullptr;
+        if (h264_dec_probe(info.video.codec_private.data(), info.video.codec_private.size(), 0,
+                           &stream, &failure)) {
+            summary.video.profile_idc = stream.profile_idc;
+            summary.video.level_idc = stream.level_idc;
+        }
+    }
+    summary.audio.codec = info.audio.codec;
+    summary.audio.sample_rate = info.audio.sample_rate;
+    summary.audio.bitrate_bps = info.audio.bitrate_bps;
+    summary.audio.channels = info.audio.channels;
+    summary.audio.bits = info.audio.bits;
+    if (!summary.audio.bitrate_bps && info.audio.codec == CodecId::Pcm) {
+        summary.audio.bitrate_bps = info.audio.sample_rate * info.audio.channels * info.audio.bits;
+    }
+    summary.audio.note = note;
+
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_summary = summary;
     s_duration_us = info.duration_us;
     s_interval_us = info.frame_interval_us;
     s_seekable = info.seekable;
@@ -678,6 +711,16 @@ void player_restart() { send_command(Command::Restart); }
 void player_seek(int64_t position_us) { send_command(Command::Seek, nullptr, position_us); }
 void player_set_loop(bool loop) { send_command(Command::Loop, nullptr, loop ? 1 : 0); }
 void player_eject(const std::string &mount_point) { send_command(Command::Eject, &mount_point); }
+
+MediaSummary player_media_summary() {
+    MediaSummary summary;
+    if (!s_lock) return summary;
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    summary = s_summary;
+    xSemaphoreGive(s_lock);
+    return summary;
+}
 
 PlayerStatus player_status() {
     PlayerStatus status = {};

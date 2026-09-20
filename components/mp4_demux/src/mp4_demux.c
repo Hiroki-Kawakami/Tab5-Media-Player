@@ -119,6 +119,7 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     uint32_t sample_rate;
+    uint32_t bitrate_bps;
     uint8_t channels;
     uint8_t bits;
     span_t codec_private;
@@ -563,7 +564,8 @@ static bool read_descriptor(span_t *span, uint8_t *tag, span_t *body) {
     return true;
 }
 
-static bool parse_esds(span_t esds, uint8_t *object_type, span_t *decoder_info) {
+static bool parse_esds(span_t esds, uint8_t *object_type, uint32_t *avg_bitrate,
+                       span_t *decoder_info) {
     if (span_size(esds) < 4) return false;
     esds.p += 4;
     uint8_t tag = 0;
@@ -584,6 +586,7 @@ static bool parse_esds(span_t esds, uint8_t *object_type, span_t *decoder_info) 
         if (tag != DESC_DECODER_CONFIG) continue;
         if (span_size(config) < DECODER_CONFIG_BYTES) return false;
         *object_type = config.p[0];
+        if (avg_bitrate) *avg_bitrate = be32(config.p + 9);
         config.p += DECODER_CONFIG_BYTES;
         decoder_info->p = decoder_info->end = NULL;
         span_t info;
@@ -627,7 +630,8 @@ static void identify_video(track_t *track) {
         track->codec = MP4_VIDEO_CODEC_MJPEG;
         break;
     case ENTRY_MP4V:
-        if (!span_find(children, BOX_ESDS, &body) || !parse_esds(body, &object_type, &info)) break;
+        if (!span_find(children, BOX_ESDS, &body) ||
+            !parse_esds(body, &object_type, NULL, &info)) break;
         if (object_type == OTI_MJPEG) {
             track->codec = MP4_VIDEO_CODEC_MJPEG;
         } else if (object_type >= OTI_MPEG2_VIDEO_FIRST && object_type <= OTI_MPEG2_VIDEO_LAST) {
@@ -680,7 +684,8 @@ static void identify_audio(track_t *track) {
     span_t info;
     switch (type) {
     case ENTRY_MP4A:
-        if (!find_esds(children, &body) || !parse_esds(body, &object_type, &info)) break;
+        if (!find_esds(children, &body) ||
+            !parse_esds(body, &object_type, &track->bitrate_bps, &info)) break;
         if (object_type == OTI_MPEG4_AUDIO ||
             (object_type >= OTI_MPEG2_AAC_FIRST && object_type <= OTI_MPEG2_AAC_LAST)) {
             track->codec = MP4_AUDIO_CODEC_AAC;
@@ -865,6 +870,7 @@ static void fill_info(mp4_demux_t *demux) {
         apply_edits(audio, demux->movie_timescale);
         demux->info.audio.codec = (mp4_audio_codec_t)audio->codec;
         demux->info.audio.sample_rate = audio->sample_rate;
+        demux->info.audio.bitrate_bps = audio->bitrate_bps;
         demux->info.audio.channels = audio->channels;
         demux->info.audio.bits_per_sample = audio->bits ? audio->bits : 16;
         if (audio->opus) {

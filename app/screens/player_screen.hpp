@@ -10,6 +10,8 @@
 
 #include <string>
 
+struct VideoInsets;
+
 class PlayerScreen : public NavigationScreen {
 public:
     PlayerScreen(std::string name, std::string path)
@@ -19,15 +21,18 @@ public:
     void onEnter() override;
     void onExit() override;
     static void eject(const std::string &mount_point);
-    bsp_rotation_t rotation() const { return rotation_; }
-    void refresh();
 
 private:
     enum class RepeatMode { Off, All, One };
+    enum class UiMode { Hidden, Bars, Settings };
 
     bool openOverlay();
     void closeOverlay();
+    void buildUi();
     void rotate(bsp_rotation_t rotation);
+    void setMode(UiMode mode);
+    void requestMode(UiMode mode);
+    VideoInsets insets() const;
     void buildTopBar(lv_obj_t *parent);
     void buildBottomBar(lv_obj_t *parent, bool portrait);
     void buildTransport(lv_obj_t *parent, bool repeat_only);
@@ -35,9 +40,11 @@ private:
     void buildVolumeRow(lv_obj_t *parent);
     void setRepeatMode(RepeatMode mode);
     void setPlayIcon(bool playing);
+    void setVolume(int32_t volume);
     void setVolumeIcon(int32_t volume);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
     void tick();
+    void refresh();
     void showStartError(const std::string &message);
 
     std::string name_;
@@ -48,10 +55,13 @@ private:
     bool stop_bars_shown_ = false;
     uint32_t auto_start_tick_ = 0;
     RepeatMode repeat_ = RepeatMode::Off;
+    UiMode mode_ = UiMode::Bars;
     bsp_rotation_t rotation_ = BSP_ROTATION_0;
 
-    lv_display_t *top_ = nullptr;
-    lv_display_t *bottom_ = nullptr;
+    lv_display_t *ui_ = nullptr;
+    lv_obj_t *top_bar_ = nullptr;
+    lv_obj_t *bottom_bar_ = nullptr;
+    lv_obj_t *settings_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;

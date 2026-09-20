@@ -6,6 +6,7 @@
 #include "player_screen.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
+#include "screens/player/settings_panel.hpp"
 #include "settings.hpp"
 #include "video/video_presenter.hpp"
 #include "ui_orientation.hpp"
@@ -19,6 +20,8 @@
 static constexpr int32_t kTopBarHeight = 80;
 static constexpr int32_t kLandscapeBottomHeight = 160;
 static constexpr int32_t kPortraitBottomHeight = 272;
+static constexpr int32_t kPortraitSettingsHeight = 640;
+static constexpr int32_t kLandscapeSettingsWidth = 560;
 static constexpr uint32_t kRefreshPeriodMs = 500;
 static constexpr uint32_t kAutoStartPollMs = 100;
 static constexpr uint32_t kAutoHideMs = 4000;
@@ -32,16 +35,14 @@ static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kVolumeSlider = 240;
 static constexpr int32_t kSeekGap = 16;
 static constexpr int32_t kTopBarPadding = 8;
+static constexpr int32_t kOverlayBufferLines = 32;
 
 static constexpr uint32_t kBarColor = 0x101010;
 static constexpr uint32_t kMessageColor = 0xffb74d;
 
-enum class Edge { Top, Bottom, Left, Right };
+/* Clockwise, so a rotation is a shift along the cycle. */
+enum class Edge { Top, Right, Bottom, Left };
 
-static lv_display_t *s_top;
-static lv_display_t *s_bottom;
-static bool s_bar_visible;
-static bool s_outside_down;
 static PlayerScreen *s_active;
 
 static bool is_portrait(bsp_rotation_t rotation) {
@@ -52,76 +53,17 @@ static int32_t bottom_height(bsp_rotation_t rotation) {
     return is_portrait(rotation) ? kPortraitBottomHeight : kLandscapeBottomHeight;
 }
 
-static Edge panel_edge(bsp_rotation_t rotation, bool bottom) {
-    switch (rotation) {
-    case BSP_ROTATION_90:  return bottom ? Edge::Right : Edge::Left;
-    case BSP_ROTATION_180: return bottom ? Edge::Top : Edge::Bottom;
-    case BSP_ROTATION_270: return bottom ? Edge::Left : Edge::Right;
-    default:               return bottom ? Edge::Bottom : Edge::Top;
-    }
-}
-
-static bsp_rect_t edge_area(Edge edge, int32_t thickness, bsp_size_t panel) {
-    switch (edge) {
-    case Edge::Top:    return { { 0, 0 }, { panel.width, thickness } };
-    case Edge::Bottom: return { { 0, panel.height - thickness }, { panel.width, thickness } };
-    case Edge::Left:   return { { 0, 0 }, { thickness, panel.height } };
-    default:           return { { panel.width - thickness, 0 }, { thickness, panel.height } };
-    }
+static Edge panel_edge(Edge edge, bsp_rotation_t rotation) {
+    return (Edge)(((int)edge - (int)rotation + 4) % 4);
 }
 
 static void add_inset(VideoInsets &insets, Edge edge, int32_t thickness) {
     switch (edge) {
     case Edge::Top:    insets.top = thickness; break;
+    case Edge::Right:  insets.right = thickness; break;
     case Edge::Bottom: insets.bottom = thickness; break;
-    case Edge::Left:   insets.left = thickness; break;
-    default:           insets.right = thickness; break;
+    default:           insets.left = thickness; break;
     }
-}
-
-static VideoInsets bar_insets(bsp_rotation_t rotation) {
-    VideoInsets insets;
-    add_inset(insets, panel_edge(rotation, false), kTopBarHeight);
-    add_inset(insets, panel_edge(rotation, true), bottom_height(rotation));
-    return insets;
-}
-
-static void show_bars(bsp_rotation_t rotation) {
-    video_presenter_set_ui_insets(bar_insets(rotation));
-    display_manager.set_visible(s_top, true);
-    display_manager.set_visible(s_bottom, true);
-}
-
-static void hide_bars() {
-    display_manager.set_visible(s_top, false);
-    display_manager.set_visible(s_bottom, false);
-    bsp_display_wait_draw();
-    video_presenter_set_ui_insets({});
-}
-
-static void set_bar_visible(bool visible) {
-    if (!s_top || !s_bottom || !s_active || visible == s_bar_visible) return;
-    s_bar_visible = visible;
-    if (visible) {
-        show_bars(s_active->rotation());
-        lv_display_trigger_activity(s_bottom);
-        s_active->refresh();
-    } else {
-        hide_bars();
-    }
-}
-
-static void outside_touch(const bsp_touch_point_t *, int count, void *) {
-    if (count <= 0) {
-        s_outside_down = false;
-        return;
-    }
-    if (s_outside_down) return;
-    s_outside_down = true;
-
-    lv_lock();
-    lv_async_call([] { set_bar_visible(!s_bar_visible); });
-    lv_unlock();
 }
 
 static void format_time(char *text, size_t size, int64_t seconds) {
@@ -135,13 +77,12 @@ static void format_time(char *text, size_t size, int64_t seconds) {
     }
 }
 
-static lv_obj_t *create_bar_root(lv_display_t *display) {
-    lv_obj_t *root = lv_display_get_screen_active(display);
-    lv_obj_set_style_bg_color(root, lv_color_hex(kBarColor), 0);
-    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(root, lv_color_white(), 0);
-    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-    return root;
+static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
+    lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
+    lv_obj_set_size(bar, width, height);
+    lv_obj_align(bar, align, 0, 0);
+    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    return bar;
 }
 
 static lv_obj_t *create_side_box(lv_obj_t *parent, int32_t width) {
@@ -187,48 +128,49 @@ void PlayerScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_black(), 0);
 }
 
+VideoInsets PlayerScreen::insets() const {
+    VideoInsets insets;
+    switch (mode_) {
+    case UiMode::Bars:
+        add_inset(insets, panel_edge(Edge::Top, rotation_), kTopBarHeight);
+        add_inset(insets, panel_edge(Edge::Bottom, rotation_), bottom_height(rotation_));
+        break;
+    case UiMode::Settings:
+        if (is_portrait(rotation_)) {
+            add_inset(insets, panel_edge(Edge::Bottom, rotation_), kPortraitSettingsHeight);
+        } else {
+            add_inset(insets, panel_edge(Edge::Right, rotation_), kLandscapeSettingsWidth);
+        }
+        break;
+    default:
+        break;
+    }
+    return insets;
+}
+
 bool PlayerScreen::openOverlay() {
-    const bsp_size_t panel = bsp_display_get_size();
     DisplayManagerConfig config = {};
     config.present_mode = DisplayPresentMode::Immediate;
     config.render_mode = DisplayRenderMode::Partial;
     config.color_format = LV_COLOR_FORMAT_RGB565;
     config.make_default = false;
-    config.visible = false;
     config.viewport.rotation = rotation_;
-
-    config.viewport.output_area = edge_area(panel_edge(rotation_, false), kTopBarHeight, panel);
-    if (display_manager.create_display(config, &top_) != ESP_OK) {
-        top_ = nullptr;
+    config.buffer.lines = kOverlayBufferLines;
+    if (display_manager.create_display(config, &ui_) != ESP_OK) {
+        ui_ = nullptr;
         return false;
     }
-    config.viewport.output_area = edge_area(panel_edge(rotation_, true), bottom_height(rotation_), panel);
-    if (display_manager.create_display(config, &bottom_) != ESP_OK) {
-        display_manager.delete_display(top_);
-        top_ = nullptr;
-        bottom_ = nullptr;
-        return false;
-    }
-
-    shown_elapsed_s_ = -2;
-    shown_total_s_ = -2;
-    shown_message_.clear();
-    buildTopBar(create_bar_root(top_));
-    buildBottomBar(create_bar_root(bottom_), is_portrait(rotation_));
-    s_top = top_;
-    s_bottom = bottom_;
-    refresh();
+    buildUi();
     return true;
 }
 
 void PlayerScreen::closeOverlay() {
-    if (!top_) return;
-    s_top = nullptr;
-    s_bottom = nullptr;
-    display_manager.delete_display(bottom_);
-    display_manager.delete_display(top_);
-    top_ = nullptr;
-    bottom_ = nullptr;
+    if (!ui_) return;
+    display_manager.delete_display(ui_);
+    ui_ = nullptr;
+    top_bar_ = nullptr;
+    bottom_bar_ = nullptr;
+    settings_ = nullptr;
     title_label_ = nullptr;
     play_label_ = nullptr;
     repeat_label_ = nullptr;
@@ -240,16 +182,105 @@ void PlayerScreen::closeOverlay() {
     scrubbing_ = false;
 }
 
+void PlayerScreen::buildUi() {
+    lv_obj_t *screen = lv_display_get_screen_active(ui_);
+    lv_obj_clean(screen);
+    lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(screen, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    shown_elapsed_s_ = -2;
+    shown_total_s_ = -2;
+    shown_message_.clear();
+
+    /* Styleless, so a press changes nothing and never invalidates the video. */
+    lv_obj_t *video = lv_container_create(screen);
+    lv_obj_set_size(video, lv_pct(100), lv_pct(100));
+    lv_obj_remove_flag(video, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_fn(video, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        requestMode(mode_ == UiMode::Hidden ? UiMode::Bars : UiMode::Hidden);
+    });
+
+    const bool portrait = is_portrait(rotation_);
+    top_bar_ = create_bar(screen, lv_pct(100), kTopBarHeight, LV_ALIGN_TOP_MID);
+    buildTopBar(top_bar_);
+    bottom_bar_ = create_bar(screen, lv_pct(100), bottom_height(rotation_), LV_ALIGN_BOTTOM_MID);
+    buildBottomBar(bottom_bar_, portrait);
+
+    settings_ = portrait
+        ? create_bar(screen, lv_pct(100), kPortraitSettingsHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(screen, kLandscapeSettingsWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    player_settings_panel_build(settings_, [this] { requestMode(UiMode::Bars); });
+
+    lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
+    lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
+    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
+
+    /* A bar sits where it was created until the layout runs, and every area it
+     * leaves on the way is painted with the screen behind it -- black, over the
+     * video. Settle the layout here, where the invalidations can still be
+     * dropped, so only the final areas are ever drawn. */
+    lv_obj_update_layout(screen);
+}
+
+void PlayerScreen::setMode(UiMode mode) {
+    if (!ui_ || mode == mode_) return;
+    mode_ = mode;
+
+    /* The UI leaving an area has to be painted out before the video takes it
+     * back, and the video has to be clipped out of an area before the UI is
+     * drawn into it. */
+    if (mode != UiMode::Bars) {
+        lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    lv_refr_now(ui_);
+    bsp_display_wait_draw();
+    video_presenter_set_ui_insets(insets());
+
+    if (mode == UiMode::Bars) {
+        setVolume(settings_volume());
+        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    } else if (mode == UiMode::Settings) {
+        lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
+        lv_obj_remove_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (mode == UiMode::Hidden) return;
+    lv_display_trigger_activity(ui_);
+    refresh();
+}
+
+void PlayerScreen::requestMode(UiMode mode) {
+    lv_async_call([this, mode] {
+        if (s_active == this) setMode(mode);
+    });
+}
+
 void PlayerScreen::rotate(bsp_rotation_t rotation) {
     if (rotation == rotation_) return;
-    closeOverlay();
     rotation_ = rotation;
     video_presenter_set_rotation(rotation);
-    if (!openOverlay()) {
-        video_presenter_set_ui_insets({});
-    } else if (s_bar_visible) {
-        show_bars(rotation_);
+    if (!ui_) return;
+
+    /* The rotation resizes the screen, which invalidates all of it. Only the
+     * bars are redrawn from here; the video clears and repaints its own area. */
+    lv_refr_now(ui_);
+    lv_display_enable_invalidation(ui_, false);
+    display_manager.set_rotation(ui_, rotation);
+    buildUi();
+    lv_display_enable_invalidation(ui_, true);
+    video_presenter_set_ui_insets(insets());
+    if (mode_ == UiMode::Bars) {
+        lv_obj_invalidate(top_bar_);
+        lv_obj_invalidate(bottom_bar_);
+    } else if (mode_ == UiMode::Settings) {
+        lv_obj_invalidate(settings_);
     }
+    refresh();
 }
 
 void PlayerScreen::eject(const std::string &mount_point) {
@@ -259,8 +290,7 @@ void PlayerScreen::eject(const std::string &mount_point) {
 void PlayerScreen::onEnter() {
     s_active = this;
     rotation_ = ui_orientation_current();
-    s_bar_visible = true;
-    s_outside_down = false;
+    mode_ = UiMode::Bars;
     if (!openOverlay()) return;
 
     const SharedSram sram = media_player_acquire_sram();
@@ -270,14 +300,20 @@ void PlayerScreen::onEnter() {
         showStartError(video_presenter_error());
         return;
     }
-    show_bars(rotation_);
+    video_presenter_set_ui_insets(insets());
     ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
         static_cast<PlayerScreen *>(arg)->rotate(rotation);
     }, this);
-    display_manager.set_outside_touch_callback(outside_touch);
+
+    /* The first LVGL pass covers the whole screen, video area included. Let it
+     * land before any frame can: started the other way round the board shows
+     * one frame, paints it out and only then plays. */
+    lv_refr_now(ui_);
+    bsp_display_wait_draw();
+
     player_open(path_);
     player_set_loop(repeat_ != RepeatMode::Off);
-    lv_display_trigger_activity(bottom_);
+    lv_display_trigger_activity(ui_);
 
     auto_start_ = true;
     auto_start_tick_ = 0;
@@ -293,8 +329,7 @@ void PlayerScreen::onExit() {
         lv_timer_delete(timer_);
         timer_ = nullptr;
     }
-    if (!top_) return;
-    display_manager.set_outside_touch_callback(nullptr);
+    if (!ui_) return;
     player_close();
     closeOverlay();
     video_presenter_end();
@@ -429,7 +464,7 @@ void PlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
             player_play();
         }
         setPlayIcon(!playing_);
-        lv_display_trigger_activity(bottom_);
+        lv_display_trigger_activity(ui_);
     });
 
     lv_obj_t *next = create_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT);
@@ -505,13 +540,14 @@ void PlayerScreen::buildVolumeRow(lv_obj_t *parent) {
                         [](lv_event_t *) { settings_commit(); });
     settings_volume_observe(volume_slider_, [this](int volume) {
         if (lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
-        lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
-        setVolumeIcon(volume);
+        setVolume(volume);
     });
 
     lv_obj_t *settings = create_icon_button(create_side_box(row, side), kIconButton,
                                             &icon_36, TABLER_ADJUSTMENTS_HORIZONTAL);
-    lv_obj_add_state(settings, LV_STATE_DISABLED);
+    lv_obj_add_event_fn(settings, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        requestMode(UiMode::Settings);
+    });
 }
 
 void PlayerScreen::setRepeatMode(RepeatMode mode) {
@@ -527,6 +563,12 @@ void PlayerScreen::setRepeatMode(RepeatMode mode) {
 void PlayerScreen::setPlayIcon(bool playing) {
     playing_ = playing;
     if (play_label_) lv_label_set_text(play_label_, playing ? TABLER_PLAYER_PAUSE : TABLER_PLAYER_PLAY);
+}
+
+void PlayerScreen::setVolume(int32_t volume) {
+    if (!volume_slider_) return;
+    lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
+    setVolumeIcon(volume);
 }
 
 void PlayerScreen::setVolumeIcon(int32_t volume) {
@@ -554,7 +596,7 @@ void PlayerScreen::tick() {
         if (state == PlayerState::Paused) {
             player_play();
             setPlayIcon(true);
-            lv_display_trigger_activity(bottom_);
+            lv_display_trigger_activity(ui_);
             auto_start_tick_ = lv_tick_get();
         }
     }
@@ -564,21 +606,21 @@ void PlayerScreen::tick() {
         stop_bars_shown_ = false;
     } else if (!stop_bars_shown_) {
         stop_bars_shown_ = true;
-        set_bar_visible(true);
+        if (mode_ == UiMode::Hidden) setMode(UiMode::Bars);
     }
 
-    if (!s_bar_visible) return;
+    if (mode_ != UiMode::Bars) return;
     refresh();
     if (!playing_ || scrubbing_) return;
     if (volume_slider_ && lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
     const uint32_t inactive_ms = lv_display_get_inactive_time(nullptr);
     const bool untouched = auto_start_tick_ && inactive_ms >= lv_tick_elaps(auto_start_tick_);
     if (inactive_ms < (untouched ? kAutoStartHideMs : kAutoHideMs)) return;
-    set_bar_visible(false);
+    setMode(UiMode::Hidden);
 }
 
 void PlayerScreen::refresh() {
-    if (!seek_ || !s_bar_visible) return;
+    if (!seek_ || mode_ != UiMode::Bars) return;
 
     const PlayerStatus status = player_status();
     const bool playing = status.state == PlayerState::Playing;

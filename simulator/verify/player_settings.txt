@@ -1,0 +1,76 @@
+settle
+tap 360 226
+settle
+tap 360 252
+settle
+tap 360 252
+wait 1500
+capture player_settings_bars.jpg
+tap 638 1232
+wait 800
+capture player_settings_portrait.jpg
+down 537 858
+wait 30
+move 400 858
+wait 30
+move 300 858
+wait 30
+up
+wait 300
+down 598 1122
+wait 30
+move 400 1122
+wait 30
+up
+wait 300
+tap 630 1192
+wait 400
+capture player_settings_changed.jpg
+tap 630 1192
+wait 400
+tap 668 676
+wait 800
+capture player_settings_closed.jpg
+tap 638 1232
+wait 800
+imu rot90
+wait 1200
+capture player_settings_landscape.jpg
+tap 36 52
+wait 800
+capture player_settings_landscape_closed.jpg
+tap 671 72
+wait 800
+tap 288 90
+wait 400
+imu rot0
+wait 1000
+capture player_settings_locked.jpg
+tap 288 90
+wait 1500
+capture player_settings_unlocked.jpg
+tap 360 300
+wait 800
+capture player_settings_hidden.jpg
+tap 360 300
+wait 800
+capture player_settings_reshown.jpg
+settle
+tap 40 40
+settle
+tap 360 320
+wait 1200
+tap 360 1136
+wait 600
+tap 638 1232
+wait 800
+capture player_settings_paused.jpg
+imu rot90
+wait 1500
+capture player_settings_paused_rot.jpg
+imu rot0
+wait 1500
+settle
+tap 40 40
+settle
+imu release

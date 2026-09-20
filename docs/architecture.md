@@ -104,6 +104,49 @@ both halves (0 unlocked, otherwise the rotation plus one). The saved rotation is
 applied in `ui_orientation_start` before Home is created, so a locked boot lays
 Home out once instead of rotating it afterwards.
 
+## Player overlay
+
+The bars and the settings panel are LVGL objects on one full-screen display of
+its own, created when the player opens. It cannot be the main display: during
+playback the main display's draw buffers are the SRAM the decoder took (see
+[Shared SRAM buffer](#shared-sram-buffer)), so LVGL has nowhere to render.
+`buffer.lines` is kept small because only the bars are ever invalidated; the
+default of a quarter screen would be idle PSRAM.
+
+Video and UI share framebuffer 0 — with UI insets set the presenter stops
+rotating through the three framebuffers and clips itself out of the UI area,
+and LVGL blits the bars into that same buffer. Every pixel belongs to exactly
+one of the two, which holds as long as LVGL never invalidates the video area:
+
+- LVGL joins two dirty areas only where they overlap, so the top and the bottom
+  bar cannot merge into a full-screen repaint.
+- The full-screen object that catches taps on the video carries no styles, so
+  pressing it changes no style state and invalidates nothing.
+- Anything that invalidates the whole screen paints black over the video. The
+  display is created before `video_presenter_begin()` and `onEnter` pushes that
+  first pass out with `lv_refr_now` before `player_open`, so it cannot land on
+  top of a frame: the board is slow enough to show the frame first, blank it
+  and only then play. The only such event left during playback is the
+  resolution change inside `set_rotation`, which
+  `PlayerScreen::rotate` suppresses with `lv_display_enable_invalidation` and
+  replaces with an invalidate of the bars alone.
+- Building a bar invalidates wherever it sits until the layout runs, which for
+  an aligned bar is the top-left corner, so `buildUi` settles the layout while
+  those invalidations are still being dropped. Without that the video is left
+  with a black band the size of a bar, visible until the next frame overwrites
+  it — which, paused, never comes.
+
+Switching between the bars, the settings panel and nothing at all is then plain
+LVGL plus a clip change, in this order: hide what is leaving, `lv_refr_now` and
+`bsp_display_wait_draw` so it is painted out, move the insets, and only then
+show what is arriving. Either half in the other order lets the video draw over
+the UI, or leaves the UI's last pixels sitting in the video area.
+
+The panel holds the settings that can be changed mid-playback: Color Mode is
+not one of them, because reconfiguring the panel format tears the video path
+down. Bars and panel are never up at the same time, so the volume they both
+show is read again when one of them is shown rather than kept in sync.
+
 ## Home screen
 
 `HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu

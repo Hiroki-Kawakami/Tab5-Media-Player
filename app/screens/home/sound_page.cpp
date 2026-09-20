@@ -37,10 +37,8 @@ void SoundPage::build(lv_obj_t *contents) {
     lv_hor_separator_create(section);
 
     row = lv_setting_row_create(section, "Equalizer");
-    lv_setting_segmented_create(row, {"Off", "On"}, settings_equalizer_enabled() ? 1 : 0,
-                                [](lv_obj_t *segmented, int index) {
-        settings_set_equalizer_enabled(index == 1);
-        lv_setting_segmented_set_active(segmented, index);
+    lv_setting_switch_create(row, settings_equalizer_enabled(), [](lv_obj_t *, bool enabled) {
+        settings_set_equalizer_enabled(enabled);
         settings_commit();
     });
 }

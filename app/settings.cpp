@@ -7,6 +7,7 @@
 #include "lvgl.hpp"
 #include "media_player.hpp"
 #include "nvs_flash.h"
+#include "ui_orientation.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -128,6 +129,10 @@ Setting<"colordepth", uint8_t, +[](int bits) -> uint8_t {
     return bits == 24 ? 24 : 16;
 }> s_display_color_depth{16};
 
+Setting<"rotlock", uint8_t, +[](int value) -> uint8_t {
+    return value >= 1 && value <= 4 ? value : 0;
+}> s_rotation_lock{0};
+
 constexpr auto clamp_volume = +[](int percent) -> uint8_t {
     return std::clamp(percent, 0, 100);
 };
@@ -143,6 +148,7 @@ template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
     fn(s_display_color_depth);
+    fn(s_rotation_lock);
     fn(s_speaker_volume);
     fn(s_headphone_volume);
     fn(s_equalizer);
@@ -213,6 +219,21 @@ esp_err_t settings_set_display_pixel_format(bsp_pixel_format_t format) {
     if (err != ESP_OK) return err;
     s_display_color_depth.set((int)bsp_pixel_format_bytes(format) * 8);
     return ESP_OK;
+}
+
+bool settings_rotation_locked() {
+    return s_rotation_lock.get() != 0;
+}
+
+bsp_rotation_t settings_locked_rotation() {
+    const uint8_t value = s_rotation_lock.get();
+    return value != 0 ? (bsp_rotation_t)(value - 1) : BSP_ROTATION_0;
+}
+
+void settings_set_rotation_lock(bool locked) {
+    const bsp_rotation_t rotation = ui_orientation_current();
+    if (!s_rotation_lock.set(locked ? (int)rotation + 1 : 0)) return;
+    ui_orientation_set_locked(locked, rotation);
 }
 
 bool settings_volume_is_headphone() {

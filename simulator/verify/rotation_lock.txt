@@ -1,0 +1,19 @@
+settle
+tap 360 466
+settle
+capture rotation_lock_off.jpg
+tap 640 376
+settle
+capture rotation_lock_on.jpg
+imu rot90
+wait 1000
+settle
+capture rotation_lock_held.jpg
+tap 640 376
+wait 1000
+settle
+capture rotation_lock_released.jpg
+imu rot0
+wait 1000
+settle
+imu release

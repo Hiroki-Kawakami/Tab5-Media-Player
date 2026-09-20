@@ -14,6 +14,7 @@ static const char *TAG = "ui_orientation";
 static lv_display_t *s_main;
 static bsp_rotation_t s_current = BSP_ROTATION_0;
 static bsp_rotation_t s_main_rotation = BSP_ROTATION_0;
+static bool s_locked;
 static OrientationListener s_listener;
 static void *s_listener_arg;
 
@@ -27,6 +28,11 @@ static void rotate_main() {
     s_main_rotation = s_current;
 }
 
+static void set_tracking_enabled(bool enabled) {
+    const esp_err_t err = bsp_imu_set_orientation_enabled(enabled);
+    if (err != ESP_OK) ESP_LOGW(TAG, "orientation tracking: %s", esp_err_to_name(err));
+}
+
 static void orientation_changed(bsp_imu_orientation_t orientation, void *) {
     if (orientation < BSP_IMU_ORIENTATION_ROTATION_0 ||
         orientation > BSP_IMU_ORIENTATION_ROTATION_270) {
@@ -35,7 +41,7 @@ static void orientation_changed(bsp_imu_orientation_t orientation, void *) {
     const auto rotation = static_cast<bsp_rotation_t>(orientation);
     lv_lock();
     lv_async_call([rotation] {
-        if (rotation == s_current) return;
+        if (s_locked || rotation == s_current) return;
         s_current = rotation;
         if (s_listener) {
             s_listener(rotation, s_listener_arg);
@@ -46,11 +52,24 @@ static void orientation_changed(bsp_imu_orientation_t orientation, void *) {
     lv_unlock();
 }
 
-void ui_orientation_start(lv_display_t *main_display) {
+void ui_orientation_start(lv_display_t *main_display, bool locked, bsp_rotation_t rotation) {
     s_main = main_display;
+    s_locked = locked;
+    if (locked) {
+        s_current = rotation;
+        rotate_main();
+    }
     bsp_imu_set_orientation_cb(orientation_changed, nullptr);
-    const esp_err_t err = bsp_imu_set_orientation_enabled(true);
-    if (err != ESP_OK) ESP_LOGW(TAG, "orientation tracking: %s", esp_err_to_name(err));
+    if (!locked) set_tracking_enabled(true);
+}
+
+void ui_orientation_set_locked(bool locked, bsp_rotation_t rotation) {
+    s_locked = locked;
+    if (locked) {
+        s_current = rotation;
+        rotate_main();
+    }
+    set_tracking_enabled(!locked);
 }
 
 bsp_rotation_t ui_orientation_current() {

@@ -121,7 +121,7 @@ void app_entry() {
 #endif
 
     lv_async_call([] {
-        ui_orientation_start(s_main);
+        ui_orientation_start(s_main, settings_rotation_locked(), settings_locked_rotation());
         auto home = std::make_shared<HomeScreen>();
         s_home = home;
         screen_manager.load(home);

@@ -93,6 +93,17 @@ decoder is gone and before the display is shown again.
 Opening the player keeps whatever rotation the UI already has; the video's
 aspect does not choose it.
 
+Rotation Lock (Home > Display) freezes the UI at the rotation in effect when it
+is switched on, and stops the IMU polling with
+`bsp_imu_set_orientation_enabled(false)` for as long as it holds; that is the
+only thing the lock buys over ignoring the callback. `settings.cpp` owns the
+state and `settings_set_rotation_lock` is the single entry point, so a second
+place to toggle it only has to call that; `ui_orientation` keeps a copy to drop
+callbacks that are already in flight when tracking stops. One NVS byte carries
+both halves (0 unlocked, otherwise the rotation plus one). The saved rotation is
+applied in `ui_orientation_start` before Home is created, so a locked boot lays
+Home out once instead of rotating it afterwards.
+
 ## Home screen
 
 `HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu
@@ -181,7 +192,10 @@ still work for the session and only the write is skipped.
 
 On the simulator NVS is esp-devkit's JSON-file store. Its default is relative
 to the process cwd like the SD card redirect, so `run.sh` pins
-`SIMULATOR_NVS_PATH` to `simulator/nvs_data.json`.
+`SIMULATOR_NVS_PATH` to `simulator/nvs_data.json`. It outlives the process, so
+whatever a verify script changes is still there for the next run; the rotation
+lock in particular has to be switched back off at the end, or every later script
+starts frozen in that orientation.
 
 Landscape is decided from the Home root's size, not `ui_orientation_current()`:
 while the player is open the IMU rotation moves on but the main display does

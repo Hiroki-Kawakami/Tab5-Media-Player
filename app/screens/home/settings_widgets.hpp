@@ -17,3 +17,5 @@ lv_obj_t *lv_setting_segmented_create(lv_obj_t *row, std::initializer_list<const
                                       int active,
                                       std::function<void(lv_obj_t *, int)> on_select);
 void lv_setting_segmented_set_active(lv_obj_t *segmented, int active);
+lv_obj_t *lv_setting_switch_create(lv_obj_t *row, bool checked,
+                                   std::function<void(lv_obj_t *, bool)> on_change);

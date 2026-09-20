@@ -55,4 +55,12 @@ void DisplayPage::build(lv_obj_t *contents) {
             color_mode_failed(segmented, err);
         });
     });
+
+    lv_hor_separator_create(section);
+
+    row = lv_setting_row_create(section, "Rotation Lock");
+    lv_setting_switch_create(row, settings_rotation_locked(), [](lv_obj_t *, bool locked) {
+        settings_set_rotation_lock(locked);
+        settings_commit();
+    });
 }

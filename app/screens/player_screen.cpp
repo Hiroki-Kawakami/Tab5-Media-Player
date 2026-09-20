@@ -552,10 +552,15 @@ void PlayerScreen::tick() {
         }
     }
 
-    if (!s_bar_visible) {
-        if (state == PlayerState::Finished || state == PlayerState::Failed) set_bar_visible(true);
-        return;
+    const bool stopped = state == PlayerState::Finished || state == PlayerState::Failed;
+    if (!stopped) {
+        stop_bars_shown_ = false;
+    } else if (!stop_bars_shown_) {
+        stop_bars_shown_ = true;
+        set_bar_visible(true);
     }
+
+    if (!s_bar_visible) return;
     refresh();
     if (!playing_ || scrubbing_) return;
     if (volume_slider_ && lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;

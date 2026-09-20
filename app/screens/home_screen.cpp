@@ -6,9 +6,12 @@
 #include "home_screen.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 #include "bsp.h"
 #include "media_player.hpp"
+#include "resources.h"
+#include "screens/home/display_page.hpp"
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
 #include "usb_msc.h"
@@ -17,8 +20,9 @@
 static constexpr int32_t kMenuWidth = 400;
 
 const HomeScreen::MenuItem HomeScreen::kMenu[] = {
-    {LV_SYMBOL_SD_CARD, "SD Card", &HomeScreen::open_sd_card},
-    {LV_SYMBOL_USB, "USB Drive", &HomeScreen::open_usb_drive},
+    {"Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
+    {"Storage", LV_SYMBOL_USB, nullptr, "USB Drive", &HomeScreen::open_usb_drive},
+    {"Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
 };
 
 static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
@@ -111,9 +115,13 @@ void HomeScreen::build_menu(lv_obj_t *pane) {
     lv_obj_set_style_pad_all(contents, 24, 0);
     lv_obj_set_style_pad_row(contents, 12, 0);
 
-    auto section = lv_grouped_section_create(contents, "Storage");
+    lv_obj_t *section = nullptr;
     for (std::size_t i = 0; i < std::size(kMenu); i++) {
-        auto row = lv_grouped_row_create(section, kMenu[i].icon, kMenu[i].label);
+        if (i == 0 || std::strcmp(kMenu[i].section, kMenu[i - 1].section) != 0) {
+            section = lv_grouped_section_create(contents, kMenu[i].section);
+        }
+        auto row = lv_grouped_row_create(section, kMenu[i].icon, kMenu[i].label,
+                                         kMenu[i].icon_font);
         lv_grouped_row_set_arrow_visible(row, !landscape_);
         lv_obj_set_state(row, LV_STATE_CHECKED, landscape_ && selected_ == i);
         lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [this, i](lv_event_t *) { select(i); });
@@ -181,6 +189,10 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
         }
     }
     return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_display() {
+    return std::make_shared<DisplayPage>();
 }
 
 void HomeScreen::show_mount_error(const char *title, const char *message, esp_err_t err) {

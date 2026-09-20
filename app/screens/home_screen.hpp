@@ -23,7 +23,9 @@ public:
 
 private:
     struct MenuItem {
+        const char *section;
         const char *icon;
+        const lv_font_t *icon_font;
         const char *label;
         std::shared_ptr<HomePage> (HomeScreen::*open)();
     };
@@ -42,5 +44,6 @@ private:
     void select(std::size_t index);
     std::shared_ptr<HomePage> open_sd_card();
     std::shared_ptr<HomePage> open_usb_drive();
+    std::shared_ptr<HomePage> open_display();
     void show_mount_error(const char *title, const char *message, esp_err_t err);
 };

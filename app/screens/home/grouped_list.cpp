@@ -56,6 +56,7 @@ lv_obj_t *lv_grouped_section_create(lv_obj_t *parent, const char *title) {
     style_init();
     if (title) {
         auto label = lv_label_create(parent);
+        if (lv_obj_get_child_count(parent) > 1) lv_obj_set_style_pad_top(label, kPadding / 2, 0);
         lv_label_set_text(label, title);
         lv_obj_set_style_text_font(label, lv_widgets_body_font(), 0);
         lv_obj_set_style_text_color(label, lv_color_hex(0x808080), 0);
@@ -67,7 +68,8 @@ lv_obj_t *lv_grouped_section_create(lv_obj_t *parent, const char *title) {
     return section;
 }
 
-lv_obj_t *lv_grouped_row_create(lv_obj_t *section, const char *icon, const char *label) {
+lv_obj_t *lv_grouped_row_create(lv_obj_t *section, const char *icon, const char *label,
+                                const lv_font_t *icon_font) {
     style_init();
     if (lv_obj_get_child_count(section) > 0) {
         auto inset = lv_container_create(section);
@@ -85,6 +87,7 @@ lv_obj_t *lv_grouped_row_create(lv_obj_t *section, const char *icon, const char 
     auto icon_label = lv_label_create(row);
     lv_obj_set_width(icon_label, 48);
     lv_obj_set_style_text_align(icon_label, LV_TEXT_ALIGN_CENTER, 0);
+    if (icon_font) lv_obj_set_style_text_font(icon_label, icon_font, 0);
     lv_label_set_text(icon_label, icon);
 
     auto text = lv_label_create(row);

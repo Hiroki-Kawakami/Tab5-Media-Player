@@ -14,6 +14,7 @@
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
 #include "screens/player_screen.hpp"
+#include "settings.hpp"
 #include "ui_orientation.hpp"
 #include "usb_msc.h"
 
@@ -112,6 +113,6 @@ void app_entry() {
         auto home = std::make_shared<HomeScreen>();
         s_home = home;
         screen_manager.load(home);
-        bsp_display_set_brightness(80);
+        settings_init();
     });
 }

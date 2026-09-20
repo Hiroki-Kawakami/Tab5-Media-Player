@@ -1,0 +1,18 @@
+settle
+tap 360 466
+settle
+capture settings_display.jpg
+down 537 227
+wait 30
+move 400 227
+wait 30
+move 250 227
+wait 30
+up
+settle
+capture settings_brightness.jpg
+imu rot90
+wait 800
+settle
+capture settings_landscape.jpg
+imu release

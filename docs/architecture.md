@@ -96,11 +96,11 @@ aspect does not choose it.
 ## Home screen
 
 `HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu
-(SD Card, USB Drive, later settings) and the file browser are not separate
-screens but a page stack inside it (`app/screens/home/`), because landscape
-shows both at once: the menu on the left, the top page on the right. Portrait
-shows either the menu (empty stack) or the top page full-screen, which is the
-same navigation the separate screens used to give.
+(SD Card, USB Drive, Display) and the settings/file browser pages are not
+separate screens but a page stack inside it (`app/screens/home/`), because
+landscape shows both at once: the menu on the left, the top page on the right.
+Portrait shows either the menu (empty stack) or the top page full-screen, which
+is the same navigation the separate screens used to give.
 
 Every navigation, rotation and eject rebuilds the whole view on the next LVGL
 tick rather than in place. Navigation is triggered from a click on a row or
@@ -108,6 +108,11 @@ back button that the rebuild deletes, and the list calls back into the page
 that a pop destroys, so neither can happen inside the event. Pages outlive
 their views: a `FileBrowserPage` keeps its entries and scroll offset, so going
 back or rotating does not re-read the directory.
+
+Settings pages are pages of that same stack, so a setting opens next to the
+menu in landscape like a folder does. `app/settings.cpp` holds the values the
+UI edits and applies them to the hardware; nothing is written to NVS yet, so a
+changed setting lasts until the next boot.
 
 Landscape is decided from the Home root's size, not `ui_orientation_current()`:
 while the player is open the IMU rotation moves on but the main display does

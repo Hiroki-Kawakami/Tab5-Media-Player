@@ -155,8 +155,18 @@ time it is shown instead of being refreshed in place. It is also the only part
 of the overlay that scrolls: three sections do not fit the panel on either
 orientation.
 
-Scrolling it is the one place where the UI and the video are both busy at once,
-and on the board neither keeps up: the scroll crawls and playback stalls. So a
+The contents are taller than the panel (828 px against 560 in portrait, 640 in
+landscape), and repainting that much text per scroll step is beyond what the
+board can do into a PSRAM draw buffer. So they are rendered once, on a
+throwaway offscreen display, into an RGB565 image in PSRAM (around 1.2 MB,
+freed with the image object), and the scroll moves that image: every frame
+after the first is a copy instead of fills, rounded rects and glyph blending.
+Nothing in the panel changes while it is open, so one render is enough. If the
+allocation fails the widgets are simply left in place.
+
+Scrolling it is still the one place where the UI and the video are both busy at
+once, and on the board neither keeps up: the scroll crawls and playback
+stalls. So a
 scroll suspends the video — `player_suspend_video()` drops video packets as
 they come due instead of decoding them, which leaves the reader pacing the file
 as before and the audio playing, and the picture picks up at the next keyframe

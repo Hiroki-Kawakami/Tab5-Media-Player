@@ -7,9 +7,17 @@
 #include "panel.hpp"
 #include "screens/home/settings_widgets.hpp"
 #include "widgets.hpp"
+#include "esp_heap_caps.h"
 
 #include <cmath>
 #include <cstdio>
+
+static constexpr uint32_t kCacheAlignment = 64;
+
+struct PanelCache {
+    lv_image_dsc_t dsc;
+    void *pixels;
+};
 
 static constexpr int32_t kValueGap = 16;
 static constexpr int32_t kValueLines = 3;
@@ -192,6 +200,63 @@ static void build_audio(lv_obj_t *contents, const MediaSummary &summary) {
     }
 }
 
+static void cache_contents(lv_obj_t *contents) {
+    lv_obj_update_layout(contents);
+    const int32_t width = lv_obj_get_width(contents);
+    const int32_t shown = lv_obj_get_height(contents);
+    const int32_t height = shown + lv_obj_get_scroll_bottom(contents);
+    if (width <= 0 || height <= shown) return;
+
+    const uint32_t stride = lv_draw_buf_width_to_stride(width, LV_COLOR_FORMAT_RGB565);
+    const size_t bytes = (size_t)stride * height;
+    void *pixels = heap_caps_aligned_alloc(kCacheAlignment, bytes, MALLOC_CAP_SPIRAM);
+    if (!pixels) return;
+
+    lv_display_t *previous = lv_display_get_default();
+    lv_display_t *offscreen = lv_display_create(width, height);
+    if (!offscreen) {
+        heap_caps_free(pixels);
+        return;
+    }
+    lv_display_set_color_format(offscreen, LV_COLOR_FORMAT_RGB565);
+    lv_display_set_buffers(offscreen, pixels, nullptr, bytes, LV_DISPLAY_RENDER_MODE_DIRECT);
+    lv_display_set_flush_cb(offscreen, [](lv_display_t *display, const lv_area_t *, uint8_t *) {
+        lv_display_flush_ready(display);
+    });
+
+    lv_obj_t *page = lv_display_get_screen_active(offscreen);
+    lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_text_color(page, lv_color_white(), 0);
+    lv_setting_page_style(page, &kPanelColors);
+    while (lv_obj_get_child_count(contents)) {
+        lv_obj_set_parent(lv_obj_get_child(contents, 0), page);
+    }
+    lv_obj_invalidate(page);
+    lv_refr_now(offscreen);
+    lv_display_delete(offscreen);
+    lv_display_set_default(previous);
+
+    auto cache = new PanelCache{};
+    cache->pixels = pixels;
+    cache->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    cache->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+    cache->dsc.header.w = width;
+    cache->dsc.header.h = height;
+    cache->dsc.header.stride = stride;
+    cache->dsc.data = static_cast<const uint8_t *>(pixels);
+    cache->dsc.data_size = bytes;
+
+    lv_obj_set_style_pad_all(contents, 0, 0);
+    lv_obj_t *image = lv_image_create(contents);
+    lv_image_set_src(image, &cache->dsc);
+    lv_obj_add_event_cb(image, [](lv_event_t *event) {
+        auto stale = static_cast<PanelCache *>(lv_event_get_user_data(event));
+        heap_caps_free(stale->pixels);
+        delete stale;
+    }, LV_EVENT_DELETE, cache);
+}
+
 void player_info_panel_build(lv_obj_t *root, const std::string &name, const MediaSummary &summary,
                              std::function<void()> on_close,
                              std::function<void(bool)> on_scroll) {
@@ -206,4 +271,5 @@ void player_info_panel_build(lv_obj_t *root, const std::string &name, const Medi
     if (!summary.valid) return;
     build_video(contents, summary);
     build_audio(contents, summary);
+    cache_contents(contents);
 }

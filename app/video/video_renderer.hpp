@@ -32,6 +32,7 @@ public:
                       std::string *error) = 0;
     virtual void close() = 0;
     virtual bool pipelined() const { return false; }
+    virtual bool needs_source() const { return false; }
 
     virtual DecodeResult decode(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
                                 void *ctx, bool present, int64_t due_us, VideoFrame *frame,

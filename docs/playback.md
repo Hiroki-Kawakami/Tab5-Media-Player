@@ -72,8 +72,9 @@ everything that does not depend on the codec: the fit (output rotation, a scale 
 the area the UI leaves to the video and presenting. A `VideoRenderer` turns a
 packet into a `VideoFrame` (`decode`) and puts a frame into a `RenderTarget`
 (framebuffer, rotation, `n`, rect, clip, source size) with `draw`, writing
-nothing outside the clip. `draw(nullptr, …)` redraws the
-held frame. MJPEG's `decode` only reads the header and the JPEG is decoded
+nothing outside the clip. `draw(nullptr, …)` redraws the frame the renderer
+kept, which only the ones holding a decoded picture can do (`needs_source()`).
+MJPEG's `decode` only reads the header and the JPEG is decoded
 inside `draw`; H.264's `decode` does the real work and `draw` is one PPA call.
 
 - **The scale is `n/16` because PPA quantizes to 1/16** (8-bit integer and
@@ -291,7 +292,15 @@ memory instead of copying packets out. It uses `open()/read()` rather than
 - **A view pins the chunks it covers.** Read-ahead never writes into a pinned
   chunk; it waits. A view that would cross the ring's end is copied into the
   bounce area instead, once per trip around the ring, and pins that.
-- **A view can wait on the player** (pins held by the presenter or the ring), so
+- **Nothing may hold a view longer than the reader takes to lap the ring.**
+  Read-ahead parks on a pinned chunk and `mb_view` waits for read-ahead, so a
+  pin the reader catches up with from behind stops both, with nothing in the
+  log; only the `interrupt()` and `releaseAll()` of the next seek clear it. The
+  player therefore pins the last packet it *consumed*, not the last one it
+  drew: a pin that follows the reader cannot be lapped, while a pin on the
+  frame last drawn freezes as soon as frames run late enough to be dropped
+  instead of drawn, and the reader walks into it.
+- **A view can wait on the player** (pins held by the player or the ring), so
   `reader_stop()` interrupts the buffer before waiting for the reader to park.
   An interrupted read rewinds the demuxer to the element it started on.
 - **Pins are dropped wholesale** (`releaseAll()`) in `refill_free_queues()`,
@@ -612,7 +621,25 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 - **Rotating recreates the bars.** Their logical size changes with the rotation,
   so `PlayerScreen::rotate` deletes them, sets the presenter's rotation, creates
   new ones and applies their insets. The presenter applies a rotation between
-  frames and draws the held frame again.
+  frames.
+- **Applying insets has to leave framebuffer 0 on screen.** LVGL's partial
+  blit writes into whichever framebuffer the panel driver last flushed and
+  then flushes index 0 (`mipi_dsi.c`, `flush_framebuffer()`), so a bar drawn
+  while the panel still shows framebuffer 1 or 2 is pushed off screen by that
+  flush the moment it appears. Nothing looks broken from LVGL's side — the
+  mode stays `Bars`, so the next tap toggles bars nobody can see and the
+  player looks dead. The worker therefore presents inside the insets
+  handshake even when the renderer cannot redraw the picture and the
+  framebuffer still holds the frame before last, which nobody sees because the
+  redraw replaces it a moment later.
+- **The picture for a redraw comes from whoever still has it.** H.264 and
+  MPEG-2 keep a decoded picture and the worker redraws from it. MJPEG decodes
+  straight into the framebuffer and has nothing decoded to keep, so the worker
+  only presents and `player_repaint()` follows with the packet the player
+  pinned; while playing the player ignores the request, because the next frame
+  covers the change anyway. Keeping that packet in the renderer instead would
+  pin a ring chunk for as long as nothing is drawn (see
+  [Reading](#reading-one-buffer-from-the-card-to-the-decoder)).
 - **CPU writes to a framebuffer are synced to the cache immediately.** PPA and
   the JPEG decoder invalidate their output without writing it back, so a
   cleared area still in the cache would be lost.
@@ -622,7 +649,7 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   is cleared and its bit dropped.
 - **Everything the worker does holds `s_idle`**: drawing, redrawing,
   presenting, and applying new insets. `video_presenter_flush()` takes it
-  before `discard()`, so the held slot is released before `reader_stop()`
+  before `discard()`, so a held picture is released before `reader_stop()`
   refills the free queues, and never twice. After a flush there is nothing to
   redraw until the next frame; a redraw request in that window blanks the
   picture.

@@ -65,5 +65,6 @@ void player_seek(int64_t position_us);
 void player_set_loop(bool loop);
 void player_eject(const std::string &mount_point);
 void player_suspend_video(bool suspended);
+void player_repaint();
 PlayerStatus player_status();
 MediaSummary player_media_summary();

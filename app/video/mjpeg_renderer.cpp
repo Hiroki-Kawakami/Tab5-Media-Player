@@ -79,7 +79,6 @@ bool MjpegRenderer::open(const SharedSram &sram, bsp_pixel_format_t format, cons
 }
 
 void MjpegRenderer::close() {
-    discard();
     if (pipeline_) {
         jpeg_ppa_pipeline_del(pipeline_);
         pipeline_ = nullptr;
@@ -125,25 +124,16 @@ DecodeResult MjpegRenderer::decode(const uint8_t *data, std::size_t len,
     return DecodeResult::Ready;
 }
 
-void MjpegRenderer::discard() {
-    drop(&held_);
-}
-
 bool MjpegRenderer::draw(VideoFrame *frame, const RenderTarget &target, std::string *error) {
-    const VideoFrame &source = frame ? *frame : held_;
-    if (!source.data) return false;
+    if (!frame || !frame->data) return false;
     if (!pipeline_) {
         *error = "video decoder is not open";
-        if (frame) drop(frame);
+        drop(frame);
         return false;
     }
     const bsp_rect_t visible = render_target_visible(target);
     if (!visible.size.width) {
-        if (frame) {
-            discard();
-            held_ = *frame;
-            *frame = {};
-        }
+        drop(frame);
         return true;
     }
     const Path path = covers_panel_unscaled(target) ? Path::Direct : Path::Pipeline;
@@ -157,17 +147,10 @@ bool MjpegRenderer::draw(VideoFrame *frame, const RenderTarget &target, std::str
                  target.rect.size.width, target.rect.size.height,
                  target.framebuffer, (unsigned)target.framebuffer_bytes);
     }
-    const bool ok = path == Path::Direct ? decode_direct(source.data, source.len, target, error)
-                                         : decode_scaled(source.data, source.len, target, error);
-    if (!frame) return ok;
-    if (!ok) {
-        drop(frame);
-        return false;
-    }
-    discard();
-    held_ = *frame;
-    *frame = {};
-    return true;
+    const bool ok = path == Path::Direct ? decode_direct(frame->data, frame->len, target, error)
+                                         : decode_scaled(frame->data, frame->len, target, error);
+    drop(frame);
+    return ok;
 }
 
 bool MjpegRenderer::decode_direct(const uint8_t *data, std::size_t len,

@@ -70,6 +70,7 @@ static SemaphoreHandle_t s_decode_done;
 static TaskHandle_t s_task;
 static std::atomic<bool> s_running{false};
 static std::atomic<bool> s_pipelined{false};
+static std::atomic<bool> s_needs_source{false};
 static std::atomic<bool> s_flushing{false};
 static float s_draw_us;
 static bool s_have_next;
@@ -334,12 +335,19 @@ static void draw(const Job &job) {
 static void repaint() {
     const int next = next_framebuffer();
     RenderTarget target;
-    if (s_renderer && s_renderer->has_picture() && place(s_source, next, &target)) {
+    const bool placed = place(s_source, next, &target);
+    if (placed && s_renderer && s_renderer->has_picture()) {
         prepare(next, target);
         std::string failure;
         if (!s_renderer->draw(nullptr, target, &failure)) {
             set_error(failure);
             return;
+        }
+    } else if (placed && s_needs_source.load()) {
+        if (!s_shared) return;
+        if (!same_rect(target.rect, s_rect)) {
+            clear_framebuffer(next);
+            s_clear_pending &= ~(1u << next);
         }
     } else {
         clear_framebuffer(next);
@@ -558,6 +566,7 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     s_draw_us = 0.0f;
     s_have_next = false;
     s_pipelined.store(false);
+    s_needs_source.store(false);
     s_flushing.store(false);
     set_error({});
 
@@ -618,9 +627,11 @@ bool video_presenter_open_stream(const TrackInfo &track, std::string *error) {
     xSemaphoreTake(s_decode_idle, portMAX_DELAY);
     s_renderer.reset();
     s_pipelined.store(false);
+    s_needs_source.store(false);
     const bool ok = renderer->open(s_sram, s_format, track, error);
     if (ok) {
         s_pipelined.store(renderer->pipelined());
+        s_needs_source.store(renderer->needs_source());
         s_renderer = std::move(renderer);
     }
     xSemaphoreGive(s_decode_idle);
@@ -630,6 +641,10 @@ bool video_presenter_open_stream(const TrackInfo &track, std::string *error) {
 
 bool video_presenter_pipelined() {
     return s_pipelined.load();
+}
+
+bool video_presenter_needs_source() {
+    return s_needs_source.load();
 }
 
 bool video_presenter_submit(const uint8_t *data, std::size_t len,

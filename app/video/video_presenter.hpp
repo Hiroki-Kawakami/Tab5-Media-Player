@@ -18,6 +18,7 @@ void video_presenter_end();
 bool video_presenter_open_stream(const TrackInfo &track, std::string *error);
 
 bool video_presenter_pipelined();
+bool video_presenter_needs_source();
 bool video_presenter_submit(const uint8_t *data, std::size_t len,
                             VideoPresenterRelease release, void *ctx, bool present,
                             int64_t due_us);

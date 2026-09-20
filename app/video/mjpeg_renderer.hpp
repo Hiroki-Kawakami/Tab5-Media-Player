@@ -14,14 +14,15 @@ public:
     bool open(const SharedSram &sram, bsp_pixel_format_t format, const TrackInfo &track,
               std::string *error) override;
     void close() override;
+    bool needs_source() const override { return true; }
 
     DecodeResult decode(const uint8_t *data, std::size_t len, VideoPresenterRelease release,
                         void *ctx, bool present, int64_t due_us, VideoFrame *frame,
                         std::string *error) override;
     bool draw(VideoFrame *frame, const RenderTarget &target, std::string *error) override;
     void drop(VideoFrame *frame) override;
-    void discard() override;
-    bool has_picture() const override { return held_.data != nullptr; }
+    void discard() override {}
+    bool has_picture() const override { return false; }
 
 private:
     enum class Path { None, Direct, Pipeline };
@@ -33,6 +34,5 @@ private:
 
     jpeg_ppa_pipeline_handle_t pipeline_ = nullptr;
     ppa_srm_color_mode_t color_mode_ = PPA_SRM_COLOR_MODE_RGB565;
-    VideoFrame held_;
     Path path_ = Path::None;
 };

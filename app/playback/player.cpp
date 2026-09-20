@@ -49,6 +49,7 @@ enum class Command {
     Loop,
     Eject,
     SuspendVideo,
+    Repaint,
 };
 
 struct CommandItem {
@@ -121,6 +122,7 @@ static bool s_video_suspended;
 static bool s_want_poster;
 static bool s_have_pending;
 static int s_pending_slot;
+static int s_repaint_slot = -1;
 static int64_t s_origin_us;
 static int64_t s_origin_pts_us;
 static uint64_t s_audio_origin_us;
@@ -150,6 +152,20 @@ static void slot_release(int slot) {
 
 static void presented(void *ctx) {
     slot_release((int)(intptr_t)ctx);
+}
+
+static void keep_for_repaint(int slot) {
+    if (slot == s_repaint_slot) return;
+    const int previous = s_repaint_slot;
+    slot_acquire(slot);
+    s_repaint_slot = slot;
+    if (previous >= 0) slot_release(previous);
+}
+
+static void forget_repaint() {
+    if (s_repaint_slot < 0) return;
+    slot_release(s_repaint_slot);
+    s_repaint_slot = -1;
 }
 
 static void refill_free_queues() {
@@ -325,6 +341,7 @@ static void reader_stop() {
         slot_release(s_pending_slot);
         s_have_pending = false;
     }
+    forget_repaint();
     refill_free_queues();
 }
 
@@ -600,6 +617,12 @@ static void handle_suspend_video(bool suspended) {
     if (!suspended) skip_to_keyframe(INT64_MIN);
 }
 
+static void handle_repaint() {
+    if (!video_presenter_needs_source() || s_repaint_slot < 0) return;
+    if (s_state == PlayerState::Playing && !s_video_suspended) return;
+    submit(s_repaint_slot, true, 0);
+}
+
 static void handle_loop(bool loop) {
     s_loop = loop;
     if (!loop || !s_demuxer || !s_demuxer->isOpen()) return;
@@ -624,6 +647,7 @@ static void handle_command(const CommandItem &item) {
     case Command::Loop:    handle_loop(item.value != 0); break;
     case Command::Eject:   handle_eject(*item.path); break;
     case Command::SuspendVideo: handle_suspend_video(item.value != 0); break;
+    case Command::Repaint: handle_repaint(); break;
     }
     delete item.path;
 }
@@ -632,6 +656,7 @@ static void step_poster() {
     int slot = -1;
     if (xQueueReceive(s_video_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) return;
     slot_acquire(slot);
+    keep_for_repaint(slot);
     if (!before(s_video[slot].pts_us, s_next_us)) {
         show(slot);
         video_presenter_drain();
@@ -651,6 +676,7 @@ static void step_playing() {
             return;
         }
         slot_acquire(s_pending_slot);
+        keep_for_repaint(s_pending_slot);
         s_have_pending = true;
     }
 
@@ -793,6 +819,7 @@ void player_eject(const std::string &mount_point) { send_command(Command::Eject,
 void player_suspend_video(bool suspended) {
     send_command(Command::SuspendVideo, nullptr, suspended ? 1 : 0);
 }
+void player_repaint() { send_command(Command::Repaint); }
 
 MediaSummary player_media_summary() {
     MediaSummary summary;

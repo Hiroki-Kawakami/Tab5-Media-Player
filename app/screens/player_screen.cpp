@@ -254,6 +254,7 @@ void PlayerScreen::setMode(UiMode mode) {
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
+    player_repaint();
 
     if (mode == UiMode::Bars) {
         setVolume(settings_volume());
@@ -291,6 +292,7 @@ void PlayerScreen::rotate(bsp_rotation_t rotation) {
     buildUi();
     lv_display_enable_invalidation(ui_, true);
     video_presenter_set_ui_insets(insets());
+    player_repaint();
     if (mode_ == UiMode::Bars) {
         lv_obj_invalidate(top_bar_);
         lv_obj_invalidate(bottom_bar_);

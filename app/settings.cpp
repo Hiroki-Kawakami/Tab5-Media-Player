@@ -4,15 +4,18 @@
  */
 
 #include "settings.hpp"
+#include "lvgl.hpp"
 #include "media_player.hpp"
 #include "nvs_flash.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #ifndef NVS_KEY_NAME_MAX_SIZE
 #define NVS_KEY_NAME_MAX_SIZE 16
@@ -125,10 +128,42 @@ Setting<"colordepth", uint8_t, +[](int bits) -> uint8_t {
     return bits == 24 ? 24 : 16;
 }> s_display_color_depth{16};
 
+constexpr auto clamp_volume = +[](int percent) -> uint8_t {
+    return std::clamp(percent, 0, 100);
+};
+
+Setting<"spkvolume", uint8_t, clamp_volume> s_speaker_volume{kDefaultSpeakerVolume};
+Setting<"hpvolume", uint8_t, clamp_volume> s_headphone_volume{kDefaultHeadphoneVolume};
+
+Setting<"equalizer", uint8_t, +[](bool enabled) -> uint8_t {
+    return enabled ? 1 : 0;
+}> s_equalizer{1};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
     fn(s_display_color_depth);
+    fn(s_speaker_volume);
+    fn(s_headphone_volume);
+    fn(s_equalizer);
+}
+
+std::atomic<bool> s_headphone;
+
+struct VolumeObserver {
+    lv_obj_t *owner;
+    std::function<void(int)> on_change;
+};
+std::vector<VolumeObserver> s_volume_observers;
+
+void headphone_changed(bool inserted, void *) {
+    s_headphone = inserted;
+    bsp_audio_set_volume(settings_volume());
+    lv_lock();
+    lv_async_call([] {
+        for (auto &observer : s_volume_observers) observer.on_change(settings_volume());
+    });
+    lv_unlock();
 }
 
 }  // namespace
@@ -145,6 +180,10 @@ void settings_init() {
 
 void settings_apply() {
     bsp_display_set_brightness(s_display_brightness.get());
+    s_headphone = bsp_audio_headphone_inserted();
+    bsp_audio_set_volume(settings_volume());
+    bsp_audio_set_eq_enabled(s_equalizer.get() != 0);
+    bsp_audio_set_headphone_callback(headphone_changed, nullptr);
 }
 
 void settings_commit() {
@@ -174,4 +213,42 @@ esp_err_t settings_set_display_pixel_format(bsp_pixel_format_t format) {
     if (err != ESP_OK) return err;
     s_display_color_depth.set((int)bsp_pixel_format_bytes(format) * 8);
     return ESP_OK;
+}
+
+bool settings_volume_is_headphone() {
+    return s_headphone;
+}
+
+int settings_volume() {
+    return s_headphone ? s_headphone_volume.get() : s_speaker_volume.get();
+}
+
+void settings_set_volume(int percent) {
+    const bool changed = s_headphone ? s_headphone_volume.set(percent)
+                                     : s_speaker_volume.set(percent);
+    if (!changed) return;
+    bsp_audio_set_volume(settings_volume());
+}
+
+void settings_volume_observe(lv_obj_t *owner, std::function<void(int)> on_change) {
+    s_volume_observers.push_back({owner, std::move(on_change)});
+    // lv_obj_add_event_fn cannot carry LV_EVENT_DELETE: it frees its own closure
+    // from an earlier callback on that same event.
+    lv_obj_add_event_cb(owner, [](lv_event_t *event) {
+        auto owner = (lv_obj_t *)lv_event_get_user_data(event);
+        for (auto it = s_volume_observers.begin(); it != s_volume_observers.end(); ++it) {
+            if (it->owner != owner) continue;
+            s_volume_observers.erase(it);
+            return;
+        }
+    }, LV_EVENT_DELETE, owner);
+}
+
+bool settings_equalizer_enabled() {
+    return s_equalizer.get() != 0;
+}
+
+void settings_set_equalizer_enabled(bool enabled) {
+    if (!s_equalizer.set(enabled)) return;
+    bsp_audio_set_eq_enabled(enabled);
 }

@@ -96,7 +96,7 @@ aspect does not choose it.
 ## Home screen
 
 `HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu
-(SD Card, USB Drive, Display) and the settings/file browser pages are not
+(SD Card, USB Drive, Display, Sound) and the settings/file browser pages are not
 separate screens but a page stack inside it (`app/screens/home/`), because
 landscape shows both at once: the menu on the left, the top page on the right.
 Portrait shows either the menu (empty stack) or the top page full-screen, which
@@ -121,7 +121,23 @@ flash write instead of one per step.
 `settings_init()` only opens NVS and reads the values, so `app_entry()` can call
 it before `bsp_init()`: the display pixel format is part of `bsp_config` and has
 to be known by then. Everything the BSP does not take through `bsp_config` is
-pushed by `settings_apply()` right after `bsp_init()` — brightness today.
+pushed by `settings_apply()` right after `bsp_init()`: brightness, volume, the
+equalizer, and the headphone callback.
+
+The settings pages share their rows, sliders and segmented toggles through
+`app/screens/home/settings_widgets.*`; a page is then only its values and the
+side effects of changing them.
+
+Volume is stored twice, one value per output route: the speaker and a pair of
+headphones are comfortable at very different settings, so a single value means
+re-dragging the slider on every insert and removal. The Sound page shows one
+slider that follows the route instead — `settings_volume()` reads the value for
+the route the BSP reports, and the headphone callback applies the other one on
+insert and removal. That callback runs on the BSP dispatch task, so the UI is
+told through `settings_volume_observe()`, whose observers are dispatched on the
+LVGL thread and released with the object they were registered on. `bsp_audio_set_mute()` is
+what the player's mute button toggles — muting by setting the volume to zero
+would persist the zero.
 
 The Display page's Color Mode switches the panel between RGB565 and RGB888
 without a restart. `media_player_set_display_pixel_format()` hides the main

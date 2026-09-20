@@ -47,7 +47,6 @@ private:
     bool auto_start_ = true;
     bool stop_bars_shown_ = false;
     uint32_t auto_start_tick_ = 0;
-    bool muted_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
     bsp_rotation_t rotation_ = BSP_ROTATION_0;
 

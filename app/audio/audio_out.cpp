@@ -6,6 +6,7 @@
 #include "audio_out.hpp"
 #include "ima_adpcm.hpp"
 #include "bsp.h"
+#include "settings.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -31,7 +32,6 @@ extern "C" {
 static const char *TAG = "audio_out";
 
 static constexpr std::size_t kPcmBytes = 64 * 1024;
-static constexpr int kDefaultVolume = 60;
 static constexpr uint32_t kOpusRate = 48000;
 
 enum class Mode {
@@ -61,7 +61,6 @@ static uint8_t s_channels;
 static uint8_t s_bits;
 static uint64_t s_frames;
 static uint8_t *s_pcm;
-static int s_volume = kDefaultVolume;
 
 static void publish_frames(std::size_t bytes) {
     const uint32_t frame_bytes = (uint32_t)s_channels * (s_bits / 8);
@@ -473,7 +472,7 @@ static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
 void audio_out_start() {
     if (s_lock) return;
     s_lock = xSemaphoreCreateMutex();
-    bsp_audio_set_volume(s_volume);
+    bsp_audio_set_volume(settings_volume());
 }
 
 bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
@@ -528,7 +527,7 @@ bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
     s_running = true;
     xSemaphoreGive(s_lock);
 
-    bsp_audio_set_volume(s_volume);
+    bsp_audio_set_volume(settings_volume());
     ESP_LOGI(TAG, "%s %u Hz %u bit x%u", codec_name(track.codec), (unsigned)s_rate,
              (unsigned)s_bits, (unsigned)s_channels);
     return true;
@@ -590,12 +589,3 @@ uint64_t audio_out_position_us() {
 }
 
 bool audio_out_running() { return s_running; }
-
-void audio_out_set_volume(int volume) {
-    if (volume < 0) volume = 0;
-    if (volume > 100) volume = 100;
-    s_volume = volume;
-    bsp_audio_set_volume(volume);
-}
-
-int audio_out_get_volume() { return s_volume; }

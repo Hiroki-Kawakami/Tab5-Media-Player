@@ -45,5 +45,6 @@ private:
     std::shared_ptr<HomePage> open_sd_card();
     std::shared_ptr<HomePage> open_usb_drive();
     std::shared_ptr<HomePage> open_display();
+    std::shared_ptr<HomePage> open_sound();
     void show_mount_error(const char *title, const char *message, esp_err_t err);
 };

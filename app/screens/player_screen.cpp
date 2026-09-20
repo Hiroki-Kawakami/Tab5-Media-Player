@@ -4,9 +4,9 @@
  */
 
 #include "player_screen.hpp"
-#include "audio/audio_out.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
+#include "settings.hpp"
 #include "video/video_presenter.hpp"
 #include "ui_orientation.hpp"
 #include "bsp.h"
@@ -487,19 +487,25 @@ void PlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     lv_obj_t *mute = create_icon_button(create_side_box(row, side), kIconButton,
                                         &icon_36, TABLER_VOLUME, &volume_label_);
     lv_obj_add_event_fn(mute, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        muted_ = !muted_;
-        audio_out_set_volume(muted_ ? 0 : lv_slider_get_value(volume_slider_));
+        bsp_audio_set_mute(!bsp_audio_get_mute());
         setVolumeIcon(lv_slider_get_value(volume_slider_));
     });
 
     volume_slider_ = create_slider(row, 100);
     lv_obj_set_width(volume_slider_, portrait ? kPortraitSlider : kVolumeSlider);
-    lv_slider_set_value(volume_slider_, audio_out_get_volume(), LV_ANIM_OFF);
-    setVolumeIcon(audio_out_get_volume());
+    lv_slider_set_value(volume_slider_, settings_volume(), LV_ANIM_OFF);
+    setVolumeIcon(settings_volume());
     lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *) {
         const int32_t volume = lv_slider_get_value(volume_slider_);
-        muted_ = false;
-        audio_out_set_volume(volume);
+        bsp_audio_set_mute(false);
+        settings_set_volume(volume);
+        setVolumeIcon(volume);
+    });
+    lv_obj_add_event_fn(volume_slider_, LV_EVENT_RELEASED,
+                        [](lv_event_t *) { settings_commit(); });
+    settings_volume_observe(volume_slider_, [this](int volume) {
+        if (lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
+        lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
         setVolumeIcon(volume);
     });
 
@@ -524,10 +530,10 @@ void PlayerScreen::setPlayIcon(bool playing) {
 }
 
 void PlayerScreen::setVolumeIcon(int32_t volume) {
-    const char *icon = muted_       ? TABLER_VOLUME_3
-                     : volume <= 0  ? TABLER_VOLUME_4
-                     : volume < 50  ? TABLER_VOLUME_2
-                                    : TABLER_VOLUME;
+    const char *icon = bsp_audio_get_mute() ? TABLER_VOLUME_3
+                     : volume <= 0          ? TABLER_VOLUME_4
+                     : volume < 50          ? TABLER_VOLUME_2
+                                            : TABLER_VOLUME;
     if (strcmp(lv_label_get_text(volume_label_), icon) != 0) lv_label_set_text(volume_label_, icon);
 }
 

@@ -16,5 +16,3 @@ void audio_out_write(const uint8_t *data, std::size_t len);
 void audio_out_flush();
 uint64_t audio_out_position_us();
 bool audio_out_running();
-void audio_out_set_volume(int volume);
-int audio_out_get_volume();

@@ -14,6 +14,7 @@
 #include "screens/home/display_page.hpp"
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
+#include "screens/home/sound_page.hpp"
 #include "usb_msc.h"
 #include "widgets.hpp"
 
@@ -23,6 +24,7 @@ const HomeScreen::MenuItem HomeScreen::kMenu[] = {
     {"Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
     {"Storage", LV_SYMBOL_USB, nullptr, "USB Drive", &HomeScreen::open_usb_drive},
     {"Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
+    {"Settings", TABLER_VOLUME, &icon_36, "Sound", &HomeScreen::open_sound},
 };
 
 static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
@@ -193,6 +195,10 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
 
 std::shared_ptr<HomePage> HomeScreen::open_display() {
     return std::make_shared<DisplayPage>();
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_sound() {
+    return std::make_shared<SoundPage>();
 }
 
 void HomeScreen::show_mount_error(const char *title, const char *message, esp_err_t err) {

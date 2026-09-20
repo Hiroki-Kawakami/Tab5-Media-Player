@@ -44,6 +44,8 @@ private:
     std::string path_;
     bool playing_ = false;
     bool scrubbing_ = false;
+    bool auto_start_ = true;
+    uint32_t auto_start_tick_ = 0;
     bool muted_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
     bsp_rotation_t rotation_ = BSP_ROTATION_0;

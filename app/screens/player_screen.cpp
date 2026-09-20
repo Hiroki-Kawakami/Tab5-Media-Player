@@ -20,7 +20,9 @@ static constexpr int32_t kTopBarHeight = 80;
 static constexpr int32_t kLandscapeBottomHeight = 160;
 static constexpr int32_t kPortraitBottomHeight = 272;
 static constexpr uint32_t kRefreshPeriodMs = 500;
+static constexpr uint32_t kAutoStartPollMs = 100;
 static constexpr uint32_t kAutoHideMs = 4000;
+static constexpr uint32_t kAutoStartHideMs = 1500;
 static constexpr int32_t kSeekRange = 1000;
 static constexpr int32_t kBarPadding = 24;
 static constexpr int32_t kPortraitSide = 116;
@@ -276,9 +278,11 @@ void PlayerScreen::onEnter() {
     player_set_loop(repeat_ != RepeatMode::Off);
     lv_display_trigger_activity(bottom_);
 
+    auto_start_ = true;
+    auto_start_tick_ = 0;
     timer_ = lv_timer_create([](lv_timer_t *timer) {
         static_cast<PlayerScreen *>(lv_timer_get_user_data(timer))->tick();
-    }, kRefreshPeriodMs, this);
+    }, kAutoStartPollMs, this);
     refresh();
 }
 
@@ -536,15 +540,28 @@ void PlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
 }
 
 void PlayerScreen::tick() {
+    const PlayerState state = player_status().state;
+    if (auto_start_ && (state == PlayerState::Paused || state == PlayerState::Failed)) {
+        auto_start_ = false;
+        lv_timer_set_period(timer_, kRefreshPeriodMs);
+        if (state == PlayerState::Paused) {
+            player_play();
+            setPlayIcon(true);
+            lv_display_trigger_activity(bottom_);
+            auto_start_tick_ = lv_tick_get();
+        }
+    }
+
     if (!s_bar_visible) {
-        const PlayerState state = player_status().state;
         if (state == PlayerState::Finished || state == PlayerState::Failed) set_bar_visible(true);
         return;
     }
     refresh();
     if (!playing_ || scrubbing_) return;
     if (volume_slider_ && lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
-    if (lv_display_get_inactive_time(nullptr) < kAutoHideMs) return;
+    const uint32_t inactive_ms = lv_display_get_inactive_time(nullptr);
+    const bool untouched = auto_start_tick_ && inactive_ms >= lv_tick_elaps(auto_start_tick_);
+    if (inactive_ms < (untouched ? kAutoStartHideMs : kAutoHideMs)) return;
     set_bar_visible(false);
 }
 

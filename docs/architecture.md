@@ -110,9 +110,37 @@ their views: a `FileBrowserPage` keeps its entries and scroll offset, so going
 back or rotating does not re-read the directory.
 
 Settings pages are pages of that same stack, so a setting opens next to the
-menu in landscape like a folder does. `app/settings.cpp` holds the values the
-UI edits and applies them to the hardware; nothing is written to NVS yet, so a
-changed setting lasts until the next boot.
+menu in landscape like a folder does. `app/settings.cpp` owns the values and
+keeps a single NVS handle open for the run, rather than an open/close around
+every setting. A setter applies the change to the hardware immediately and only
+marks the entry modified; `settings_commit()` writes the marked entries and is
+called when an interaction ends: the brightness slider commits on
+`LV_EVENT_RELEASED`, not on every `LV_EVENT_VALUE_CHANGED`, so a drag costs one
+flash write instead of one per step.
+
+A setting is a `Setting<"key", T, sanitize>` object. Key and sanitizer live in
+the type, so the object in RAM is the value plus a modified flag and nothing
+else: brightness is two bytes. With the video path short of SRAM, a settings
+list that grows to dozens of entries should stay in that order.
+
+`Codec<T>` maps the value type to its `nvs_get_*`/`nvs_set_*` pair, so each
+setting is stored at its own width (brightness as `u8`, not `i32`) and a type
+the machinery has not seen is one specialization; `std::string` is there
+already, because credentials and paths are the obvious next settings. The
+sanitizer is the one place a range is written: it clamps both what the UI sets
+and what comes back out of NVS, where a value may be stale or garbage.
+`for_each_setting` is the list `settings_init` and `settings_commit` walk; a
+setting missing from it simply never persists.
+
+Committing untouched entries would not write, but it is not free either: NVS
+compares against flash, which costs two 32-byte reads per entry, each with the
+cache disabled on both cores. The per-entry modified flag keeps a commit at
+zero flash access when nothing changed. Without an NVS partition the settings
+still work for the session and only the write is skipped.
+
+On the simulator NVS is esp-devkit's JSON-file store. Its default is relative
+to the process cwd like the SD card redirect, so `run.sh` pins
+`SIMULATOR_NVS_PATH` to `simulator/nvs_data.json`.
 
 Landscape is decided from the Home root's size, not `ui_orientation_current()`:
 while the player is open the IMU rotation moves on but the main display does

@@ -65,4 +65,5 @@ void DisplayPage::build(lv_obj_t *contents) {
         settings_set_display_brightness(brightness);
         lv_label_set_text_fmt(value, "%d%%", brightness);
     });
+    lv_obj_add_event_fn(slider, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
 }

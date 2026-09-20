@@ -11,4 +11,5 @@ captures
 __pycache__
 simulator/sdcard
 simulator/usb
+simulator/nvs_data.json
 target

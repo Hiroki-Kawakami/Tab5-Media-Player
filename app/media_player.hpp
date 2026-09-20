@@ -28,3 +28,5 @@ void app_entry();
 
 SharedSram media_player_acquire_sram();
 void media_player_release_sram();
+
+esp_err_t media_player_set_display_pixel_format(bsp_pixel_format_t format);

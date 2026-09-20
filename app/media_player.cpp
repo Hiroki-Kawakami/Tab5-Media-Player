@@ -62,14 +62,26 @@ void media_player_release_sram() {
     display_manager.set_visible(s_main, true);
 }
 
+esp_err_t media_player_set_display_pixel_format(bsp_pixel_format_t format) {
+    display_manager.set_visible(s_main, false);
+    bsp_display_wait_draw();
+    const esp_err_t err = bsp_display_reconfigure(format, 0);
+    display_manager.set_color_format(s_main);
+    display_manager.set_visible(s_main, true);
+    return err;
+}
+
 void app_entry() {
+    settings_init();
+
     bsp_config_t bsp_config = {};
     bsp_config.display.fb_num = 3;
-    bsp_config.display.pixel_format = BSP_PIXEL_FORMAT_RGB888;
+    bsp_config.display.pixel_format = settings_display_pixel_format();
     bsp_config.dispatch.task_priority = 6;
     bsp_config.dispatch.task_affinity = 1;
     bsp_config.audio.speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO;
     bsp_init(&bsp_config);
+    settings_apply();
 
     esp_err_t err = display_init();
     if (err != ESP_OK) {
@@ -113,6 +125,5 @@ void app_entry() {
         auto home = std::make_shared<HomeScreen>();
         s_home = home;
         screen_manager.load(home);
-        settings_init();
     });
 }

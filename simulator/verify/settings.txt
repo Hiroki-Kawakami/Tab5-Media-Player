@@ -11,6 +11,14 @@ wait 30
 up
 settle
 capture settings_brightness.jpg
+tap 615 300
+wait 100
+settle
+capture settings_color_24bit.jpg
+tap 509 300
+wait 100
+settle
+capture settings_color_16bit.jpg
 imu rot90
 wait 800
 settle

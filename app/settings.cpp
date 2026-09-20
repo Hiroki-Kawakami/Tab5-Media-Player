@@ -4,7 +4,7 @@
  */
 
 #include "settings.hpp"
-#include "bsp.h"
+#include "media_player.hpp"
 #include "nvs_flash.h"
 
 #include <algorithm>
@@ -121,9 +121,14 @@ Setting<"brightness", uint8_t, +[](int percent) -> uint8_t {
     return std::clamp(percent, kMinDisplayBrightness, 100);
 }> s_display_brightness{80};
 
+Setting<"colordepth", uint8_t, +[](int bits) -> uint8_t {
+    return bits == 24 ? 24 : 16;
+}> s_display_color_depth{16};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
+    fn(s_display_color_depth);
 }
 
 }  // namespace
@@ -136,7 +141,9 @@ void settings_init() {
     }
     s_nvs_open = err == ESP_OK && nvs_open(kNamespace.text, NVS_READWRITE, &s_nvs) == ESP_OK;
     if (s_nvs_open) for_each_setting([](auto &setting) { setting.load(s_nvs); });
+}
 
+void settings_apply() {
     bsp_display_set_brightness(s_display_brightness.get());
 }
 
@@ -154,4 +161,17 @@ int settings_display_brightness() {
 void settings_set_display_brightness(int percent) {
     if (!s_display_brightness.set(percent)) return;
     bsp_display_set_brightness(s_display_brightness.get());
+}
+
+bsp_pixel_format_t settings_display_pixel_format() {
+    return s_display_color_depth.get() == 24 ? BSP_PIXEL_FORMAT_RGB888
+                                             : BSP_PIXEL_FORMAT_RGB565;
+}
+
+esp_err_t settings_set_display_pixel_format(bsp_pixel_format_t format) {
+    if (format == settings_display_pixel_format()) return ESP_OK;
+    esp_err_t err = media_player_set_display_pixel_format(format);
+    if (err != ESP_OK) return err;
+    s_display_color_depth.set((int)bsp_pixel_format_bytes(format) * 8);
+    return ESP_OK;
 }

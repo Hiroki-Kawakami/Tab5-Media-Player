@@ -118,6 +118,31 @@ called when an interaction ends: the brightness slider commits on
 `LV_EVENT_RELEASED`, not on every `LV_EVENT_VALUE_CHANGED`, so a drag costs one
 flash write instead of one per step.
 
+`settings_init()` only opens NVS and reads the values, so `app_entry()` can call
+it before `bsp_init()`: the display pixel format is part of `bsp_config` and has
+to be known by then. Everything the BSP does not take through `bsp_config` is
+pushed by `settings_apply()` right after `bsp_init()` — brightness today.
+
+The Display page's Color Mode switches the panel between RGB565 and RGB888
+without a restart. `media_player_set_display_pixel_format()` hides the main
+display, waits for the blit in flight, calls `bsp_display_reconfigure()` and
+rebinds LVGL with `display_manager.set_color_format()`; showing the display
+again is what repaints it, because a hidden display drops invalidations. It runs
+from `lv_async_call`, not from the click, so the panel is not torn down inside an
+LVGL event. The default is RGB565: the panel format is also what the video path
+writes into the framebuffers, and 16-bit halves those bytes. A failed switch
+leaves the previous format up (the driver restarts the panel with it), so the UI
+puts the segment back and says so.
+
+RGB565 needs the PPA fix that `esp-devkit/flake.nix` patches into ESP-IDF: on
+v6.1 a rotated SRM blit whose leftover block is smaller than the 2D-DMA FIFO
+never raises its completion interrupt, which wedges the whole PPA client. The
+landscape UI hits it at 16-bit (a 879x69 chunk) but not at 24-bit (879x46).
+
+Video renderers read the panel format once, when the player opens
+(`video_presenter_begin()`), which is fine because Color Mode lives in Home and
+the player cannot be open at the same time.
+
 A setting is a `Setting<"key", T, sanitize>` object. Key and sanitizer live in
 the type, so the object in RAM is the value plus a modified flag and nothing
 else: brightness is two bytes. With the video path short of SRAM, a settings

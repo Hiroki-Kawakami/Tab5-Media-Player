@@ -75,6 +75,22 @@ PSRAM fragmentation making it unavailable after the UI has been used for a
 while. It cannot be a `.bss` array like the SRAM buffer, because `.bss` stays in
 internal RAM.
 
+## Audio decoder memory
+
+`CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n` keeps the P4's 32 KiB LP/RTC
+SRAM out of the heap. It is reachable from the HP core but uncached and behind
+the LP bus, so it is far slower than PSRAM, which is cached: once internal SRAM
+ran short, `esp_audio_codec` picked up ~25 KiB of MP3 working buffers there and
+decoding one frame went from 3 ms to 37 ms — 26 cycles per instruction, below
+real time, which dragged the whole timeline down because the media clock
+follows the audio position. Anything that quietly lands in that pool has the
+same failure mode, so the pool is gone rather than steered around.
+
+The `media_audio` task therefore only takes the stack its codec needs: 4 KiB
+covers MP3/AAC/ADPCM (measured: under 1 KiB of use), and the task is recreated
+with 20 KiB for Opus, which spends 11 KiB. The host port ignores the stack size,
+so it keeps the task it already has.
+
 ## Orientation
 
 `app/ui_orientation.cpp` follows `bsp_imu_get_orientation()` for all four

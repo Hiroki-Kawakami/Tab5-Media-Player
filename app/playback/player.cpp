@@ -11,6 +11,9 @@
 #include "mpeg2_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -26,7 +29,8 @@ static constexpr int kMjpegVideoSlots = 4;
 static constexpr int kAudioSlots = 8;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
-static constexpr uint32_t kAudioStackBytes = 20 * 1024;
+static constexpr uint32_t kAudioStackBytes = 4 * 1024;
+static constexpr uint32_t kOpusStackBytes = 20 * 1024;
 static constexpr int64_t kKeyframeSkipUs = 500000;
 static constexpr int kKeyframeSkipIntervals = 5;
 static constexpr int kBacklogSkipIntervals = 3;
@@ -79,6 +83,8 @@ static SemaphoreHandle_t s_reader_wake;
 static SemaphoreHandle_t s_reader_idle;
 static SemaphoreHandle_t s_audio_wake;
 static SemaphoreHandle_t s_audio_idle;
+static TaskHandle_t s_audio_task;
+static bool s_audio_quit;
 
 static VideoSlot s_video[kVideoSlots];
 static AudioSlot s_audio[kAudioSlots];
@@ -227,7 +233,7 @@ static void reader_task(void *) {
 }
 
 static void audio_task(void *) {
-    for (;;) {
+    while (!s_audio_quit) {
         xSemaphoreTake(s_audio_wake, portMAX_DELAY);
 
         while (s_audio_active) {
@@ -240,6 +246,50 @@ static void audio_task(void *) {
 
         xSemaphoreGive(s_audio_idle);
     }
+#ifdef ESP_PLATFORM
+    vTaskDeleteWithCaps(nullptr);
+#else
+    vTaskDelete(nullptr);
+#endif
+}
+
+#ifdef ESP_PLATFORM
+static BaseType_t audio_task_create(uint32_t stack_bytes, uint32_t caps) {
+    return xTaskCreatePinnedToCoreWithCaps(audio_task, "media_audio", stack_bytes, nullptr, 6,
+                                           &s_audio_task, tskNO_AFFINITY, caps | MALLOC_CAP_8BIT);
+}
+#endif
+
+static bool audio_task_start(uint32_t stack_bytes) {
+    s_audio_quit = false;
+#ifdef ESP_PLATFORM
+    BaseType_t created = pdFAIL;
+    if (stack_bytes <= kAudioStackBytes) {
+        created = audio_task_create(stack_bytes, MALLOC_CAP_INTERNAL);
+        if (created != pdPASS) ESP_LOGW(TAG, "audio task stack falls back to PSRAM");
+    }
+    if (created != pdPASS) created = audio_task_create(stack_bytes, MALLOC_CAP_SPIRAM);
+#else
+    const BaseType_t created =
+        xTaskCreate(audio_task, "media_audio", stack_bytes, nullptr, 6, &s_audio_task);
+#endif
+    if (created != pdPASS) {
+        s_audio_task = nullptr;
+        return false;
+    }
+    return true;
+}
+
+static void audio_task_stop() {
+    if (!s_audio_task) return;
+    s_audio_quit = true;
+    xSemaphoreTake(s_audio_idle, 0);
+    xSemaphoreGive(s_audio_wake);
+    if (xSemaphoreTake(s_audio_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) != pdTRUE) {
+        ESP_LOGW(TAG, "audio task did not exit");
+    }
+    xSemaphoreGive(s_audio_idle);
+    s_audio_task = nullptr;
 }
 
 static void audio_start() {
@@ -343,6 +393,7 @@ static bool due_keyframe_after(int64_t pts, int64_t now, int64_t *key_us) {
 }
 
 static void close_source() {
+    audio_task_stop();
     audio_out_close();
     if (s_demuxer) {
         s_demuxer->close();
@@ -416,6 +467,12 @@ static void handle_open(const std::string &path) {
 
     std::string note;
     s_have_audio = audio_out_open(info.audio, info.video.codec == CodecId::Mjpeg, &note);
+    if (s_have_audio &&
+        !audio_task_start(info.audio.codec == CodecId::Opus ? kOpusStackBytes : kAudioStackBytes)) {
+        audio_out_close();
+        s_have_audio = false;
+        note = "no memory for the audio task";
+    }
 
     MediaSummary summary;
     summary.valid = true;
@@ -722,7 +779,6 @@ void player_start(const media_arena_t &arena) {
     xSemaphoreGive(s_audio_idle);
     audio_out_start();
     xTaskCreate(reader_task, "media_reader", 4096, nullptr, 4, nullptr);
-    xTaskCreate(audio_task, "media_audio", kAudioStackBytes, nullptr, 6, nullptr);
     xTaskCreate(player_task, "player", 6144, nullptr, 5, nullptr);
 }
 

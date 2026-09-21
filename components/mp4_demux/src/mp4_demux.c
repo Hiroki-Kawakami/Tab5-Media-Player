@@ -757,8 +757,13 @@ static const char *parse_moov(mp4_demux_t *demux, span_t moov) {
         }
     }
     if (demux->fragmented) return "fragmented MP4 is not supported";
-    if (!demux->have_video) return "no video track";
-    if (demux->video.codec == MP4_VIDEO_CODEC_UNSUPPORTED) return "unsupported video codec in this MP4";
+    if (!demux->have_video && !demux->have_audio) return "no playable track";
+    if (demux->have_video && demux->video.codec == MP4_VIDEO_CODEC_UNSUPPORTED) {
+        return "unsupported video codec in this MP4";
+    }
+    if (!demux->have_video && demux->audio.codec == MP4_AUDIO_CODEC_UNSUPPORTED) {
+        return "unsupported audio codec in this MP4";
+    }
     return NULL;
 }
 
@@ -854,15 +859,17 @@ static void keep_opus_head(mp4_demux_t *demux, span_t dops) {
 
 static void fill_info(mp4_demux_t *demux) {
     track_t *video = &demux->video;
-    apply_edits(video, demux->movie_timescale);
-    demux->info.video.codec = (mp4_video_codec_t)video->codec;
-    demux->info.video.width = video->width;
-    demux->info.video.height = video->height;
-    demux->info.video.rotation_ccw = rotation_of(video);
-    demux->info.video.frame_interval_us = frame_interval_us(video);
-    if (video->codec_private.p) {
-        demux->info.video.codec_private = video->codec_private.p;
-        demux->info.video.codec_private_size = (uint32_t)span_size(video->codec_private);
+    if (demux->have_video) {
+        apply_edits(video, demux->movie_timescale);
+        demux->info.video.codec = (mp4_video_codec_t)video->codec;
+        demux->info.video.width = video->width;
+        demux->info.video.height = video->height;
+        demux->info.video.rotation_ccw = rotation_of(video);
+        demux->info.video.frame_interval_us = frame_interval_us(video);
+        if (video->codec_private.p) {
+            demux->info.video.codec_private = video->codec_private.p;
+            demux->info.video.codec_private_size = (uint32_t)span_size(video->codec_private);
+        }
     }
 
     if (demux->have_audio) {
@@ -886,7 +893,10 @@ static void fill_info(mp4_demux_t *demux) {
         demux->movie_duration != UINT32_MAX && demux->movie_duration != UINT64_MAX) {
         duration = ts_to_us((int64_t)demux->movie_duration, demux->movie_timescale);
     }
-    if (duration <= 0) duration = ts_to_us((int64_t)video->duration, video->timescale);
+    if (duration <= 0) {
+        const track_t *timed = demux->have_video ? video : &demux->audio;
+        duration = ts_to_us((int64_t)timed->duration, timed->timescale);
+    }
     demux->info.duration_us = duration;
     demux->info.seekable = true;
 }
@@ -904,6 +914,13 @@ static const char *audio_codec_name(mp4_audio_codec_t codec) {
 
 static void log_info(const char *path, const mp4_demux_t *demux) {
     const mp4_info_t *info = &demux->info;
+    if (!demux->have_video) {
+        ESP_LOGI(TAG, "%s: audio only, %lld us, %u samples, audio %s %u Hz x%u", path,
+                 (long long)info->duration_us, (unsigned)demux->audio.sample_count,
+                 audio_codec_name(info->audio.codec), (unsigned)info->audio.sample_rate,
+                 (unsigned)info->audio.channels);
+        return;
+    }
     ESP_LOGI(TAG, "%s: %ux%u, rotation %u, %lld us/frame, %lld us, %u frames, audio %s %u Hz x%u",
              path, (unsigned)info->video.width, (unsigned)info->video.height,
              (unsigned)info->video.rotation_ccw, (long long)info->video.frame_interval_us,
@@ -942,11 +959,12 @@ mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, const 
     }
 
     fill_info(demux);
-    cursor_seek(&demux->video, &demux->video_cursor, 0);
+    if (demux->have_video) cursor_seek(&demux->video, &demux->video_cursor, 0);
     if (demux->have_audio) cursor_seek(&demux->audio, &demux->audio_cursor, 0);
     log_info(path, demux);
 
-    mb_seek(demux->reader, (off_t)demux->video_cursor.offset);
+    mb_seek(demux->reader, (off_t)(demux->have_video ? demux->video_cursor.offset
+                                                     : demux->audio_cursor.offset));
     mb_set_readahead(demux->reader, true);
     return demux;
 }
@@ -1052,6 +1070,16 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     const track_t *video = &demux->video;
 
     int64_t landed = 0;
+    if (!demux->have_video) {
+        const track_t *audio = &demux->audio;
+        const uint32_t sample = pts_us > 0 ? sample_at_us(audio, pts_us, false) : 0;
+        cursor_seek(audio, &demux->audio_cursor, sample);
+        if (!demux->audio_cursor.valid) return false;
+        landed = cursor_pts_us(audio, &demux->audio_cursor);
+        if (landed < 0) landed = 0;
+        if (landed_us) *landed_us = landed;
+        return true;
+    }
     if (pts_us <= 0) {
         cursor_seek(video, &demux->video_cursor, 0);
     } else if (video->codec != MP4_VIDEO_CODEC_MJPEG) {

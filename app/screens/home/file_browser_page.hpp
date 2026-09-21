@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "home_page.hpp"
+#include "media/demuxer.hpp"
 #include "widgets.hpp"
 
 class FileBrowserPage : public HomePage, private ListDataSource {
@@ -22,7 +23,7 @@ private:
     struct Entry {
         std::string name;
         bool directory;
-        bool playable;
+        MediaKind kind;
     };
 
     std::string path_;

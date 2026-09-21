@@ -1,0 +1,64 @@
+settle
+tap 360 226
+settle
+tap 360 320
+settle
+capture audio_music_list.jpg
+tap 360 160
+wait 1500
+capture audio_aac_playing.jpg
+tap 360 1072
+wait 600
+capture audio_aac_paused.jpg
+tap 360 1072
+wait 600
+down 240 974
+wait 200
+move 400 974
+wait 200
+move 480 974
+wait 300
+up
+wait 1000
+capture audio_aac_seek.jpg
+wait 3000
+capture audio_aac_end.jpg
+tap 60 60
+settle
+tap 360 240
+wait 1500
+imu rot90
+wait 800
+settle
+capture audio_opus_landscape.jpg
+tap 445 925
+wait 600
+capture audio_opus_paused.jpg
+tap 445 925
+wait 600
+tap 445 650
+wait 400
+capture audio_opus_repeat.jpg
+down 347 1100
+wait 200
+move 347 900
+wait 200
+move 347 820
+wait 300
+up
+wait 1000
+capture audio_opus_seek.jpg
+wait 3000
+capture audio_opus_looped.jpg
+imu rot0
+wait 800
+settle
+tap 60 60
+settle
+tap 360 320
+wait 1500
+capture audio_unsupported.jpg
+tap 60 60
+settle
+capture audio_back_to_list.jpg
+imu release

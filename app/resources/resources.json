@@ -1,5 +1,11 @@
 {
   "font": {
+    "icon_120": {
+      "size": 120,
+      "icon": {
+        "TABLER_MUSIC": "tabler/music.svg"
+      }
+    },
     "icon_72": {
       "size": 72,
       "icon": {

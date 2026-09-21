@@ -4,19 +4,16 @@
  */
 
 #pragma once
-#include "bsp_types.h"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
 #include <string>
 
-struct VideoInsets;
-
-class VideoPlayerScreen : public NavigationScreen {
+class AudioPlayerScreen : public NavigationScreen {
 public:
-    VideoPlayerScreen(std::string name, std::string path)
+    AudioPlayerScreen(std::string name, std::string path)
         : name_(std::move(name)), path_(std::move(path)) {}
-    ~VideoPlayerScreen() override;
+    ~AudioPlayerScreen() override;
     void build() override;
     void onEnter() override;
     void onExit() override;
@@ -24,57 +21,40 @@ public:
 
 private:
     enum class RepeatMode { Off, All, One };
-    enum class UiMode { Hidden, Bars, Settings, Info };
 
-    bool openOverlay();
-    void closeOverlay();
-    void buildUi();
-    void rotate(bsp_rotation_t rotation);
-    void setMode(UiMode mode);
-    void requestMode(UiMode mode);
-    VideoInsets insets() const;
-    void populateInfo();
-    void buildTopBar(lv_obj_t *parent);
-    void buildBottomBar(lv_obj_t *parent, bool portrait);
-    void buildTransport(lv_obj_t *parent, bool repeat_only);
+    bool isLandscape() const;
+    void buildContents();
+    lv_obj_t *buildArtwork(lv_obj_t *parent, int32_t side);
+    void buildTitle(lv_obj_t *parent);
     void buildSeekRow(lv_obj_t *parent);
+    void buildTransport(lv_obj_t *parent);
     void buildVolumeRow(lv_obj_t *parent);
+    void relayout();
     void setRepeatMode(RepeatMode mode);
     void setPlayIcon(bool playing);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
     void tick();
     void refresh();
-    void showStartError(const std::string &message);
 
     std::string name_;
     std::string path_;
     bool playing_ = false;
     bool scrubbing_ = false;
     bool auto_start_ = true;
-    bool stop_bars_shown_ = false;
-    bool info_paused_ = false;
-    uint32_t auto_start_tick_ = 0;
+    bool landscape_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
-    UiMode mode_ = UiMode::Bars;
-    bsp_rotation_t rotation_ = BSP_ROTATION_0;
 
-    lv_display_t *ui_ = nullptr;
-    lv_obj_t *top_bar_ = nullptr;
-    lv_obj_t *bottom_bar_ = nullptr;
-    lv_obj_t *settings_ = nullptr;
-    lv_obj_t *info_ = nullptr;
-    lv_obj_t *info_button_ = nullptr;
-    lv_obj_t *title_label_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;
     lv_obj_t *seek_ = nullptr;
     lv_obj_t *elapsed_label_ = nullptr;
     lv_obj_t *total_label_ = nullptr;
+    lv_obj_t *subtitle_label_ = nullptr;
     lv_obj_t *volume_label_ = nullptr;
     lv_obj_t *volume_slider_ = nullptr;
     lv_timer_t *timer_ = nullptr;
 
     int64_t shown_elapsed_s_ = -1;
     int64_t shown_total_s_ = -1;
-    std::string shown_message_;
+    std::string shown_subtitle_;
 };

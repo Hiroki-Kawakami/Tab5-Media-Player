@@ -25,6 +25,7 @@ static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
 static constexpr uint32_t kAudioStackBytes = 4 * 1024;
 static constexpr uint32_t kOpusStackBytes = 20 * 1024;
+static constexpr uint32_t kAudioStepMs = 20;
 
 enum class Command {
     Open,
@@ -68,6 +69,7 @@ static media_arena_t s_arena;
 
 static bool s_audio_active;
 static bool s_have_audio;
+static bool s_audio_only;
 
 static MediaSummary s_summary;
 static std::string s_audio_note;
@@ -96,7 +98,7 @@ static void refill_free_queues() {
     while (xQueueReceive(s_audio_ready, &slot, 0) == pdTRUE) {
     }
     if (player_core.demuxer) player_core.demuxer->releaseAll();
-    video_pacing_arm_slots();
+    if (!s_audio_only) video_pacing_arm_slots();
     for (int i = 0; i < kAudioSlots; i++) {
         s_audio[i] = {};
         xQueueSend(s_audio_free, &i, 0);
@@ -129,7 +131,6 @@ static void reader_task(void *) {
                     player_core.demuxer->release(packet.ref);
                     break;
                 }
-                produced = true;
             } else {
                 int slot = -1;
                 if (!player_take_slot(s_audio_free, &slot)) {
@@ -139,6 +140,7 @@ static void reader_task(void *) {
                 s_audio[slot] = { packet.data, packet.len, packet.ref };
                 xQueueSend(s_audio_ready, &slot, portMAX_DELAY);
             }
+            produced = true;
         }
 
         xSemaphoreGive(s_reader_idle);
@@ -232,7 +234,7 @@ static void reader_stop() {
         ESP_LOGW(TAG, "reader did not settle");
     }
 
-    video_pacing_stop();
+    if (!s_audio_only) video_pacing_stop();
     refill_free_queues();
 }
 
@@ -247,7 +249,7 @@ static void reader_start() {
 int64_t player_media_clock_us() {
     const int64_t now = esp_timer_get_time();
     int64_t elapsed = now - player_core.origin_us;
-    if (s_have_audio && audio_out_running() && !video_pacing_backlog()) {
+    if (s_have_audio && audio_out_running() && (s_audio_only || !video_pacing_backlog())) {
         const int64_t audio =
             (int64_t)audio_out_position_us() - (int64_t)player_core.audio_origin_us;
         if (audio < elapsed - kAudioResyncUs) {
@@ -283,7 +285,7 @@ static void reset_timeline() {
     xSemaphoreGive(player_core.lock);
 }
 
-static void fail_open(const std::string &error) {
+static void fail_open(std::string error) {
     close_source();
     player_set_state(PlayerState::Failed, error);
 }
@@ -308,18 +310,21 @@ static void handle_open(const std::string &path) {
     }
 
     const MediaInfo &info = player_core.demuxer->info();
-    if (!video_pacing_codec_supported(info.video.codec)) {
-        fail_open("unsupported video codec");
-        return;
-    }
-    if (info.frame_interval_us <= 0 || info.duration_us <= 0) {
-        fail_open("video has no timeline");
-        return;
-    }
-    std::string video_error;
-    if (!video_pacing_open(info, &video_error)) {
-        fail_open(video_error);
-        return;
+    s_audio_only = info.video.codec == CodecId::None;
+    if (!s_audio_only) {
+        if (!video_pacing_codec_supported(info.video.codec)) {
+            fail_open("unsupported video codec");
+            return;
+        }
+        if (info.frame_interval_us <= 0 || info.duration_us <= 0) {
+            fail_open("video has no timeline");
+            return;
+        }
+        std::string video_error;
+        if (!video_pacing_open(info, &video_error)) {
+            fail_open(video_error);
+            return;
+        }
     }
 
     std::string note;
@@ -329,6 +334,10 @@ static void handle_open(const std::string &path) {
         audio_out_close();
         s_have_audio = false;
         note = "no memory for the audio task";
+    }
+    if (s_audio_only && !s_have_audio) {
+        fail_open(note.empty() ? "no playable track" : note);
+        return;
     }
 
     MediaSummary summary;
@@ -364,7 +373,7 @@ static void handle_open(const std::string &path) {
     xSemaphoreTake(player_core.lock, portMAX_DELAY);
     s_summary = summary;
     player_core.duration_us = info.duration_us;
-    player_core.interval_us = info.frame_interval_us;
+    player_core.interval_us = s_audio_only ? 0 : info.frame_interval_us;
     s_seekable = info.seekable;
     s_audio_codec = info.audio.codec;
     player_core.video_codec = info.video.codec;
@@ -372,7 +381,7 @@ static void handle_open(const std::string &path) {
     xSemaphoreGive(player_core.lock);
 
     refill_free_queues();
-    video_pacing_set_poster(true);
+    if (!s_audio_only) video_pacing_set_poster(true);
     player_set_state(PlayerState::Paused);
     reader_start();
 }
@@ -403,12 +412,12 @@ static bool rewind_to(int64_t position_us) {
         return false;
     }
     audio_out_flush();
-    video_pacing_rewound();
+    if (!s_audio_only) video_pacing_rewound();
     xSemaphoreTake(player_core.lock, portMAX_DELAY);
     player_core.shown_us = landed_us;
     player_core.next_us = landed_us;
     xSemaphoreGive(player_core.lock);
-    video_pacing_set_poster(true);
+    if (!s_audio_only) video_pacing_set_poster(true);
     reader_start();
     return true;
 }
@@ -416,7 +425,7 @@ static bool rewind_to(int64_t position_us) {
 static void handle_play() {
     if (!player_core.demuxer || !player_core.demuxer->isOpen()) return;
     if (player_core.state == PlayerState::Finished ||
-        player_core.next_us >= player_core.duration_us) {
+        (player_core.duration_us > 0 && player_core.next_us >= player_core.duration_us)) {
         if (!rewind_to(0)) return;
     }
     player_core.origin_us = esp_timer_get_time();
@@ -438,15 +447,16 @@ static void handle_restart() {
 }
 
 static void handle_seek(int64_t position_us) {
-    if (!player_core.demuxer || !player_core.demuxer->isOpen() || player_core.interval_us <= 0) {
-        return;
-    }
+    if (!player_core.demuxer || !player_core.demuxer->isOpen()) return;
+    if (!s_audio_only && player_core.interval_us <= 0) return;
     const bool playing = player_core.state == PlayerState::Playing;
-    if (position_us >= player_core.duration_us) {
+    if (player_core.duration_us > 0 && position_us >= player_core.duration_us) {
         position_us = player_core.duration_us - player_core.interval_us;
     }
     if (position_us < 0) position_us = 0;
-    position_us = position_us / player_core.interval_us * player_core.interval_us;
+    if (player_core.interval_us > 0) {
+        position_us = position_us / player_core.interval_us * player_core.interval_us;
+    }
     if (!rewind_to(position_us)) return;
     if (playing) {
         handle_play();
@@ -470,6 +480,33 @@ static void handle_loop(bool loop) {
     }
 }
 
+static void audio_only_step() {
+    int64_t position = player_core.origin_pts_us + player_media_clock_us();
+    if (player_core.duration_us > 0 && position >= player_core.duration_us) {
+        if (player_core.loop) {
+            player_core.origin_us += player_core.duration_us - player_core.origin_pts_us;
+            player_core.origin_pts_us = 0;
+            player_core.audio_origin_us =
+                (uint64_t)((int64_t)audio_out_position_us() -
+                           (esp_timer_get_time() - player_core.origin_us));
+            position = player_media_clock_us();
+        } else {
+            position = player_core.duration_us;
+        }
+    }
+    xSemaphoreTake(player_core.lock, portMAX_DELAY);
+    player_core.shown_us = position;
+    player_core.next_us = position;
+    xSemaphoreGive(player_core.lock);
+
+    if (player_core.reader_eof && uxQueueMessagesWaiting(s_audio_free) == kAudioSlots) {
+        player_audio_stop();
+        player_set_state(PlayerState::Finished);
+        return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(kAudioStepMs));
+}
+
 static void handle_command(const CommandItem &item) {
     switch (item.command) {
     case Command::Open:    handle_open(*item.path); break;
@@ -487,16 +524,21 @@ static void handle_command(const CommandItem &item) {
 
 static void player_task(void *) {
     for (;;) {
+        const bool poster = !s_audio_only && video_pacing_wants_poster();
         const bool busy = player_core.state == PlayerState::Playing ||
-                          (player_core.state == PlayerState::Paused && video_pacing_wants_poster());
+                          (player_core.state == PlayerState::Paused && poster);
         CommandItem item = {};
         if (xQueueReceive(s_commands, &item, busy ? 0 : portMAX_DELAY) == pdTRUE) {
             handle_command(item);
             continue;
         }
         if (player_core.state == PlayerState::Playing) {
-            video_pacing_step();
-        } else if (player_core.state == PlayerState::Paused && video_pacing_wants_poster()) {
+            if (s_audio_only) {
+                audio_only_step();
+            } else {
+                video_pacing_step();
+            }
+        } else if (player_core.state == PlayerState::Paused && poster) {
             video_pacing_step_poster();
         }
     }

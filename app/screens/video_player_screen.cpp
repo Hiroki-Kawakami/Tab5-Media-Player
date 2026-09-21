@@ -6,6 +6,7 @@
 #include "video_player_screen.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
+#include "screens/media_controls.hpp"
 #include "screens/video_player/info_panel.hpp"
 #include "screens/video_player/settings_panel.hpp"
 #include "settings.hpp"
@@ -16,7 +17,6 @@
 #include "resources.h"
 
 #include <cstdio>
-#include <cstring>
 
 static constexpr int32_t kTopBarHeight = 80;
 static constexpr int32_t kLandscapeBottomHeight = 160;
@@ -39,6 +39,7 @@ static constexpr int32_t kTopBarPadding = 8;
 static constexpr int32_t kOverlayBufferLines = 32;
 
 static constexpr uint32_t kBarColor = 0x101010;
+static constexpr uint32_t kTrackColor = 0x404040;
 static constexpr uint32_t kMessageColor = 0xffb74d;
 
 /* Clockwise, so a rotation is a shift along the cycle. */
@@ -67,17 +68,6 @@ static void add_inset(VideoInsets &insets, Edge edge, int32_t thickness) {
     }
 }
 
-static void format_time(char *text, size_t size, int64_t seconds) {
-    if (seconds < 0) {
-        snprintf(text, size, "--:--");
-    } else if (seconds >= 3600) {
-        snprintf(text, size, "%d:%02d:%02d", (int)(seconds / 3600), (int)(seconds / 60 % 60),
-                 (int)(seconds % 60));
-    } else {
-        snprintf(text, size, "%d:%02d", (int)(seconds / 60), (int)(seconds % 60));
-    }
-}
-
 static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
     lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
     lv_obj_set_size(bar, width, height);
@@ -96,33 +86,6 @@ static lv_obj_t *create_row(lv_obj_t *parent) {
     lv_obj_t *row = lv_container_create(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     return row;
-}
-
-static lv_obj_t *create_icon_button(lv_obj_t *parent, int32_t size, const lv_font_t *font,
-                                    const char *icon, lv_obj_t **label = nullptr) {
-    lv_obj_t *button = lv_button_create(parent, LV_BUTTON_STYLE_PLAIN);
-    lv_obj_set_size(button, size, size);
-    lv_obj_set_style_pad_all(button, 0, 0);
-    lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(button, lv_color_white(), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(button, LV_OPA_20, LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(button, lv_color_white(), 0);
-    lv_obj_set_style_text_color(button, lv_color_hex(0x606060), LV_STATE_DISABLED);
-    lv_obj_t *icon_label = lv_button_set_text(button, icon, font);
-    if (label) *label = icon_label;
-    return button;
-}
-
-static lv_obj_t *create_slider(lv_obj_t *parent, int32_t max) {
-    lv_obj_t *slider = lv_slider_create(parent);
-    lv_slider_set_range(slider, 0, max);
-    lv_obj_set_height(slider, 8);
-    lv_obj_set_style_bg_color(slider, lv_color_hex(0x404040), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(slider, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
-    lv_obj_set_style_pad_all(slider, 8, LV_PART_KNOB);
-    return slider;
 }
 
 void VideoPlayerScreen::build() {
@@ -262,7 +225,7 @@ void VideoPlayerScreen::setMode(UiMode mode) {
     player_repaint();
 
     if (mode == UiMode::Bars) {
-        setVolume(settings_volume());
+        media_volume_show(volume_label_, volume_slider_, settings_volume());
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     } else if (mode == UiMode::Settings) {
@@ -425,8 +388,10 @@ void VideoPlayerScreen::buildTopBar(lv_obj_t *parent) {
 
     lv_spacer_create(parent, 1, 1, 1);
 
-    info_button_ = create_icon_button(parent, kIconButton, &icon_36, TABLER_INFO_CIRCLE);
-    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !player_media_summary().valid);
+    info_button_ = media_icon_button(parent, kIconButton, &icon_36, TABLER_INFO_CIRCLE,
+                                          lv_color_white());
+    const MediaSummary summary = player_media_summary();
+    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !summary.valid);
     lv_obj_add_event_fn(info_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         requestMode(UiMode::Info);
     });
@@ -484,8 +449,8 @@ void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
 
 void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
     if (repeat_only) {
-        lv_obj_t *repeat = create_icon_button(parent, kIconButton, &icon_36, TABLER_REPEAT_OFF,
-                                              &repeat_label_);
+        lv_obj_t *repeat = media_icon_button(parent, kIconButton, &icon_36, TABLER_REPEAT_OFF,
+                                             lv_color_white(), &repeat_label_);
         lv_obj_add_event_fn(repeat, LV_EVENT_CLICKED, [this](lv_event_t *) {
             switch (repeat_) {
             case RepeatMode::Off: setRepeatMode(RepeatMode::All); break;
@@ -498,10 +463,11 @@ void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
         return;
     }
 
-    lv_obj_t *prev = create_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_PREV);
+    lv_obj_t *prev = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, lv_color_white());
     lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [](lv_event_t *) { player_restart(); });
 
-    lv_obj_t *play = create_icon_button(parent, 120, &icon_72, TABLER_PLAYER_PLAY, &play_label_);
+    lv_obj_t *play = media_icon_button(parent, 120, &icon_72, TABLER_PLAYER_PLAY, lv_color_white(),
+                                           &play_label_);
     lv_obj_add_event_fn(play, LV_EVENT_CLICKED, [this](lv_event_t *) {
         if (playing_) {
             player_pause();
@@ -512,7 +478,7 @@ void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
         lv_display_trigger_activity(ui_);
     });
 
-    lv_obj_t *next = create_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT);
+    lv_obj_t *next = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, lv_color_white());
     lv_obj_add_state(next, LV_STATE_DISABLED);
 
     setPlayIcon(playing_);
@@ -529,7 +495,7 @@ void VideoPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     lv_obj_set_style_text_align(elapsed_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(elapsed_label_, lv_widgets_body_font(), 0);
 
-    seek_ = create_slider(row, kSeekRange);
+    seek_ = media_slider(row, kSeekRange, lv_color_white(), lv_color_hex(kTrackColor));
     if (portrait) {
         lv_obj_set_width(seek_, kPortraitSlider);
     } else {
@@ -564,32 +530,15 @@ void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     const int32_t side = portrait ? kPortraitSide : kTimeWidth;
     lv_obj_set_style_pad_column(row, portrait ? 0 : kSeekGap, 0);
 
-    lv_obj_t *mute = create_icon_button(create_side_box(row, side), kIconButton,
-                                        &icon_36, TABLER_VOLUME, &volume_label_);
-    lv_obj_add_event_fn(mute, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        bsp_audio_set_mute(!bsp_audio_get_mute());
-        setVolumeIcon(lv_slider_get_value(volume_slider_));
-    });
+    lv_obj_t *mute = media_icon_button(create_side_box(row, side), kIconButton, &icon_36,
+                                       TABLER_VOLUME, lv_color_white(), &volume_label_);
 
-    volume_slider_ = create_slider(row, 100);
+    volume_slider_ = media_slider(row, 100, lv_color_white(), lv_color_hex(kTrackColor));
     lv_obj_set_width(volume_slider_, portrait ? kPortraitSlider : kVolumeSlider);
-    lv_slider_set_value(volume_slider_, settings_volume(), LV_ANIM_OFF);
-    setVolumeIcon(settings_volume());
-    lv_obj_add_event_fn(volume_slider_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *) {
-        const int32_t volume = lv_slider_get_value(volume_slider_);
-        bsp_audio_set_mute(false);
-        settings_set_volume(volume);
-        setVolumeIcon(volume);
-    });
-    lv_obj_add_event_fn(volume_slider_, LV_EVENT_RELEASED,
-                        [](lv_event_t *) { settings_commit(); });
-    settings_volume_observe(volume_slider_, [this](int volume) {
-        if (lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
-        setVolume(volume);
-    });
+    media_volume_bind(mute, volume_label_, volume_slider_);
 
-    lv_obj_t *settings = create_icon_button(create_side_box(row, side), kIconButton,
-                                            &icon_36, TABLER_ADJUSTMENTS_HORIZONTAL);
+    lv_obj_t *settings = media_icon_button(create_side_box(row, side), kIconButton, &icon_36,
+                                           TABLER_ADJUSTMENTS_HORIZONTAL, lv_color_white());
     lv_obj_add_event_fn(settings, LV_EVENT_CLICKED, [this](lv_event_t *) {
         requestMode(UiMode::Settings);
     });
@@ -610,26 +559,12 @@ void VideoPlayerScreen::setPlayIcon(bool playing) {
     if (play_label_) lv_label_set_text(play_label_, playing ? TABLER_PLAYER_PAUSE : TABLER_PLAYER_PLAY);
 }
 
-void VideoPlayerScreen::setVolume(int32_t volume) {
-    if (!volume_slider_) return;
-    lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
-    setVolumeIcon(volume);
-}
-
-void VideoPlayerScreen::setVolumeIcon(int32_t volume) {
-    const char *icon = bsp_audio_get_mute() ? TABLER_VOLUME_3
-                     : volume <= 0          ? TABLER_VOLUME_4
-                     : volume < 50          ? TABLER_VOLUME_2
-                                            : TABLER_VOLUME;
-    if (strcmp(lv_label_get_text(volume_label_), icon) != 0) lv_label_set_text(volume_label_, icon);
-}
-
 void VideoPlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
     const int64_t seconds = us < 0 ? -1 : us / 1000000;
     if (seconds == *shown_s) return;
     *shown_s = seconds;
     char text[16];
-    format_time(text, sizeof(text), seconds);
+    media_format_time(text, sizeof(text), seconds);
     lv_label_set_text(label, text);
 }
 
@@ -671,7 +606,8 @@ void VideoPlayerScreen::refresh() {
     const PlayerStatus status = player_status();
     const bool playing = status.state == PlayerState::Playing;
     if (playing != playing_) setPlayIcon(playing);
-    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !player_media_summary().valid);
+    const MediaSummary summary = player_media_summary();
+    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !summary.valid);
 
     const bool known = status.duration_us > 0 && status.state != PlayerState::Loading;
     setTime(total_label_, &shown_total_s_, known ? status.duration_us : -1);
@@ -683,6 +619,9 @@ void VideoPlayerScreen::refresh() {
 
     std::string message = status.state == PlayerState::Failed ? status.error : std::string();
     if (message.empty()) message = video_presenter_error();
+    if (message.empty() && summary.valid && summary.video.codec == CodecId::None) {
+        message = "no video track";
+    }
     if (message.empty()) message = status.audio_note;
     if (message != shown_message_) {
         shown_message_ = message;

@@ -16,15 +16,17 @@ namespace {
 struct Format {
     const char *suffix;
     const char *name;
+    MediaKind kind;
     std::unique_ptr<Demuxer> (*create)();
 };
 
 constexpr Format kFormats[] = {
-    { ".avi", "AVI", avi_demuxer_create },
-    { ".mkv", "Matroska", mkv_demuxer_create },
-    { ".mp4", "MP4", mp4_demuxer_create },
-    { ".m4v", "MP4", mp4_demuxer_create },
-    { ".mov", "QuickTime", mp4_demuxer_create },
+    { ".avi", "AVI", MediaKind::Video, avi_demuxer_create },
+    { ".mkv", "Matroska", MediaKind::Video, mkv_demuxer_create },
+    { ".mp4", "MP4", MediaKind::Video, mp4_demuxer_create },
+    { ".m4v", "MP4", MediaKind::Video, mp4_demuxer_create },
+    { ".mov", "QuickTime", MediaKind::Video, mp4_demuxer_create },
+    { ".m4a", "MP4", MediaKind::Audio, mp4_demuxer_create },
 };
 
 bool starts_with_start_code(const uint8_t *data, std::size_t size) {
@@ -83,8 +85,9 @@ bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<ui
     return true;
 }
 
-bool demuxer_supports(const char *name) {
-    return format_of(name) != nullptr;
+MediaKind demuxer_media_kind(const char *name) {
+    const Format *format = format_of(name);
+    return format ? format->kind : MediaKind::None;
 }
 
 const char *demuxer_format_name(const std::string &path) {

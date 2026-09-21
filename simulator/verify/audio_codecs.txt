@@ -11,7 +11,7 @@ wait 800
 tap 612 1060
 wait 5500
 capture audio_aac_avi.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -22,16 +22,16 @@ imu rot90
 wait 800
 tap 612 1060
 wait 1000
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 3000
 capture audio_aac_mkv.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -43,7 +43,7 @@ wait 800
 tap 612 1060
 wait 5500
 capture audio_aac_laced.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -55,7 +55,7 @@ wait 800
 tap 612 1060
 wait 5500
 capture audio_adpcm_avi.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -67,7 +67,7 @@ wait 800
 tap 612 1060
 wait 5500
 capture audio_adpcm_mkv.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -78,16 +78,16 @@ imu rot90
 wait 800
 tap 612 1060
 wait 1000
-down 663 1200
+down 600 680
 wait 200
-move 663 900
+move 600 500
 wait 200
-move 663 640
+move 600 410
 wait 300
 up
 wait 3000
 capture audio_opus_mkv.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu rot0
 wait 800
@@ -99,6 +99,6 @@ wait 800
 tap 612 1060
 wait 5500
 capture audio_opus_laced.jpg
-tap 612 1213
+tap 40 1235
 settle
 imu release

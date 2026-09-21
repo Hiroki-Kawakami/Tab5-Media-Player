@@ -37,6 +37,12 @@ protected:
 bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<uint8_t> *annexb,
                            uint8_t *nal_length_size);
 
-bool demuxer_supports(const char *name);
+enum class MediaKind {
+    None,
+    Video,
+    Audio,
+};
+
+MediaKind demuxer_media_kind(const char *name);
 const char *demuxer_format_name(const std::string &path);
 std::unique_ptr<Demuxer> demuxer_create(const std::string &path);

@@ -7,8 +7,13 @@ volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
 
-The planned additions are audio-only files, images, playlists and playing
-a directory in order. None of them exist yet.
+Audio-only files play too: `*.m4a` (AAC, MP3, Opus or PCM in MP4) opens
+`AudioPlayerScreen` instead (see [Audio-only files](#audio-only-files)).
+`*.wav`, `*.mp3` and `*.aac` are the next containers to add, and `.opus`/Ogg
+is deliberately left out for now.
+
+The planned additions are the remaining audio containers, images, playlists and
+playing a directory in order. None of them exist yet.
 Their names are in the layout so you can see where each would land. Only the
 decisions that are expensive to reverse later were taken now.
 
@@ -42,6 +47,8 @@ media_buffer          │           └─▶ present
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/video_player_screen.*` | the full-screen player UI |
+| `app/screens/audio_player_screen.*` | the audio-only player UI, on the main display |
+| `app/screens/media_controls.*` | the transport widgets both screens build (icon button, slider, time text, the volume row's behaviour) |
 
 ## Decisions taken now because they are expensive later
 
@@ -279,6 +286,12 @@ at the end and the restart on flush. What differs:
 - **No interlaced MPEG-2, no MPEG-1, no MPEG-PS/TS (`.mpg`, `.ts`, `.vob`).**
   See [`mpeg2.md`](mpeg2.md#scope).
 - **No sample aspect ratio.** Every codec is shown with square pixels.
+- **No `.wav`, `.mp3` or `.aac` yet**, and no `.opus`: Ogg needs page parsing
+  and a bisection over granule positions, which is worth its own step.
+- **No tags.** Title, artist and cover art are not read from any container, so
+  the audio screen shows the file name and a placeholder.
+- **No playlist.** Both screens play exactly one file; the next-track button is
+  disabled.
 
 ## Reading: one buffer from the card to the decoder
 
@@ -464,6 +477,67 @@ track's next sample is earlier and reads backwards in the file when needed.
   that far apart. On the Tab5, `j_separate_big.mp4` plays but skips a burst of
   frames about once a second, which is accepted. 720p in a normal MP4 plays as
   fast as the same stream in MKV.
+
+## Audio-only files
+
+`demuxer_create()`'s extension table also says whether a file is video or
+audio (`MediaKind`), and the file browser opens `AudioPlayerScreen` for the
+audio ones. Only `.m4a` is there today; the container is `mp4_demux`, which now
+accepts a file with no video track. A file with a video extension and no video
+track still opens in `VideoPlayerScreen`, which plays the sound over a black
+picture and says "no video track" in the bar, rather than the browser second
+guessing the extension.
+
+- **The player skips `video_pacing` entirely.** `handle_open()` branches on
+  `info.video.codec == None`: no presenter, no video ring, no poster. The
+  frame interval is 0, which is what the seek code checks before snapping a
+  target to the frame grid, and a duration of 0 only disables seeking instead
+  of failing the open ("video has no timeline" is a video rule).
+- **The position comes from the clock, not from packets.** With no frames to
+  show, nothing would ever move `shown_us`, so `audio_only_step()` sets it from
+  `player_media_clock_us()` on every pass. That clock is still wall time pulled
+  back by the audio position, so a card stall drags the slider back with it.
+- **The end is "the reader is at EOF and every audio slot is free".** The BSP
+  has no drain or queued-bytes call, so the last moment the player can observe
+  is the one where `audio_out_write()` has returned for the last packet. The
+  device buffer still plays out after that; `Finished` only moves the UI, and
+  `bsp_audio_close()` does not happen until the screen leaves. Waiting for the
+  clock to reach the duration instead would hang whenever the duration in the
+  file is optimistic, because an exhausted audio track drags the clock down.
+- **A loop wrap is detected from the clock passing the duration.** The reader
+  wraps by itself, and no packet ever reaches the player task, so there is no
+  pts going backwards to see (which is how the video path notices). The origin
+  is advanced by exactly one pass, as it is there.
+  - The reader's "produced something this pass" guard, which stops an empty
+    file from seeking to 0 forever, used to count video packets only. An
+    audio-only file therefore stopped at the end however loop was set.
+- **MP4 without a video track.** `parse_moov` only insists on one usable
+  track; seek moves the audio cursor and reports its own pts, `stss` and the
+  keyframe index stay video-only, and the duration falls back to the audio
+  `mdhd` when `mvhd` has none. A video track that is present but unsupported
+  still fails the open, so a broken video file does not quietly play as audio.
+
+## The audio screen
+
+`AudioPlayerScreen` is a plain `ScreenManager` screen on the main display, so
+none of `VideoPlayerScreen`'s machinery applies: no display of its own, no SRAM
+handover, no insets, no rotation listener, and no auto-hide, because the UI is
+the whole screen rather than something sitting on top of a picture. Rotation is
+`LV_EVENT_SIZE_CHANGED` on the root, which rebuilds the contents on the next
+LVGL tick like Home does.
+
+- **The artwork is a square sized from what the controls leave over**, so it is
+  built after them and moved in front of them. In portrait that is the width or
+  the leftover height, whichever is smaller; in landscape the controls take the
+  left half and the square takes the contents height.
+- **It is a placeholder.** No demuxer reads tags yet, so the title is the file
+  name and the second line carries the audio format, or the failure in orange.
+  Reading title, artist and cover art is a separate step.
+- **The transport widgets are shared with the video player**
+  (`app/screens/media_controls.*`): the icon buttons, the sliders, the time
+  text and the whole behaviour of the volume row, which is the part that must
+  not drift between the two screens. Only the colours differ, and they are
+  arguments.
 
 ## Source rotation
 
@@ -829,3 +903,21 @@ The fixtures are `testsrc` at 640x360, 30 fps, 6 s, `-c:v mpeg2video -g 15
 | `c_ibbp_aac.mp4` | `-bf 2`, AAC, `-movflags +faststart` (ffmpeg writes `mp4v`, object type 0x61) |
 | `d_ip_mp3.avi` | `-bf 0`, `libmp3lame` |
 | `e_720p.mkv` | 1280x720, `-bf 2 -b:v 5M`, AAC, 3 s |
+
+`simulator/verify/audio_player.txt` drives `AudioPlayerScreen` from `Music/`
+(an existing root directory, so no other script's row positions move): it plays
+`a_aac.m4a` in portrait with pause, a seek drag and the end of the file, then
+`b_opus.m4a` in landscape with pause, repeat, a seek drag and the loop wrap,
+and finally opens `c_alac.m4a`, whose codec is unsupported, to check that the
+failure reaches the second line. Audio cannot be captured, so what the captures
+prove is the clock, the state of the transport and the layout in both
+orientations.
+
+```sh
+nix develop -c ffmpeg -f lavfi -i sine=frequency=440:sample_rate=44100:duration=6 \
+    -c:a aac -b:a 128k simulator/sdcard/Music/a_aac.m4a
+```
+
+`b_opus.m4a` is `-c:a libopus` at `sample_rate=48000 -ac 2` with `-f mp4`
+forced (the `.m4a` extension picks the `ipod` muxer, which refuses Opus), and
+`c_alac.m4a` is `-c:a alac`.

@@ -8,6 +8,7 @@
 #include "media/demuxer.hpp"
 #include "media_player.hpp"
 #include "screen_manager.hpp"
+#include "screens/audio_player_screen.hpp"
 #include "screens/video_player_screen.hpp"
 
 #include <algorithm>
@@ -57,7 +58,8 @@ bool FileBrowserPage::load_entries() {
     while (struct dirent *ent = readdir(dir)) {
         if (ent->d_name[0] == '.') continue;
         const bool directory = ent->d_type == DT_DIR;
-        entries_.push_back({ent->d_name, directory, !directory && demuxer_supports(ent->d_name)});
+        const MediaKind kind = directory ? MediaKind::None : demuxer_media_kind(ent->d_name);
+        entries_.push_back({ent->d_name, directory, kind});
     }
     closedir(dir);
 
@@ -111,13 +113,15 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
 
 void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     const Entry &entry = entries_[index];
-    const char *icon = entry.directory ? LV_SYMBOL_DIRECTORY
-                     : entry.playable  ? LV_SYMBOL_VIDEO
-                                       : LV_SYMBOL_FILE;
+    const char *icon = entry.directory                ? LV_SYMBOL_DIRECTORY
+                     : entry.kind == MediaKind::Video ? LV_SYMBOL_VIDEO
+                     : entry.kind == MediaKind::Audio ? LV_SYMBOL_AUDIO
+                                                      : LV_SYMBOL_FILE;
     lv_label_set_text(lv_obj_get_child(row, 0), icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
-    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE, entry.directory || entry.playable);
+    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE,
+                    entry.directory || entry.kind != MediaKind::None);
 }
 
 void FileBrowserPage::didSelectRow(std::size_t index) {
@@ -125,7 +129,9 @@ void FileBrowserPage::didSelectRow(std::size_t index) {
     const std::string path = path_ + "/" + entry.name;
     if (entry.directory) {
         home_->push(std::make_shared<FileBrowserPage>(path, entry.name));
-    } else if (entry.playable) {
+    } else if (entry.kind == MediaKind::Audio) {
+        screen_manager.push(std::make_shared<AudioPlayerScreen>(entry.name, path));
+    } else if (entry.kind == MediaKind::Video) {
         screen_manager.push(std::make_shared<VideoPlayerScreen>(entry.name, path));
     }
 }

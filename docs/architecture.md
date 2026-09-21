@@ -97,10 +97,12 @@ so it keeps the task it already has.
 rotations; `UNKNOWN` and `FACE_UP/DOWN` keep the current one. With no listener
 it rotates the main display with `display_manager.set_rotation`, which the
 Partial render mode supports and which swaps the LVGL resolution. Home has its
-own landscape layout (see [Home screen](#home-screen)); the player handles
-rotation itself.
+own landscape layout (see [Home screen](#home-screen)); the video player handles
+rotation itself. `AudioPlayerScreen` keeps the main display, so it is rotated
+for it and only relays out its own contents on `LV_EVENT_SIZE_CHANGED`, like
+Home.
 
-While the player is open it registers itself as the listener and the main
+While the video player is open it registers itself as the listener and the main
 display is left alone. `set_rotation` re-hands the draw buffers to LVGL, and
 during playback those buffers are the decoder's. The main display catches up
 when the listener is cleared, which `VideoPlayerScreen::onExit` does after the
@@ -193,7 +195,8 @@ be redrawn into the area the panel leaves it.
 
 ## Home screen
 
-`HomeScreen` is the only ScreenManager screen besides `VideoPlayerScreen`. The menu
+`HomeScreen` is one of three ScreenManager screens, next to `VideoPlayerScreen`
+and `AudioPlayerScreen` (see [`playback.md`](playback.md#the-audio-screen)). The menu
 (SD Card, USB Drive, Display, Sound) and the settings/file browser pages are not
 separate screens but a page stack inside it (`app/screens/home/`), because
 landscape shows both at once: the menu on the left, the top page on the right.

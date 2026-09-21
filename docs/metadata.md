@@ -139,14 +139,42 @@ with no swap.
 
 ## Decoding a cover
 
-`jpeg_enh_decoder_process()` (whole-frame, no strip buffers) is used for every
-JPEG within 1.5 Mpx, on both targets — the host build has the same entry point
-backed by image_framework, so the simulator exercises the path the board runs.
-Above that limit, and for PNG or a progressive JPEG the hardware cannot take,
-the fallback streams rows out of image_framework's decoder through the
-resizer, which never materialises the full picture. The JPEG header is parsed
-with image_framework either way, so a file neither backend can read is rejected
-before anything is allocated.
+Baseline JPEG within 1.5 Mpx goes through `jpeg_ppa_pipeline` (Layer 2 of
+jpeg_decode_enhanced): the hardware decoder writes 16-row strips and PPA SRM
+scales each strip down as it lands. Both targets take this path — the host
+build is backed by image_framework, so the simulator exercises what the board
+runs. Above that limit, and for PNG or a progressive JPEG the hardware cannot
+take, the fallback streams rows out of image_framework's decoder through the
+resizer, which never materialises the full picture.
+
+The reason for PPA is that the decode was never the cost. On a 700x700 cover
+the hardware decode is 11 ms and the software box-downscale to 56x56 was
+135 ms: the resizer walks every source pixel with a 64-bit accumulate, which
+RV32 does not have. PPA reads the same pixels as DMA instead, and a 700x700
+cover now costs 36 ms of pipeline plus 8 ms of box.
+
+PPA cannot land on the wanted size by itself: its scale factors are quantized
+to sixteenths and bottom out at 1/16, so 700 -> 56 is not expressible. The
+pipeline therefore runs the smallest sixteenth that still overshoots the
+target (2/16 -> 87x87 for a 700px cover) and the existing box resizer covers
+the rest. That last step also does the pixel-format conversion, which is why
+the strips and the PPA output stay RGB888 whatever the panel wants.
+
+PPA scales by interpolating, not by averaging, so a 1/8 step samples 2x2 out
+of every 8x8 block. Thumbnails come out slightly crisper and noisier than the
+old full box filter. Cascading halvings through PPA would average properly if
+that ever matters more than the 3x.
+
+The two strip buffers are 64 KB of PSRAM, which caps the JPEG at 1365 px wide
+(16 rows x 3 bytes must fit one buffer); wider covers fall back to software.
+Doubling them to 128 KB was measured and changed nothing — PPA is bound by
+reading the strips out of PSRAM, not by per-strip overhead. Internal RAM would
+be the fast place for them, but 2 x 34 KB is most of what the board has free
+and the video path already claims that budget.
+
+The JPEG header is parsed by `jpeg_image_size()`, shared with the MJPEG
+renderer; it also rejects progressive, so the hardware path is never tried for
+a frame it cannot take.
 
 The decoder and encoder engines are created on first use and released after
 five idle seconds: browsing a folder without covers, or playing audio, holds no

@@ -12,11 +12,11 @@
 
 struct VideoInsets;
 
-class PlayerScreen : public NavigationScreen {
+class VideoPlayerScreen : public NavigationScreen {
 public:
-    PlayerScreen(std::string name, std::string path)
+    VideoPlayerScreen(std::string name, std::string path)
         : name_(std::move(name)), path_(std::move(path)) {}
-    ~PlayerScreen() override;
+    ~VideoPlayerScreen() override;
     void build() override;
     void onEnter() override;
     void onExit() override;

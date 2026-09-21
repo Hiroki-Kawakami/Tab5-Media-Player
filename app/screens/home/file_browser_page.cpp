@@ -8,7 +8,7 @@
 #include "media/demuxer.hpp"
 #include "media_player.hpp"
 #include "screen_manager.hpp"
-#include "screens/player_screen.hpp"
+#include "screens/video_player_screen.hpp"
 
 #include <algorithm>
 #include <dirent.h>
@@ -126,6 +126,6 @@ void FileBrowserPage::didSelectRow(std::size_t index) {
     if (entry.directory) {
         home_->push(std::make_shared<FileBrowserPage>(path, entry.name));
     } else if (entry.playable) {
-        screen_manager.push(std::make_shared<PlayerScreen>(entry.name, path));
+        screen_manager.push(std::make_shared<VideoPlayerScreen>(entry.name, path));
     }
 }

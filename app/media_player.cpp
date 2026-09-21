@@ -13,7 +13,7 @@
 #include "playback/player.hpp"
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
-#include "screens/player_screen.hpp"
+#include "screens/video_player_screen.hpp"
 #include "settings.hpp"
 #include "ui_orientation.hpp"
 #include "usb_msc.h"
@@ -109,7 +109,7 @@ void app_entry() {
         player_eject(kUsbMountPoint);
         lv_lock();
         lv_async_call([] {
-            PlayerScreen::eject(kUsbMountPoint);
+            VideoPlayerScreen::eject(kUsbMountPoint);
             if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
         });
         lv_unlock();

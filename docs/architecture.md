@@ -64,7 +64,7 @@ whose stack lands there hangs the chip when FreeRTOS saves its vector
 registers. Adding `MALLOC_CAP_INTERNAL` looks harmless but leaves almost no
 matching memory by the time the player opens (details in
 [`h264.md`](h264.md#pie)). If `video_presenter_begin()` fails anyway,
-`PlayerScreen` gives the SRAM back and says so in a modal.
+`VideoPlayerScreen` gives the SRAM back and says so in a modal.
 
 ## Media arena
 
@@ -103,7 +103,7 @@ rotation itself.
 While the player is open it registers itself as the listener and the main
 display is left alone. `set_rotation` re-hands the draw buffers to LVGL, and
 during playback those buffers are the decoder's. The main display catches up
-when the listener is cleared, which `PlayerScreen::onExit` does after the
+when the listener is cleared, which `VideoPlayerScreen::onExit` does after the
 decoder is gone and before the display is shown again.
 
 Opening the player keeps whatever rotation the UI already has; the video's
@@ -145,7 +145,7 @@ one of the two, which holds as long as LVGL never invalidates the video area:
   top of a frame: the board is slow enough to show the frame first, blank it
   and only then play. The only such event left during playback is the
   resolution change inside `set_rotation`, which
-  `PlayerScreen::rotate` suppresses with `lv_display_enable_invalidation` and
+  `VideoPlayerScreen::rotate` suppresses with `lv_display_enable_invalidation` and
   replaces with an invalidate of the bars alone.
 - Building a bar invalidates wherever it sits until the layout runs, which for
   an aligned bar is the top-left corner, so `buildUi` settles the layout while
@@ -193,7 +193,7 @@ be redrawn into the area the panel leaves it.
 
 ## Home screen
 
-`HomeScreen` is the only ScreenManager screen besides `PlayerScreen`. The menu
+`HomeScreen` is the only ScreenManager screen besides `VideoPlayerScreen`. The menu
 (SD Card, USB Drive, Display, Sound) and the settings/file browser pages are not
 separate screens but a page stack inside it (`app/screens/home/`), because
 landscape shows both at once: the menu on the left, the top page on the right.

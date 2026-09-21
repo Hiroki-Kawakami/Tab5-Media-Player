@@ -3,7 +3,7 @@
 What plays today: MJPEG, H.264 or progressive MPEG-2 (up to 1280x720) in
 `*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
 audio, plus Opus in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
-volume. Picking one in the file browser opens `PlayerScreen`. The H.264 and
+volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
 
@@ -15,9 +15,10 @@ decisions that are expensive to reverse later were taken now.
 ## Layers
 
 ```
-PlayerScreen        LVGL bar (Partial, straight into FB 0), transport UI
+VideoPlayerScreen   LVGL bar (Partial, straight into FB 0), transport UI
   │ player_open(path) / play / seek(us) ...
-Player              command task, state machine, media clock, pacing, loop
+Player              command task, state machine, media clock, loop
+  │                 video_pacing: submit, drop, keyframe resync
   │
 Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRenderer ─┬─ JPEG ▶ FB            (direct)
   (Avi/Mkv/Mp4)       │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
@@ -37,10 +38,10 @@ media_buffer          │           └─▶ present
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, MKV and MP4 adapters |
-| `app/playback/` | `Player`: reader, audio and pacing tasks |
+| `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture |
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
-| `app/screens/player_screen.*` | the full-screen player UI |
+| `app/screens/video_player_screen.*` | the full-screen player UI |
 
 ## Decisions taken now because they are expensive later
 
@@ -139,8 +140,19 @@ matches.
 
 **The player only opens paths.** It has no idea what comes next. Playing a
 directory in order or a playlist becomes a layer that watches for `Finished`
-and calls `player_open()` again. The screen is called `PlayerScreen`, not
-`VideoScreen`, because audio files will use it too.
+and calls `player_open()` again.
+
+**One engine, a screen per medium.** `Player` is meant to serve audio-only
+files as well, so what it does for any file — the reader, the slot lifetime, the
+`media_buffer` pin rules, the state machine, seek and loop — stays in
+`player.cpp`, and a second copy of those rules is the mistake this split exists
+to prevent. Everything that is there only because there is a picture lives in
+`video_pacing.cpp` behind `video_pacing_*`, and a file with no video track
+simply never enters it. The two talk through `PlayerCore` in
+`player_internal.hpp`: the timeline both of them move, plus the demuxer, the
+state and the lock.
+The screens do not share. An audio screen keeps the main LVGL display, so it
+needs none of `VideoPlayerScreen`'s own display, insets and SRAM handover.
 
 ## H.264 playback
 
@@ -157,7 +169,7 @@ the presenter drive it.
   a running average of how long draws take, and when several frames are due it
   draws only the newest. MJPEG stays single-stage: its decode and scale are one
   hardware pipeline.
-- **The player submits H.264 frames early.** `step_playing()` hands a frame
+- **The player submits H.264 frames early.** `video_pacing_step()` hands a frame
   over 120 ms before it is due (`kDecodeLeadUs`) together with its due time in
   `esp_timer` terms. The poster and anything submitted while paused carry a due
   time of 0, which means "now". Pausing therefore still shows the few frames
@@ -216,7 +228,7 @@ the presenter drive it.
 - **Decoded pictures come out in display order, so the player schedules by two
   clocks.** The decoder holds pictures back until their output order is settled
   (see [`h264.md`](h264.md#output-order)), which means a packet's presentation
-  time is no longer the time it must be decoded. `step_playing()` hands a packet
+  time is no longer the time it must be decoded. `video_pacing_step()` hands a packet
   over `s_reorder_lead_us` before its own presentation time and passes that time
   along as the frame's due time; the decoder returns it with whichever picture
   comes out. The lead is learned from the stream: it is the largest amount by
@@ -619,7 +631,7 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   hidden (`DisplayManagerConfig::visible`), otherwise its first render would
   land on whatever is on screen before the presenter starts.
 - **Rotating recreates the bars.** Their logical size changes with the rotation,
-  so `PlayerScreen::rotate` deletes them, sets the presenter's rotation, creates
+  so `VideoPlayerScreen::rotate` deletes them, sets the presenter's rotation, creates
   new ones and applies their insets. The presenter applies a rotation between
   frames.
 - **Applying insets has to leave framebuffer 0 on screen.** LVGL's partial
@@ -706,7 +718,7 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 
 ## Simulator
 
-`simulator/verify/player.txt` goes Home → SD Card → `Movies/`, then exercises
+`simulator/verify/video_player.txt` goes Home → SD Card → `Movies/`, then exercises
 poster, play, pause, hiding and showing the bar, seek, restart, loop and back
 on `Movies/clip.avi`. It then plays `Movies/ffmpeg.avi`. It injects `imu rot90`
 once the player is open, so the bar coordinates are the landscape ones. The bars

@@ -3,11 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "player_screen.hpp"
+#include "video_player_screen.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
-#include "screens/player/info_panel.hpp"
-#include "screens/player/settings_panel.hpp"
+#include "screens/video_player/info_panel.hpp"
+#include "screens/video_player/settings_panel.hpp"
 #include "settings.hpp"
 #include "video/video_presenter.hpp"
 #include "ui_orientation.hpp"
@@ -44,7 +44,7 @@ static constexpr uint32_t kMessageColor = 0xffb74d;
 /* Clockwise, so a rotation is a shift along the cycle. */
 enum class Edge { Top, Right, Bottom, Left };
 
-static PlayerScreen *s_active;
+static VideoPlayerScreen *s_active;
 
 static bool is_portrait(bsp_rotation_t rotation) {
     return rotation == BSP_ROTATION_0 || rotation == BSP_ROTATION_180;
@@ -125,11 +125,11 @@ static lv_obj_t *create_slider(lv_obj_t *parent, int32_t max) {
     return slider;
 }
 
-void PlayerScreen::build() {
+void VideoPlayerScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_black(), 0);
 }
 
-VideoInsets PlayerScreen::insets() const {
+VideoInsets VideoPlayerScreen::insets() const {
     VideoInsets insets;
     switch (mode_) {
     case UiMode::Bars:
@@ -150,7 +150,7 @@ VideoInsets PlayerScreen::insets() const {
     return insets;
 }
 
-bool PlayerScreen::openOverlay() {
+bool VideoPlayerScreen::openOverlay() {
     DisplayManagerConfig config = {};
     config.present_mode = DisplayPresentMode::Immediate;
     config.render_mode = DisplayRenderMode::Partial;
@@ -166,7 +166,7 @@ bool PlayerScreen::openOverlay() {
     return true;
 }
 
-void PlayerScreen::closeOverlay() {
+void VideoPlayerScreen::closeOverlay() {
     if (!ui_) return;
     display_manager.delete_display(ui_);
     ui_ = nullptr;
@@ -187,7 +187,7 @@ void PlayerScreen::closeOverlay() {
     info_paused_ = false;
 }
 
-void PlayerScreen::buildUi() {
+void VideoPlayerScreen::buildUi() {
     lv_obj_t *screen = lv_display_get_screen_active(ui_);
     lv_obj_clean(screen);
     lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
@@ -236,7 +236,7 @@ void PlayerScreen::buildUi() {
     lv_obj_update_layout(screen);
 }
 
-void PlayerScreen::setMode(UiMode mode) {
+void VideoPlayerScreen::setMode(UiMode mode) {
     if (!ui_ || mode == mode_) return;
     mode_ = mode;
 
@@ -284,13 +284,13 @@ void PlayerScreen::setMode(UiMode mode) {
     }
 }
 
-void PlayerScreen::requestMode(UiMode mode) {
+void VideoPlayerScreen::requestMode(UiMode mode) {
     lv_async_call([this, mode] {
         if (s_active == this) setMode(mode);
     });
 }
 
-void PlayerScreen::rotate(bsp_rotation_t rotation) {
+void VideoPlayerScreen::rotate(bsp_rotation_t rotation) {
     if (rotation == rotation_) return;
     rotation_ = rotation;
     video_presenter_set_rotation(rotation);
@@ -316,11 +316,11 @@ void PlayerScreen::rotate(bsp_rotation_t rotation) {
     refresh();
 }
 
-void PlayerScreen::eject(const std::string &mount_point) {
+void VideoPlayerScreen::eject(const std::string &mount_point) {
     if (s_active && path_is_under(s_active->path_, mount_point)) s_active->back();
 }
 
-void PlayerScreen::onEnter() {
+void VideoPlayerScreen::onEnter() {
     s_active = this;
     rotation_ = ui_orientation_current();
     mode_ = UiMode::Bars;
@@ -336,7 +336,7 @@ void PlayerScreen::onEnter() {
     }
     video_presenter_set_ui_insets(insets());
     ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
-        static_cast<PlayerScreen *>(arg)->rotate(rotation);
+        static_cast<VideoPlayerScreen *>(arg)->rotate(rotation);
     }, this);
 
     /* The first LVGL pass covers the whole screen, video area included. Let it
@@ -352,12 +352,12 @@ void PlayerScreen::onEnter() {
     auto_start_ = true;
     auto_start_tick_ = 0;
     timer_ = lv_timer_create([](lv_timer_t *timer) {
-        static_cast<PlayerScreen *>(lv_timer_get_user_data(timer))->tick();
+        static_cast<VideoPlayerScreen *>(lv_timer_get_user_data(timer))->tick();
     }, kAutoStartPollMs, this);
     refresh();
 }
 
-void PlayerScreen::onExit() {
+void VideoPlayerScreen::onExit() {
     if (s_active == this) s_active = nullptr;
     if (timer_) {
         lv_timer_delete(timer_);
@@ -371,12 +371,12 @@ void PlayerScreen::onExit() {
     media_player_release_sram();
 }
 
-PlayerScreen::~PlayerScreen() {
+VideoPlayerScreen::~VideoPlayerScreen() {
     if (timer_) lv_timer_delete(timer_);
     closeOverlay();
 }
 
-void PlayerScreen::showStartError(const std::string &message) {
+void VideoPlayerScreen::showStartError(const std::string &message) {
     auto modal = lv_modal_open(root_);
     lv_modal_title_create(modal, "Video");
     lv_modal_message_create(modal, message.empty() ? "video output unavailable" : message.c_str());
@@ -386,7 +386,7 @@ void PlayerScreen::showStartError(const std::string &message) {
     });
 }
 
-void PlayerScreen::populateInfo() {
+void VideoPlayerScreen::populateInfo() {
     if (!info_) return;
     lv_obj_clean(info_);
     player_info_panel_build(info_, name_, player_media_summary(),
@@ -394,7 +394,7 @@ void PlayerScreen::populateInfo() {
     lv_obj_update_layout(info_);
 }
 
-void PlayerScreen::buildTopBar(lv_obj_t *parent) {
+void VideoPlayerScreen::buildTopBar(lv_obj_t *parent) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_hor(parent, kTopBarPadding, 0);
@@ -440,7 +440,7 @@ void PlayerScreen::buildTopBar(lv_obj_t *parent) {
     }
 }
 
-void PlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
+void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
     lv_obj_set_style_pad_hor(parent, kBarPadding, 0);
     lv_obj_set_style_pad_ver(parent, 12, 0);
 
@@ -482,7 +482,7 @@ void PlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
     buildVolumeRow(right);
 }
 
-void PlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
+void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
     if (repeat_only) {
         lv_obj_t *repeat = create_icon_button(parent, kIconButton, &icon_36, TABLER_REPEAT_OFF,
                                               &repeat_label_);
@@ -518,7 +518,7 @@ void PlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
     setPlayIcon(playing_);
 }
 
-void PlayerScreen::buildSeekRow(lv_obj_t *parent) {
+void VideoPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     const bool portrait = is_portrait(rotation_);
     lv_obj_t *row = create_row(parent);
     lv_obj_set_size(row, lv_pct(100), 56);
@@ -556,7 +556,7 @@ void PlayerScreen::buildSeekRow(lv_obj_t *parent) {
     lv_obj_set_style_text_font(total_label_, lv_widgets_body_font(), 0);
 }
 
-void PlayerScreen::buildVolumeRow(lv_obj_t *parent) {
+void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     const bool portrait = is_portrait(rotation_);
     lv_obj_t *row = create_row(parent);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
@@ -595,7 +595,7 @@ void PlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     });
 }
 
-void PlayerScreen::setRepeatMode(RepeatMode mode) {
+void VideoPlayerScreen::setRepeatMode(RepeatMode mode) {
     repeat_ = mode;
     if (!repeat_label_) return;
     switch (mode) {
@@ -605,18 +605,18 @@ void PlayerScreen::setRepeatMode(RepeatMode mode) {
     }
 }
 
-void PlayerScreen::setPlayIcon(bool playing) {
+void VideoPlayerScreen::setPlayIcon(bool playing) {
     playing_ = playing;
     if (play_label_) lv_label_set_text(play_label_, playing ? TABLER_PLAYER_PAUSE : TABLER_PLAYER_PLAY);
 }
 
-void PlayerScreen::setVolume(int32_t volume) {
+void VideoPlayerScreen::setVolume(int32_t volume) {
     if (!volume_slider_) return;
     lv_slider_set_value(volume_slider_, volume, LV_ANIM_OFF);
     setVolumeIcon(volume);
 }
 
-void PlayerScreen::setVolumeIcon(int32_t volume) {
+void VideoPlayerScreen::setVolumeIcon(int32_t volume) {
     const char *icon = bsp_audio_get_mute() ? TABLER_VOLUME_3
                      : volume <= 0          ? TABLER_VOLUME_4
                      : volume < 50          ? TABLER_VOLUME_2
@@ -624,7 +624,7 @@ void PlayerScreen::setVolumeIcon(int32_t volume) {
     if (strcmp(lv_label_get_text(volume_label_), icon) != 0) lv_label_set_text(volume_label_, icon);
 }
 
-void PlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
+void VideoPlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
     const int64_t seconds = us < 0 ? -1 : us / 1000000;
     if (seconds == *shown_s) return;
     *shown_s = seconds;
@@ -633,7 +633,7 @@ void PlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
     lv_label_set_text(label, text);
 }
 
-void PlayerScreen::tick() {
+void VideoPlayerScreen::tick() {
     if (mode_ == UiMode::Info) return;
     const PlayerState state = player_status().state;
     if (auto_start_ && (state == PlayerState::Paused || state == PlayerState::Failed)) {
@@ -665,7 +665,7 @@ void PlayerScreen::tick() {
     setMode(UiMode::Hidden);
 }
 
-void PlayerScreen::refresh() {
+void VideoPlayerScreen::refresh() {
     if (!seek_ || mode_ != UiMode::Bars) return;
 
     const PlayerStatus status = player_status();

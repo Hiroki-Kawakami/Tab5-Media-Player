@@ -263,6 +263,56 @@ preset's keys would not make sense for it. `default` names only the codecs,
 so it follows the codecs' own defaults when they change. The run prints the
 merged specs, so it is clear what was applied.
 
+## Thumbnails
+
+Every output carries a picture from the video as cover art, so the file browser
+has a thumbnail for it (`--thumbnail none` turns it off). The player only ever
+reads cover art; decoding a frame of H.264 or MPEG-2 on the device would need
+the work arena the browser's display is using, see
+[`metadata.md`](metadata.md).
+
+- **Not the first frame.** Videos often open on black or a fade, so the picture
+  comes from 10 s in (`at=`), lowered to half the duration for a video shorter
+  than twice that.
+- **320 px on the long side** (`long=`), following the output's aspect ratio and
+  never upscaled. A 56 px browser row needs far less, but the device caches
+  the JPEG and decodes it to whatever size a layout asks for, so a bigger
+  thumbnail costs only the 5-10 KB the picture takes in the file.
+- **The picture is in the orientation the player shows, not the stored one.**
+  MJPEG stores a landscape video turned 90 degrees and hands the player the
+  opposite rotation as metadata (`rotatemeta`); cover art carries no rotation
+  of its own, so it is written the way up the viewer will see it — turned only
+  when the rotation was baked in with `rotatemeta=no`.
+- **Always BT.601 full range**, whatever the video's own colour is, because
+  that is how a JFIF JPEG is read.
+- **Where it goes.** MP4 keeps it in `moov/udta/meta/ilst/covr` and MKV as an
+  attachment whose name is `cover.jpg`, which is what `mp4_demux` and
+  `mkv_demux` look for. ffmpeg's MP4 muxer writes an `attached_pic` stream as
+  `covr` rather than a track of its own, so the player still sees exactly two
+  tracks.
+- **The frame is taken by a second, short ffmpeg run**, not tapped out of the
+  conversion. `-ss` in front of `-i` makes it cost the same on a long input as
+  on a short one, and one code path then serves all four muxing paths (the two
+  ffmpeg ones and the built-in MP4 muxer, for MJPEG). The browser has no
+  ffmpeg, so it keeps the scaled frame it has already decoded.
+- **Both front ends encode the JPEG with `core`'s encoder** (`thumbnail.rs`), so
+  the only difference between a CLI and a browser cover is which resampler
+  scaled it. `npm run e2e` compares the two.
+- **The encoded video's ffmpeg options carry `:v:0`.** A plain `-vf` applies to
+  every output video stream, and with a cover copied alongside it ffmpeg refuses
+  the run: "Filtering and streamcopy cannot be used together". The specifier is
+  what keeps the filter and the encoder off the picture.
+- **Progress is counted in frames, not `out_time`.** ffmpeg's `-progress`
+  reports the time of whatever stream it muxed last, and the cover goes in
+  after the final video packet: the closing report of a run with one says
+  0.04 s. `frame` only ever counts the first video stream, so
+  `run_monitored` divides it by the output frame rate instead.
+- **A cover that cannot be made is a warning, not a failure.** The conversion
+  still produces the file.
+- **The ffmpeg muxers only take it as a file**, so it is written next to the
+  `.part` output as `<output>.cover.jpg` and deleted with it, whether the run
+  succeeded or not.
+
 ## MP3
 
 - **A CBR bitrate must be one MP3 can signal at the output sample rate**

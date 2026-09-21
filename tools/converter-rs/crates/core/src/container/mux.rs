@@ -7,6 +7,7 @@ use super::io::Sink;
 
 const MOVIE_TIMESCALE: u32 = 1000;
 const MDAT_HEADER: u64 = 16;
+const COVER_JPEG: u32 = 13;
 const LANGUAGE_UND: u16 = 0x55C4;
 const FIXED_ONE: u32 = 0x0001_0000;
 const FIXED_MINUS_ONE: u32 = 0xFFFF_0000;
@@ -65,6 +66,7 @@ pub struct Mp4Muxer<S: Sink> {
     pos: u64,
     mdat_start: u64,
     last_track: Option<usize>,
+    cover: Option<Vec<u8>>,
 }
 
 struct Writer(Vec<u8>);
@@ -177,7 +179,13 @@ impl<S: Sink> Mp4Muxer<S> {
             pos: w.0.len() as u64,
             mdat_start,
             last_track: None,
+            cover: None,
         })
+    }
+
+    /// Cover art, written as `moov/udta/meta/ilst/covr`.
+    pub fn set_cover(&mut self, jpeg: Vec<u8>) {
+        self.cover = Some(jpeg);
     }
 
     pub fn set_codec(&mut self, track: usize, codec: MuxCodec) -> Result<()> {
@@ -273,9 +281,33 @@ impl<S: Sink> Mp4Muxer<S> {
             for (i, track) in self.tracks.iter().enumerate() {
                 trak(w, i as u32 + 1, track, long);
             }
+            if let Some(cover) = &self.cover {
+                udta(w, cover);
+            }
         });
         w.0
     }
+}
+
+fn udta(w: &mut Writer, cover: &[u8]) {
+    w.boxed(b"udta", |w| {
+        w.full(b"meta", 0, 0, |w| {
+            w.full(b"hdlr", 0, 0, |w| {
+                w.u32(0);
+                w.bytes(b"mdir");
+                w.bytes(b"appl");
+                w.zeros(9);
+            });
+            w.boxed(b"ilst", |w| {
+                w.boxed(b"covr", |w| {
+                    w.full(b"data", 0, COVER_JPEG, |w| {
+                        w.u32(0);
+                        w.bytes(cover);
+                    });
+                });
+            });
+        });
+    });
 }
 
 fn trak(w: &mut Writer, id: u32, track: &TrackState, long: bool) {

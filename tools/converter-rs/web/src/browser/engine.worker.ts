@@ -510,6 +510,12 @@ async function convert(
   const sourceColor = job.sourceColor();
 
   let held: Picture | null = null;
+  // The cover art is a frame a little into the video, since the first one is
+  // often still black. Every frame up to that point is kept, so a video that
+  // ends before it still gets a cover.
+  const coverAt = job.coverAt();
+  let cover: Picture | null = null;
+  let coverDone = coverAt < 0;
   let lastPts = 0;
   let lastDuration = 0;
   let frames = Promise.resolve();
@@ -547,6 +553,10 @@ async function convert(
     } else {
       const scaled = await source.data;
       held = { kind: "rgba", data: timing.measure("render", () => render(scaled)) };
+    }
+    if (!coverDone) {
+      cover = held;
+      coverDone = decoded.timestamp >= coverAt;
     }
     lastPts = decoded.timestamp;
     lastDuration = decoded.duration ?? 0;
@@ -702,6 +712,8 @@ async function convert(
     }
     await timing.wait("wait:finish", video.finish(checkAll));
     checkAll();
+    const poster = cover as Picture | null;
+    if (poster) job.setCover(new Uint8Array(poster.data), poster.kind === "rgba");
     const report: string[] = JSON.parse(job.finish());
     timing.log(file.name, { encoder: pool, scale: scaling.pool });
     access.flush();

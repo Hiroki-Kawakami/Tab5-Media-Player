@@ -27,7 +27,7 @@ fn labels(info: &MediaInfo, video: Option<&str>, audio: Option<&str>) -> Vec<Str
     preset::all()
         .iter()
         .map(|p| {
-            let specs = match Specs::resolve(p.name, video, audio) {
+            let specs = match Specs::resolve(p.name, video, audio, None) {
                 Ok(specs) => specs,
                 Err(err) => return format!("{}: {err:#}", p.name),
             };

@@ -9,14 +9,14 @@ use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use tab5conv_core::container::Container;
 use tab5conv_core::video::VideoCodec;
-use tab5conv_core::{Specs, audio, preset, video};
+use tab5conv_core::{Specs, audio, preset, thumbnail, video};
 use tab5conv_ffmpeg::{Conversion, Tools, batch};
 
 #[derive(Parser)]
 #[command(
     version,
     about = "Convert video files for Tab5-Media-Player",
-    after_help = "Run with --preset help, --video help or --audio help for the details."
+    after_help = "Run with --preset help, --video help, --audio help or --thumbnail help for the details."
 )]
 struct Args {
     /// Input files; with several, names containing ".tab5." are skipped
@@ -43,6 +43,10 @@ struct Args {
     #[arg(long, value_name = "SPEC")]
     audio: Option<String>,
 
+    /// Cover art options, e.g. "jpeg,at=5,long=480", or "none" [default: jpeg]
+    #[arg(long, value_name = "SPEC")]
+    thumbnail: Option<String>,
+
     /// Overwrite output files that already exist
     #[arg(short = 'y', long)]
     overwrite: bool,
@@ -68,6 +72,7 @@ fn convert(
         conversion.video.label
     );
     eprintln!("audio: {}", conversion.audio.label);
+    eprintln!("thumbnail: {}", conversion.thumbnail_label);
     eprintln!("output: {}", output.display());
 
     if dry_run {
@@ -99,10 +104,19 @@ fn run(args: Args) -> Result<bool> {
         print!("{}", audio::HELP);
         return Ok(true);
     }
-    let specs = Specs::resolve(&args.preset, args.video.as_deref(), args.audio.as_deref())?;
+    if args.thumbnail.as_deref() == Some("help") {
+        print!("{}", thumbnail::HELP);
+        return Ok(true);
+    }
+    let specs = Specs::resolve(
+        &args.preset,
+        args.video.as_deref(),
+        args.audio.as_deref(),
+        args.thumbnail.as_deref(),
+    )?;
     let applied = format!(
-        "preset: {} (--video \"{}\" --audio \"{}\")",
-        specs.preset, specs.video_text, specs.audio_text
+        "preset: {} (--video \"{}\" --audio \"{}\" --thumbnail \"{}\")",
+        specs.preset, specs.video_text, specs.audio_text, specs.thumbnail_text
     );
 
     if args.inputs.is_empty() {

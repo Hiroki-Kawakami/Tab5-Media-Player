@@ -19,6 +19,9 @@ pub struct Job<'a> {
     pub monitored: bool,
     pub video: &'a VideoPlan,
     pub audio: &'a AudioPlan,
+    /// Cover art for the muxers ffmpeg runs; the built-in mp4 muxer takes the
+    /// bytes instead.
+    pub cover: Option<&'a Path>,
 }
 
 pub enum Commands {
@@ -48,8 +51,17 @@ impl Job<'_> {
         }
         args.extend(strings(["-i"]));
         args.push(self.input.into());
+        let cover = self.cover.filter(|_| self.container == Container::Mp4);
+        if let Some(cover) = cover {
+            args.push("-i".into());
+            args.push(cover.into());
+        }
         args.extend(["-map".into(), format!("0:{}", self.video.index).into()]);
         args.extend(video_args.into_iter().map(OsString::from));
+        if cover.is_some() {
+            args.extend(strings(["-map", "1:v", "-c:v:1", "copy"]));
+            args.extend(strings(["-disposition:v:1", "attached_pic"]));
+        }
         self.tail(&mut args, 0);
         Commands::Single(args)
     }
@@ -117,6 +129,14 @@ impl Job<'_> {
         if let Some(index) = self.audio.index() {
             args.extend(["-map".into(), format!("{audio_input}:{index}").into()]);
             args.extend(args::audio(self.audio).into_iter().map(OsString::from));
+        }
+        // Matroska has no cover atom; the player takes an attachment whose
+        // name starts with "cover" instead.
+        if let (Container::Mkv, Some(cover)) = (self.container, self.cover) {
+            args.push("-attach".into());
+            args.push(cover.into());
+            args.extend(strings(["-metadata:s:t:0", "mimetype=image/jpeg"]));
+            args.extend(strings(["-metadata:s:t:0", "filename=cover.jpg"]));
         }
         if self.container == Container::Mp4 {
             args.extend(strings(["-movflags", "+faststart"]));

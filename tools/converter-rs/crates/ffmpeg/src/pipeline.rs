@@ -45,6 +45,7 @@ pub struct Job<'a> {
     pub picture: &'a Picture,
     pub audio: &'a AudioPlan,
     pub settings: &'a Settings,
+    pub cover: Option<&'a [u8]>,
 }
 
 struct Encode {
@@ -196,6 +197,9 @@ fn mux_stream(
     let file =
         File::create(job.output).with_context(|| format!("creating {}", job.output.display()))?;
     let mut muxer = Mp4Muxer::new(file, tracks)?;
+    if let Some(cover) = job.cover {
+        muxer.set_cover(cover.to_vec());
+    }
     if skip > 0 {
         muxer.set_skip(AUDIO_TRACK, skip)?;
     }

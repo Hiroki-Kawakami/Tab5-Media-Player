@@ -272,9 +272,14 @@ answered while the thumbnails are still arriving.
 Video thumbnails are only the cover art a file carries. Decoding a frame of
 H.264 or MPEG-2 needs the decoder's work arena, which is the shared SRAM the
 main display renders into while the browser is on screen — the two cannot be up
-at once. `tools/converter-rs` embedding a poster image is the path that
-sidesteps it. A first frame of MJPEG would work, but only for MJPEG, which is
-not worth a second code path.
+at once. A first frame of MJPEG would work, but only for MJPEG, which is not
+worth a second code path. `tools/converter-rs` therefore writes a 320 px
+picture from a few seconds in as cover art (`covr` in MP4, an attachment named
+`cover.jpg` in MKV), which this cache reads like any other; see
+[`converter.md`](converter.md#thumbnails).
+
+The browser also only prefetches audio files, so a video's thumbnail is read
+when its row comes into view rather than ahead of it.
 
 ## Harness
 

@@ -17,9 +17,10 @@ use tab5conv_core::media::MediaInfo;
 use tab5conv_core::mjpeg::{self, Reorder, Scheduler, Tally};
 use tab5conv_core::ratecontrol::Decision;
 use tab5conv_core::resample::Resampler;
+use tab5conv_core::thumbnail::{Cover, Thumbnail};
 use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
 use tab5conv_core::video::{Color, VideoCodec, VideoPlan};
-use tab5conv_core::yuv::Output;
+use tab5conv_core::yuv::{Output, SourceColor};
 use tab5conv_core::{Specs, audio, color, pcm, preset, video};
 use wasm_bindgen::prelude::*;
 
@@ -81,7 +82,7 @@ fn optional(text: &str) -> Option<&str> {
 }
 
 fn resolve_specs(preset: &str, video: &str, audio: &str) -> anyhow::Result<Specs> {
-    Specs::resolve(preset, optional(video), optional(audio))
+    Specs::resolve(preset, optional(video), optional(audio), None)
 }
 
 fn applied(specs: &Specs) -> serde_json::Value {
@@ -547,6 +548,17 @@ pub struct Job {
     audio_rate: u32,
     audio_started: bool,
     encoded: u64,
+    cover: Option<CoverJob>,
+}
+
+/// What a stored picture needs to become cover art: its own colour, which the
+/// video plan decided, and the geometry that turns it back into what the
+/// player displays.
+struct CoverJob {
+    at_us: f64,
+    stored: (usize, usize),
+    color: SourceColor,
+    cover: Cover,
 }
 
 fn source_matrix(info: &demux::Info, index: u32) -> Option<Matrix> {
@@ -718,6 +730,23 @@ impl Job {
             VideoJob::Mpeg2 { .. } => Output::Limited,
         };
         let geometry = yuv_geometry(&planned.video.picture, source_rotation(info, index), output);
+        let picture = &planned.video.picture;
+        let cover = planned
+            .specs
+            .thumbnail
+            .plan(picture, media.info.duration)
+            .map(|thumbnail: Thumbnail| CoverJob {
+                at_us: thumbnail.at * 1e6,
+                stored: (picture.width as usize, picture.height as usize),
+                color: SourceColor {
+                    matrix: match output {
+                        Output::Bt601Full => Matrix::Bt601,
+                        Output::Limited => source_matrix(info, index).unwrap_or(Matrix::Bt601),
+                    },
+                    full_range: output == Output::Bt601Full,
+                },
+                cover: Cover::new(picture, thumbnail),
+            });
         Ok(Self {
             muxer,
             video,
@@ -730,7 +759,41 @@ impl Job {
             audio_rate,
             audio_started: false,
             encoded: 0,
+            cover,
         })
+    }
+
+    /// When to take the cover picture, in microseconds; -1 without one.
+    #[wasm_bindgen(js_name = coverAt)]
+    pub fn cover_at(&self) -> f64 {
+        self.cover.as_ref().map_or(-1.0, |c| c.at_us)
+    }
+
+    /// A stored picture, as the scalers produce it or as the canvas fallback
+    /// drew it, to keep as the file's cover art.
+    #[wasm_bindgen(js_name = setCover)]
+    pub fn set_cover(&mut self, data: &[u8], rgba: bool) -> Result<(), JsError> {
+        let Some(job) = &self.cover else {
+            return Ok(());
+        };
+        let (w, h) = job.stored;
+        let mut converted = Vec::new();
+        let (i420, color) = if rgba {
+            converted.resize(Frame::bytes(w, h), 0);
+            color::rgba_to_yuv420_bt601_full(data, w, h, &mut converted);
+            (
+                &converted[..],
+                SourceColor {
+                    matrix: Matrix::Bt601,
+                    full_range: true,
+                },
+            )
+        } else {
+            (data, job.color)
+        };
+        let jpeg = job.cover.from_i420(i420, color).map_err(js_error)?;
+        self.muxer.set_cover(jpeg);
+        Ok(())
     }
 
     fn mjpeg(&mut self) -> Result<&mut MjpegJob, JsError> {

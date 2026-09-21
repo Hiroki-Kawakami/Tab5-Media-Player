@@ -36,6 +36,7 @@ function interleaveLag(file) {
   return worst;
 }
 
+const db = "([0-9.]+|inf)";
 const ffmpeg = (...args) => execFileSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...args]);
 const probe = (file, ...entries) =>
   execFileSync("ffprobe", ["-v", "error", ...entries, "-of", "default=nw=1:nk=1", file]).toString().trim();
@@ -138,7 +139,7 @@ try {
     execFileSync(cli, [input, "-o", theirs, "-y", ...cliArgs], { stdio: "ignore" });
     const tag = `${label} ${name}`;
     const video = (f) =>
-      probe(f, "-select_streams", "v", "-show_entries", "stream=codec_name,codec_tag_string,width,height,avg_frame_rate,time_base,nb_frames:stream_side_data=rotation").replace(/\n/g, " ");
+      probe(f, "-select_streams", "v:0", "-show_entries", "stream=codec_name,codec_tag_string,width,height,avg_frame_rate,time_base,nb_frames:stream_side_data=rotation").replace(/\n/g, " ");
     check(video(ours) === video(theirs), `${tag}: same video stream as the CLI (${video(ours)})`);
     const audio = (f) => probe(f, "-select_streams", "a", "-show_entries", "stream=codec_name,channels,sample_rate").split("\n");
     const [a, b] = [audio(ours), audio(theirs)];
@@ -150,8 +151,25 @@ try {
     }
     const decode = execFileSync("ffmpeg", ["-v", "error", "-i", ours, "-f", "null", "-"]).toString();
     check(decode === "", `${tag}: decodes without errors`);
-    const size = probe(theirs, "-select_streams", "v", "-show_entries", "stream=width,height").replace("\n", "x");
-    const raw = (f, o) => ffmpeg("-noautorotate", "-i", f, "-f", "rawvideo", "-pix_fmt", "yuv420p", o);
+    const cover = (f) =>
+      probe(f, "-select_streams", "v:1", "-show_entries", "stream=codec_name,width,height:stream_disposition=attached_pic").replace(/\n/g, " ");
+    check(cover(ours) === cover(theirs) && cover(ours).startsWith("mjpeg"), `${tag}: cover art ${cover(ours)} (CLI ${cover(theirs)})`);
+    const coverFile = (f, o) => {
+      ffmpeg("-i", f, "-map", "0:v:1", "-frames:v", "1", "-c", "copy", "-f", "image2", "-update", "1", o);
+      return o;
+    };
+    const coverPsnr = spawnSync(
+      "ffmpeg",
+      ["-hide_banner", "-i", coverFile(ours, join(dir, "a.jpg")), "-i", coverFile(theirs, join(dir, "b.jpg")), "-lavfi", "psnr", "-f", "null", "-"],
+      { encoding: "utf8" },
+    ).stderr;
+    // Each front end decodes and scales the frame its own way, so a detailed
+    // pattern lands in the twenties; this only says that the same frame came
+    // out the same way up and in the same colours.
+    const cy = Number((new RegExp(`PSNR y:${db}`).exec(coverPsnr) ?? [])[1]);
+    check(cy > 20, `${tag}: cover matches the CLI's, y ${cy.toFixed(1)} dB`);
+    const size = probe(theirs, "-select_streams", "v:0", "-show_entries", "stream=width,height").replace("\n", "x");
+    const raw = (f, o) => ffmpeg("-noautorotate", "-i", f, "-map", "0:v:0", "-f", "rawvideo", "-pix_fmt", "yuv420p", o);
     raw(ours, join(dir, "a.yuv"));
     raw(theirs, join(dir, "b.yuv"));
     const yuv = (f) => ["-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", size, "-i", f];
@@ -160,7 +178,6 @@ try {
       ["-hide_banner", ...yuv(join(dir, "a.yuv")), ...yuv(join(dir, "b.yuv")), "-lavfi", "psnr", "-f", "null", "-"],
       { encoding: "utf8" },
     ).stderr;
-    const db = "([0-9.]+|inf)";
     const match = new RegExp(`PSNR y:${db} u:${db} v:${db}`).exec(stderr) ?? [];
     const [y, u, v] = match.slice(1, 4).map((x) => (x === "inf" ? Infinity : Number(x)));
     check(Math.min(y, u, v) > 35, `${tag}: PSNR against the CLI y ${y.toFixed(1)} u ${u.toFixed(1)} v ${v.toFixed(1)} dB`);
@@ -169,7 +186,7 @@ try {
   for (const input of files) compare(input, "out", [], "mjpeg");
   for (const input of mpeg2Files) {
     const { ours, theirs } = compare(input, "mpeg2", ["--preset", "small"], "mpeg2");
-    const bytes = (f) => Number(probe(f, "-select_streams", "v", "-show_entries", "stream=bit_rate"));
+    const bytes = (f) => Number(probe(f, "-select_streams", "v:0", "-show_entries", "stream=bit_rate"));
     const ratio = bytes(ours) / bytes(theirs);
     console.log(`     mpeg2 ${ours.split("/").pop()}: video bitrate ${(ratio * 100).toFixed(0)}% of the CLI's`);
   }

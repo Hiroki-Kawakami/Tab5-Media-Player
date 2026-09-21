@@ -130,6 +130,14 @@ pub fn part_path(output: &Path) -> PathBuf {
     output.with_file_name(name)
 }
 
+/// Cover art for the runs ffmpeg muxes, which only takes it as a file. Deleted
+/// with the part file, so a failed run leaves nothing behind either.
+pub fn cover_path(output: &Path) -> PathBuf {
+    let mut name = stem(output);
+    name.push(".cover.jpg");
+    output.with_file_name(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

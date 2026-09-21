@@ -8,6 +8,8 @@ use std::process::Command;
 
 use tab5conv_core::container::demux::{self, Codec, Packet, TrackKind};
 use tab5conv_core::container::mux::{Mp4Muxer, MuxCodec, MuxKind, MuxTrack};
+use tab5conv_core::jpeg::Frame;
+use tab5conv_core::thumbnail;
 
 fn ffmpeg(args: &[&str]) {
     let status = Command::new("ffmpeg")
@@ -370,6 +372,8 @@ fn mp4_mux_round_trip() {
         muxer.write(1, &packet.data, 1024, true).unwrap();
     }
     muxer.set_skip(1, 1024).unwrap();
+    let cover = thumbnail::encode(64, 48, &vec![128; Frame::bytes(64, 48)], 85).unwrap();
+    muxer.set_cover(cover.clone());
     muxer.finish().unwrap();
 
     let written = ffprobe_packets(&output);
@@ -383,18 +387,29 @@ fn mp4_mux_round_trip() {
         hashes(audio)
     );
     assert_eq!(
-        probe_value(&output, "v", "stream=codec_name,codec_tag_string"),
+        probe_value(&output, "v:0", "stream=codec_name,codec_tag_string"),
         "mjpeg\njpeg"
     );
     assert_eq!(
-        probe_value(&output, "v", "stream_side_data=rotation"),
+        probe_value(&output, "v:0", "stream_side_data=rotation"),
         "-90"
     );
-    assert_eq!(probe_value(&output, "v", "stream=avg_frame_rate"), "30/1");
+    assert_eq!(probe_value(&output, "v:0", "stream=avg_frame_rate"), "30/1");
     assert_eq!(
         probe_value(&output, "a", "stream=codec_name,profile"),
         "aac\nLC"
     );
+    // The cover sits in moov/udta/meta/ilst/covr, which ffmpeg reads back as
+    // an attached picture rather than a track of its own.
+    assert_eq!(
+        probe_value(&output, "v:1", "stream=codec_name,width,height"),
+        "mjpeg\n64\n48"
+    );
+    assert_eq!(
+        probe_value(&output, "v:1", "stream_disposition=attached_pic"),
+        "1"
+    );
+    assert_eq!(written[&2][0].hash, adler32(&cover));
     let decode = Command::new("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(&output)

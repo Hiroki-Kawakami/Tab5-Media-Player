@@ -137,6 +137,25 @@ impl Tools {
             .map_err(|e| launch_error(&self.ffmpeg, e))
     }
 
+    pub fn output(&self, args: &[OsString]) -> Result<Vec<u8>> {
+        let output = Command::new(&self.ffmpeg)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| launch_error(&self.ffmpeg, e))?;
+        if !output.status.success() {
+            bail!(
+                "{}",
+                failure(
+                    &self.ffmpeg.display().to_string(),
+                    output.status,
+                    &String::from_utf8_lossy(&output.stderr)
+                )
+            );
+        }
+        Ok(output.stdout)
+    }
+
     pub fn run(&self, args: &[OsString]) -> Result<()> {
         let status = Command::new(&self.ffmpeg)
             .args(args)
@@ -148,12 +167,12 @@ impl Tools {
         Ok(())
     }
 
-    pub fn run_monitored(&self, args: &[OsString], monitor: &Monitor) -> Result<()> {
+    pub fn run_monitored(&self, args: &[OsString], monitor: &Monitor, fps: f64) -> Result<()> {
         let mut child = self.spawn(args, Stdio::null(), Stdio::piped(), Stdio::piped())?;
         let log = Log::capture(child.stderr.take().context("ffmpeg has no stderr")?);
         let progress = child.stdout.take().context("ffmpeg has no stdout")?;
         let status = thread::scope(|scope| {
-            scope.spawn(|| read_progress(progress, monitor.progress));
+            scope.spawn(|| read_progress(progress, monitor.progress, fps));
             wait(&mut child, monitor.cancel)
         });
         let log = log.finish();
@@ -221,15 +240,25 @@ pub fn wait(child: &mut Child, cancel: &AtomicBool) -> Result<ExitStatus> {
     }
 }
 
-fn read_progress(source: impl Read, progress: &(dyn Fn(f64) + Sync)) {
+/// ffmpeg's `out_time` is the time of whatever stream it muxed last, and cover
+/// art is muxed after the final video packet: with one attached, the last
+/// report of a run says 0.04 s. `frame` only ever counts the first video
+/// stream, so the position comes from it and the output's frame rate.
+fn read_progress(source: impl Read, progress: &(dyn Fn(f64) + Sync), fps: f64) {
     for line in BufReader::new(source).lines() {
         let Ok(line) = line else { return };
-        if let Some(us) = line
-            .strip_prefix("out_time_us=")
-            .and_then(|v| v.parse::<i64>().ok())
-            .filter(|&us| us >= 0)
-        {
-            progress(us as f64 / 1e6);
+        let seconds = if fps > 0.0 {
+            line.strip_prefix("frame=")
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .map(|frames| frames as f64 / fps)
+        } else {
+            line.strip_prefix("out_time_us=")
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|&us| us >= 0)
+                .map(|us| us as f64 / 1e6)
+        };
+        if let Some(seconds) = seconds {
+            progress(seconds);
         }
     }
 }

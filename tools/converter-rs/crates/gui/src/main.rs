@@ -60,7 +60,12 @@ fn optional(text: &str) -> Option<&str> {
 
 impl Settings {
     fn specs(&self) -> anyhow::Result<Specs> {
-        Specs::resolve(&self.preset, optional(&self.video), optional(&self.audio))
+        Specs::resolve(
+            &self.preset,
+            optional(&self.video),
+            optional(&self.audio),
+            None,
+        )
     }
 }
 

@@ -39,7 +39,7 @@ fn source(dir: &Path, seconds: f64) -> PathBuf {
 fn prepare(dir: &Path, preset: &str, seconds: f64) -> Conversion {
     let input = source(dir, seconds);
     let output = dir.join("out.mp4");
-    let specs = Specs::resolve(preset, None, Some("aac,keep=none")).unwrap();
+    let specs = Specs::resolve(preset, None, Some("aac,keep=none"), None).unwrap();
     Conversion::prepare(&Tools::default(), &input, &output, Container::Mp4, &specs).unwrap()
 }
 

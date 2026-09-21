@@ -20,6 +20,15 @@ pub fn encoders(video: &VideoPlan, audio: &AudioPlan) -> Vec<&'static str> {
     video.into_iter().chain(audio).collect()
 }
 
+fn transpose(degrees: u32) -> &'static str {
+    match degrees {
+        90 => "transpose=cclock",
+        270 => "transpose=clock",
+        180 => "hflip,vflip",
+        other => unreachable!("rotation of {other} degrees"),
+    }
+}
+
 pub fn filter(picture: &Picture) -> String {
     let resize = &picture.resize;
     let color = match picture.color {
@@ -39,16 +48,30 @@ pub fn filter(picture: &Picture) -> String {
         parts.push(format!("crop={}:{}", resize.width, resize.height));
     }
     if let Some(rotation) = picture.rotation {
-        parts.push(
-            match rotation.degrees {
-                90 => "transpose=cclock",
-                270 => "transpose=clock",
-                180 => "hflip,vflip",
-                other => unreachable!("rotation of {other} degrees"),
-            }
-            .into(),
-        );
+        parts.push(transpose(rotation.degrees).into());
     }
+    parts.join(",")
+}
+
+/// The filter for the one frame the cover art is made of: the output's own
+/// crop, in the orientation the player shows (so the rotation is only applied
+/// when it is not handed to the player as metadata), scaled to the thumbnail
+/// and always converted to BT.601 full range, which is what a JPEG is read as.
+pub fn thumbnail_filter(picture: &Picture, (width, height): (u32, u32)) -> String {
+    let resize = &picture.resize;
+    let mut parts = vec![format!(
+        "scale={}:{}",
+        resize.scaled_width, resize.scaled_height
+    )];
+    if (resize.scaled_width, resize.scaled_height) != (resize.width, resize.height) {
+        parts.push(format!("crop={}:{}", resize.width, resize.height));
+    }
+    if let Some(rotation) = picture.rotation.filter(|r| r.display_rotation.is_none()) {
+        parts.push(transpose(rotation.degrees).into());
+    }
+    parts.push(format!(
+        "scale={width}:{height}:out_color_matrix=bt601:out_range=full,setsar=1"
+    ));
     parts.join(",")
 }
 
@@ -57,11 +80,21 @@ fn strings<const N: usize>(items: [&str; N]) -> impl Iterator<Item = String> {
 }
 
 pub fn h264(picture: &Picture, p: &h264::Params) -> Vec<String> {
-    let mut args = vec!["-vf".to_string(), filter(picture)];
-    args.extend(strings(["-c:v", "libx264", "-profile:v", p.profile.name()]));
-    args.extend(strings(["-preset", p.preset, "-pix_fmt", "yuv420p"]));
+    let mut args = vec!["-filter:v:0".to_string(), filter(picture)];
     args.extend(strings([
-        "-x264-params",
+        "-c:v:0",
+        "libx264",
+        "-profile:v:0",
+        p.profile.name(),
+    ]));
+    args.extend(strings([
+        "-preset:v:0",
+        p.preset,
+        "-pix_fmt:v:0",
+        "yuv420p",
+    ]));
+    args.extend(strings([
+        "-x264-params:v:0",
         if p.profile == h264::Profile::Baseline {
             X264_BASELINE_PARAMS
         } else {
@@ -69,31 +102,43 @@ pub fn h264(picture: &Picture, p: &h264::Params) -> Vec<String> {
         },
     ]));
     args.extend(match p.rate {
-        h264::Rate::Crf(crf) => ["-crf".into(), crf.to_string()],
-        h264::Rate::Bitrate(bitrate) => ["-b:v".into(), bitrate.to_string()],
+        h264::Rate::Crf(crf) => ["-crf:v:0".into(), crf.to_string()],
+        h264::Rate::Bitrate(bitrate) => ["-b:v:0".into(), bitrate.to_string()],
     });
-    args.extend(["-g".into(), p.keyint.to_string()]);
+    args.extend(["-g:v:0".into(), p.keyint.to_string()]);
     args
 }
 
 pub fn mpeg2(picture: &Picture, p: &mpeg2::Params) -> Vec<String> {
-    let mut args = vec!["-vf".to_string(), filter(picture)];
-    args.extend(strings(["-c:v", "mpeg2video", "-pix_fmt", "yuv420p"]));
+    let mut args = vec!["-filter:v:0".to_string(), filter(picture)];
+    args.extend(strings(["-c:v:0", "mpeg2video", "-pix_fmt:v:0", "yuv420p"]));
     args.extend(match p.rate {
-        mpeg2::Rate::Qscale(q) => ["-q:v".into(), q.to_string()],
-        mpeg2::Rate::Bitrate(bitrate) => ["-b:v".into(), bitrate.to_string()],
+        mpeg2::Rate::Qscale(q) => ["-q:v:0".into(), q.to_string()],
+        mpeg2::Rate::Bitrate(bitrate) => ["-b:v:0".into(), bitrate.to_string()],
     });
     args.extend([
-        "-bf".into(),
+        "-bf:v:0".into(),
         p.bframes.to_string(),
-        "-g".into(),
+        "-g:v:0".into(),
         p.keyint.to_string(),
     ]);
     if p.closed_gop {
-        args.extend(strings(["-flags", "+cgop", "-sc_threshold", "1000000000"]));
+        args.extend(strings([
+            "-flags:v:0",
+            "+cgop",
+            "-sc_threshold:v:0",
+            "1000000000",
+        ]));
     }
     if p.hq {
-        args.extend(strings(["-mbd", "rd", "-trellis", "1", "-intra_vlc", "1"]));
+        args.extend(strings([
+            "-mbd:v:0",
+            "rd",
+            "-trellis:v:0",
+            "1",
+            "-intra_vlc:v:0",
+            "1",
+        ]));
     }
     args
 }
@@ -204,47 +249,71 @@ mod tests {
     #[test]
     fn h264_args() {
         let a = args("h264");
-        assert!(has(&a, ["-vf", "scale=640:360,setsar=1"]));
-        assert!(has(&a, ["-c:v", "libx264"]));
-        assert!(has(&a, ["-profile:v", "main"]));
-        assert!(has(&a, ["-preset", "medium"]));
-        assert!(has(&a, ["-crf", "32"]));
+        assert!(has(&a, ["-filter:v:0", "scale=640:360,setsar=1"]));
+        assert!(has(&a, ["-c:v:0", "libx264"]));
+        assert!(has(&a, ["-profile:v:0", "main"]));
+        assert!(has(&a, ["-preset:v:0", "medium"]));
+        assert!(has(&a, ["-crf:v:0", "32"]));
         assert!(has(
             &a,
-            ["-x264-params", "bframes=3:b-pyramid=none:ref=1:weightp=0"]
+            [
+                "-x264-params:v:0",
+                "bframes=3:b-pyramid=none:ref=1:weightp=0"
+            ]
         ));
-        assert!(has(&a, ["-g", "120"]));
+        assert!(has(&a, ["-g:v:0", "120"]));
         let a = args("h264,profile=baseline");
-        assert!(has(&a, ["-x264-params", "ref=1"]));
+        assert!(has(&a, ["-x264-params:v:0", "ref=1"]));
         let a = args("h264,profile=high,bitrate=1.5M,keyint=0.5,preset=fast");
-        assert!(has(&a, ["-profile:v", "high"]));
-        assert!(has(&a, ["-b:v", "1500000"]));
-        assert!(!a.contains(&"-crf".to_string()));
-        assert!(has(&a, ["-g", "15"]));
-        assert!(has(&a, ["-preset", "fast"]));
+        assert!(has(&a, ["-profile:v:0", "high"]));
+        assert!(has(&a, ["-b:v:0", "1500000"]));
+        assert!(!a.contains(&"-crf:v:0".to_string()));
+        assert!(has(&a, ["-g:v:0", "15"]));
+        assert!(has(&a, ["-preset:v:0", "fast"]));
     }
 
     #[test]
     fn mpeg2_args() {
         let a = args("mpeg2");
-        assert!(has(&a, ["-c:v", "mpeg2video"]));
-        assert!(has(&a, ["-pix_fmt", "yuv420p"]));
-        assert!(has(&a, ["-q:v", "8"]));
-        assert!(has(&a, ["-bf", "2"]));
-        assert!(has(&a, ["-g", "60"]));
-        assert!(has(&a, ["-flags", "+cgop"]));
-        assert!(has(&a, ["-sc_threshold", "1000000000"]));
-        assert!(has(&a, ["-mbd", "rd"]));
-        assert!(has(&a, ["-trellis", "1"]));
-        assert!(has(&a, ["-intra_vlc", "1"]));
+        assert!(has(&a, ["-c:v:0", "mpeg2video"]));
+        assert!(has(&a, ["-pix_fmt:v:0", "yuv420p"]));
+        assert!(has(&a, ["-q:v:0", "8"]));
+        assert!(has(&a, ["-bf:v:0", "2"]));
+        assert!(has(&a, ["-g:v:0", "60"]));
+        assert!(has(&a, ["-flags:v:0", "+cgop"]));
+        assert!(has(&a, ["-sc_threshold:v:0", "1000000000"]));
+        assert!(has(&a, ["-mbd:v:0", "rd"]));
+        assert!(has(&a, ["-trellis:v:0", "1"]));
+        assert!(has(&a, ["-intra_vlc:v:0", "1"]));
         let a = args("mpeg2,bitrate=2M,bframes=0,keyint=1,gop=open,hq=no,short=720");
-        assert!(has(&a, ["-vf", "scale=1280:720,setsar=1"]));
-        assert!(has(&a, ["-b:v", "2000000"]));
-        assert!(!a.contains(&"-q:v".to_string()));
-        assert!(has(&a, ["-bf", "0"]));
+        assert!(has(&a, ["-filter:v:0", "scale=1280:720,setsar=1"]));
+        assert!(has(&a, ["-b:v:0", "2000000"]));
+        assert!(!a.contains(&"-q:v:0".to_string()));
+        assert!(has(&a, ["-bf:v:0", "0"]));
         assert!(!a.contains(&"+cgop".to_string()));
-        assert!(!a.contains(&"-sc_threshold".to_string()));
-        assert!(!a.contains(&"-mbd".to_string()));
+        assert!(!a.contains(&"-sc_threshold:v:0".to_string()));
+        assert!(!a.contains(&"-mbd:v:0".to_string()));
+    }
+
+    #[test]
+    fn thumbnail_filters() {
+        // mjpeg stores the picture turned with the rotation in the metadata,
+        // so the cover is made without the transpose.
+        let p = plan_for("mjpeg,long=640,short=360", &source()).picture;
+        assert_eq!(
+            thumbnail_filter(&p, (320, 180)),
+            "scale=640:360,scale=320:180:out_color_matrix=bt601:out_range=full,setsar=1"
+        );
+        let p = plan_for("mjpeg,long=640,short=360,rotatemeta=no", &source()).picture;
+        assert_eq!(
+            thumbnail_filter(&p, (180, 320)),
+            "scale=640:360,transpose=cclock,scale=180:320:out_color_matrix=bt601:out_range=full,setsar=1"
+        );
+        let p = plan_for("h264,width=720,height=720,scale=cover", &source()).picture;
+        assert_eq!(
+            thumbnail_filter(&p, (320, 320)),
+            "scale=1280:720,crop=720:720,scale=320:320:out_color_matrix=bt601:out_range=full,setsar=1"
+        );
     }
 
     #[test]

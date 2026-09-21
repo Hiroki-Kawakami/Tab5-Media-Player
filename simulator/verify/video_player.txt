@@ -35,6 +35,8 @@ wait 800
 capture player_restart.jpg
 tap 640 860
 wait 300
+tap 640 860
+wait 300
 tap 640 1080
 wait 3500
 capture player_looped.jpg

@@ -9,6 +9,7 @@
 #include "h264_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "lvgl.hpp"
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
 #endif
@@ -71,6 +72,8 @@ static bool s_audio_active;
 static bool s_have_audio;
 static bool s_audio_only;
 
+static std::atomic<void (*)()> s_state_observer{nullptr};
+
 static MediaSummary s_summary;
 static std::string s_audio_note;
 static CodecId s_audio_codec = CodecId::None;
@@ -78,9 +81,19 @@ static bool s_seekable;
 
 void player_set_state(PlayerState state, const std::string &error) {
     xSemaphoreTake(player_core.lock, portMAX_DELAY);
+    const bool changed = player_core.state != state;
     player_core.state = state;
     player_core.error = error;
     xSemaphoreGive(player_core.lock);
+    if (!changed) return;
+
+    void (*observer)() = s_state_observer.load();
+    if (!observer) return;
+    /* Never with player_core.lock held: the LVGL thread takes that lock inside
+     * player_status() while it holds the LVGL one. */
+    lv_lock();
+    lv_async_call([observer] { observer(); });
+    lv_unlock();
 }
 
 bool player_take_slot(QueueHandle_t queue, int *slot) {
@@ -571,6 +584,8 @@ void player_start(const media_arena_t &arena) {
     xTaskCreate(reader_task, "media_reader", 4096, nullptr, 4, nullptr);
     xTaskCreate(player_task, "player", 6144, nullptr, 5, nullptr);
 }
+
+void player_observe_state(void (*on_change)()) { s_state_observer.store(on_change); }
 
 void player_open(const std::string &path) { send_command(Command::Open, &path); }
 void player_close() { send_command(Command::Close); }

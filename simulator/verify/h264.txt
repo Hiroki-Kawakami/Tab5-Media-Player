@@ -34,6 +34,8 @@ wait 800
 capture h264_mkv_poster.jpg
 tap 640 860
 wait 300
+tap 640 860
+wait 300
 tap 640 1080
 wait 2500
 capture h264_mkv_playing.jpg

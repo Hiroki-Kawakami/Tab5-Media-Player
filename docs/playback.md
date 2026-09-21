@@ -12,10 +12,11 @@ Audio-only files play too, in `AudioPlayerScreen` (see
 `*.wav` (16/24/32-bit PCM or IMA ADPCM), and `*.mp3` / `*.aac` as elementary
 streams. `.opus`/Ogg is deliberately left out for now.
 
-The planned additions are images, playlists and playing a directory in order.
-None of them exist yet.
-Their names are in the layout so you can see where each would land. Only the
-decisions that are expensive to reverse later were taken now.
+Both screens play the files of one directory in order (see
+[Playlists](#playlists)). The planned additions are images and stored playlist
+files; neither exists yet. Their names are in the layout so you can see where
+each would land. Only the decisions that are expensive to reverse later were
+taken now.
 
 ## Layers
 
@@ -44,7 +45,7 @@ media_buffer          │           └─▶ present
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, WAV, MKV, MP4 and elementary-stream adapters |
-| `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture |
+| `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture; `playlist.cpp`: the item list and the cursor both screens step through |
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
 | `app/screens/video_player_screen.*` | the full-screen player UI |
@@ -146,9 +147,9 @@ matches.
   on both the direct and the pipeline path. RGB565 was last checked before the
   renderer split.
 
-**The player only opens paths.** It has no idea what comes next. Playing a
-directory in order or a playlist becomes a layer that watches for `Finished`
-and calls `player_open()` again.
+**The player only opens paths.** It has no idea what comes next. What plays
+after the current file is decided above it, by the screen (see
+[Playlists](#playlists)), from a `Finished` state and another `player_open()`.
 
 **One engine, a screen per medium.** `Player` is meant to serve audio-only
 files as well, so what it does for any file — the reader, the slot lifetime, the
@@ -293,8 +294,10 @@ at the end and the restart on flush. What differs:
   ADPCM, and no MP3 inside WAV.
 - **No tags.** Title, artist and cover art are not read from any container, so
   the audio screen shows the file name and a placeholder.
-- **No playlist.** Both screens play exactly one file; the next-track button is
-  disabled.
+- **No stored playlists.** The only source of a `Playlist` is a directory
+  listing; `.m3u` and friends are not read, and there is no queue the user can
+  edit.
+- **No shuffle.** The order is the browser's order.
 
 ## Reading: one buffer from the card to the decoder
 
@@ -740,6 +743,65 @@ wrap.
   discarded.** This covers a seek that lands before its target.
 - **Each wrap throws away the read-ahead cache.** The backward seek invalidates
   it.
+
+## Playlists
+
+A `Playlist` (`app/playback/playlist.*`) is a list of `{name, path}` plus a
+cursor, and nothing else: no filesystem, no `MediaKind`, no player calls. It is
+what both screens are constructed with, so a screen has no path of its own —
+`name()` and `path()` read the item under the cursor. Stepping it is
+`step(delta, repeat)`, which is also the single place the wrap rule lives.
+
+- **The list comes from the file browser, not from a second scan.**
+  `FileBrowserPage` already holds the directory listing, and on FAT another
+  `opendir` walk over a few hundred files is not free. It hands over the
+  entries of the same `MediaKind` as the file that was tapped, in the order it
+  shows them, so a music file plays the directory's music and a video its
+  videos. A different source (an `.m3u`, a queue) fills the same vector.
+- **The player is untouched.** Everything here is the screen reacting to
+  `PlayerState::Finished` with another `player_open()`, which is what
+  [the layering](#decisions-taken-now-because-they-are-expensive-later) already
+  assumed. Nothing about a list reaches `player.cpp`.
+- **Repeat is off / all / one.** Off stops at the end of the list, all wraps
+  around it, and one loops the current file through `player_set_loop()` — the
+  only one of the three the player knows about, because looping one file
+  seamlessly is something only the reader can do (see [Looping](#looping)).
+  The other two therefore never set the player's loop flag.
+- **The previous button restarts the file if it is more than 3 s in**, and
+  moves to the previous item otherwise, as every music player does. With
+  nothing to move to it restarts either way. Restarting keeps playing, where
+  `player_restart()` alone leaves the player paused.
+- **A file that fails to open is skipped only when it was opened
+  automatically**, and at most as many times in a row as the list is long, so a
+  directory of broken files stops instead of spinning. Pressing next onto a
+  broken file shows the failure, like opening it from the browser does.
+- **The screens wait for the new file before showing anything of it.**
+  `player_open()` is a command in a queue: until the player picks it up, its
+  status and summary still describe the previous file, and a refresh in that
+  window would put the old cover art, duration and note under the new name. Any
+  such refresh is gated by the `awaiting_start_` flag, which the player's
+  `Paused` transition clears — `handle_open()` publishes the summary before it
+  sets that state.
+
+## The state callback
+
+`player_observe_state()` takes one function that the player calls when its
+state changes. It is what makes the next file start the moment the last one
+ends, instead of at the next refresh tick. The screens still poll on their
+500 ms timer, and that timer still calls the same handler, so a missed
+notification costs latency and nothing else.
+
+- **The callback carries no state.** The handler reads `player_status()` again.
+  The notification is delivered through `lv_async_call`, so by the time it runs
+  the player may have moved on — most importantly past a `Finished` the screen
+  already reacted to. A handler that trusted a state it was handed would
+  advance twice.
+- **`player_set_state()` must not hold `player_core.lock` when it takes the
+  LVGL one.** The LVGL thread takes them in the opposite order every time it
+  calls `player_status()`, and the player task would deadlock against it.
+- **The player task hops to the LVGL thread itself**, as `settings.cpp` does
+  for the headphone callback: every consumer wants to touch widgets, and one
+  `lv_lock`/`lv_async_call` pair in the producer beats one in each of them.
 
 ## The overlay
 

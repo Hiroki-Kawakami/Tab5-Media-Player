@@ -12,7 +12,7 @@
 #include <cstdio>
 
 static constexpr uint32_t kRefreshPeriodMs = 500;
-static constexpr uint32_t kAutoStartPollMs = 100;
+static constexpr int64_t kPrevTrackUs = 3000000;
 static constexpr int32_t kSeekRange = 1000;
 static constexpr int32_t kPad = 24;
 static constexpr int32_t kGap = 24;
@@ -72,7 +72,7 @@ static std::string format_tags(const MediaTags &tags) {
 }
 
 void AudioPlayerScreen::build() {
-    createNavigation(name_.c_str(), LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
+    createNavigation(name().c_str(), LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
     lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
     lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
         if (isLandscape() != landscape_) relayout();
@@ -93,6 +93,7 @@ void AudioPlayerScreen::relayout() {
 void AudioPlayerScreen::buildContents() {
     lv_obj_clean(contents_);
     play_label_ = nullptr;
+    next_button_ = nullptr;
     artwork_ = nullptr;
     artwork_icon_ = nullptr;
     artwork_image_ = nullptr;
@@ -146,14 +147,24 @@ lv_obj_t *AudioPlayerScreen::buildArtwork(lv_obj_t *parent, int32_t side) {
     lv_obj_set_style_clip_corner(artwork_, true, 0);
     lv_obj_remove_flag(artwork_, LV_OBJ_FLAG_SCROLLABLE);
 
+    resetArtwork();
+    applyArtwork();
+    return artwork_;
+}
+
+void AudioPlayerScreen::resetArtwork() {
+    if (!artwork_) return;
+    if (artwork_image_) {
+        lv_obj_delete(artwork_image_);
+        artwork_image_ = nullptr;
+    }
+    if (artwork_icon_) return;
+
     artwork_icon_ = lv_label_create(artwork_);
     lv_label_set_text(artwork_icon_, TABLER_MUSIC);
     lv_obj_set_style_text_font(artwork_icon_, &icon_120, 0);
     lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kArtworkIconColor), 0);
     lv_obj_center(artwork_icon_);
-
-    applyArtwork();
-    return artwork_;
 }
 
 void AudioPlayerScreen::applyArtwork() {
@@ -182,7 +193,7 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
     lv_obj_set_style_text_font(title_label_, lv_widgets_title_font(), 0);
     lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(title_label_, name_.c_str());
+    lv_label_set_text(title_label_, name().c_str());
 
     subtitle_label_ = lv_label_create(box);
     lv_obj_set_width(subtitle_label_, lv_pct(100));
@@ -239,7 +250,11 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
     lv_obj_set_style_pad_column(row, 16, 0);
 
     lv_obj_t *prev = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, foreground);
-    lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [](lv_event_t *) { player_restart(); });
+    lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        const PlayerStatus status = player_status();
+        if (status.position_us < kPrevTrackUs && advance(-1, true)) return;
+        restart(status.state == PlayerState::Playing || status.state == PlayerState::Finished);
+    });
 
     lv_obj_t *play =
         media_icon_button(row, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
@@ -252,8 +267,8 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
         setPlayIcon(!playing_);
     });
 
-    lv_obj_t *next = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
-    lv_obj_add_state(next, LV_STATE_DISABLED);
+    next_button_ = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
+    lv_obj_add_event_fn(next_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { advance(1, true); });
 
     lv_obj_t *side = lv_container_create(outer, LV_FLEX_FLOW_ROW);
     lv_obj_set_size(side, kTimeWidth, LV_SIZE_CONTENT);
@@ -265,7 +280,7 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
         case RepeatMode::All: setRepeatMode(RepeatMode::One); break;
         case RepeatMode::One: setRepeatMode(RepeatMode::Off); break;
         }
-        player_set_loop(repeat_ != RepeatMode::Off);
+        player_set_loop(repeat_ == RepeatMode::One);
     });
 }
 
@@ -286,8 +301,84 @@ void AudioPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     lv_spacer_create(row, kTimeWidth, 1);
 }
 
+void AudioPlayerScreen::openCurrent() {
+    awaiting_start_ = true;
+    scrubbing_ = false;
+    cover_ = {};
+    resetArtwork();
+    player_open(path());
+    player_set_loop(repeat_ == RepeatMode::One);
+
+    lv_label_set_text(navigation_title_, name().c_str());
+    shown_elapsed_s_ = -2;
+    shown_total_s_ = -2;
+    if (title_label_) {
+        shown_title_ = name();
+        lv_label_set_text(title_label_, shown_title_.c_str());
+    }
+    if (subtitle_label_) {
+        shown_subtitle_.clear();
+        lv_label_set_text(subtitle_label_, "");
+        lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
+    }
+    updateTransport();
+    refresh();
+}
+
+bool AudioPlayerScreen::advance(int delta, bool manual) {
+    const std::size_t before = playlist_->index();
+    if (!playlist_->step(delta, repeat_)) return false;
+    auto_opened_ = !manual;
+    if (manual) skips_ = 0;
+    if (playlist_->index() == before) {
+        restart(true);
+        return true;
+    }
+    openCurrent();
+    return true;
+}
+
+void AudioPlayerScreen::restart(bool resume) {
+    player_restart();
+    if (!resume) return;
+    player_play();
+    setPlayIcon(true);
+}
+
+void AudioPlayerScreen::updateTransport() {
+    if (!next_button_) return;
+    lv_obj_set_state(next_button_, LV_STATE_DISABLED, !playlist_->canStep(1, repeat_));
+}
+
+void AudioPlayerScreen::playerStateChanged() {
+    if (s_active) s_active->handleState();
+}
+
+void AudioPlayerScreen::handleState() {
+    const PlayerStatus status = player_status();
+    if (awaiting_start_) {
+        if (status.state == PlayerState::Paused) {
+            awaiting_start_ = false;
+            skips_ = 0;
+            player_play();
+            setPlayIcon(true);
+            /* The status still says paused, so refreshing here would flip the
+             * icon back. The Playing transition brings the next one. */
+            return;
+        }
+        if (status.state == PlayerState::Failed) {
+            awaiting_start_ = false;
+            if (auto_opened_ && ++skips_ < (int)playlist_->size() && advance(1, false)) return;
+        }
+    } else if (status.state == PlayerState::Finished && advance(1, false)) {
+        return;
+    }
+    refresh();
+}
+
 void AudioPlayerScreen::setRepeatMode(RepeatMode mode) {
     repeat_ = mode;
+    updateTransport();
     if (!repeat_label_) return;
     switch (mode) {
     case RepeatMode::Off: lv_label_set_text(repeat_label_, TABLER_REPEAT_OFF); break;
@@ -312,27 +403,17 @@ void AudioPlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
     lv_label_set_text(label, text);
 }
 
-void AudioPlayerScreen::tick() {
-    const PlayerState state = player_status().state;
-    if (auto_start_ && (state == PlayerState::Paused || state == PlayerState::Failed)) {
-        auto_start_ = false;
-        lv_timer_set_period(timer_, kRefreshPeriodMs);
-        if (state == PlayerState::Paused) {
-            player_play();
-            setPlayIcon(true);
-        }
-    }
-    refresh();
-}
-
 void AudioPlayerScreen::refresh() {
     if (!seek_) return;
 
+    /* Until the file the player was told to open is loaded, its status and
+     * summary still describe the previous one. */
+    const bool ready = !awaiting_start_;
     const PlayerStatus status = player_status();
-    const bool playing = status.state == PlayerState::Playing;
+    const bool playing = ready && status.state == PlayerState::Playing;
     if (playing != playing_) setPlayIcon(playing);
 
-    const bool known = status.duration_us > 0 && status.state != PlayerState::Loading;
+    const bool known = ready && status.duration_us > 0 && status.state != PlayerState::Loading;
     setTime(total_label_, &shown_total_s_, known ? status.duration_us : -1);
     if (!scrubbing_) {
         setTime(elapsed_label_, &shown_elapsed_s_, known ? status.position_us : 0);
@@ -340,20 +421,23 @@ void AudioPlayerScreen::refresh() {
         lv_slider_set_value(seek_, (int32_t)value, LV_ANIM_OFF);
     }
 
-    const MediaSummary summary = player_media_summary();
+    const MediaSummary summary = ready ? player_media_summary() : MediaSummary{};
     if (!cover_ && summary.cover) {
         cover_ = summary.cover;
         applyArtwork();
     }
 
-    const std::string &title = summary.tags.title.empty() ? name_ : summary.tags.title;
+    const std::string &title = summary.tags.title.empty() ? name() : summary.tags.title;
     if (title != shown_title_) {
         shown_title_ = title;
         lv_label_set_text(title_label_, title.c_str());
     }
 
-    std::string message = status.state == PlayerState::Failed ? status.error : std::string();
-    if (message.empty()) message = status.audio_note;
+    std::string message;
+    if (ready) {
+        if (status.state == PlayerState::Failed) message = status.error;
+        if (message.empty()) message = status.audio_note;
+    }
     const bool failed = !message.empty();
     if (message.empty()) message = format_tags(summary.tags);
     if (message.empty()) message = format_summary(summary);
@@ -367,19 +451,16 @@ void AudioPlayerScreen::refresh() {
 
 void AudioPlayerScreen::onEnter() {
     s_active = this;
-    cover_ = {};
-    player_open(path_);
-    player_set_loop(repeat_ != RepeatMode::Off);
-
-    auto_start_ = true;
+    player_observe_state(playerStateChanged);
+    openCurrent();
     timer_ = lv_timer_create([](lv_timer_t *timer) {
-        static_cast<AudioPlayerScreen *>(lv_timer_get_user_data(timer))->tick();
-    }, kAutoStartPollMs, this);
-    refresh();
+        static_cast<AudioPlayerScreen *>(lv_timer_get_user_data(timer))->handleState();
+    }, kRefreshPeriodMs, this);
 }
 
 void AudioPlayerScreen::onExit() {
     if (s_active == this) s_active = nullptr;
+    player_observe_state(nullptr);
     if (timer_) {
         lv_timer_delete(timer_);
         timer_ = nullptr;
@@ -392,5 +473,5 @@ AudioPlayerScreen::~AudioPlayerScreen() {
 }
 
 void AudioPlayerScreen::eject(const std::string &mount_point) {
-    if (s_active && path_is_under(s_active->path_, mount_point)) s_active->back();
+    if (s_active && path_is_under(s_active->path(), mount_point)) s_active->back();
 }

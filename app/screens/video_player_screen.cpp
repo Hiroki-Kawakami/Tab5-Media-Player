@@ -24,10 +24,10 @@ static constexpr int32_t kPortraitBottomHeight = 272;
 static constexpr int32_t kPortraitPanelHeight = 640;
 static constexpr int32_t kLandscapePanelWidth = 560;
 static constexpr uint32_t kRefreshPeriodMs = 500;
-static constexpr uint32_t kAutoStartPollMs = 100;
 static constexpr uint32_t kAutoHideMs = 4000;
 static constexpr uint32_t kAutoStartHideMs = 1500;
 static constexpr int32_t kSeekRange = 1000;
+static constexpr int64_t kPrevTrackUs = 3000000;
 static constexpr int32_t kBarPadding = 24;
 static constexpr int32_t kPortraitSide = 116;
 static constexpr int32_t kPortraitSlider = 440;
@@ -140,6 +140,7 @@ void VideoPlayerScreen::closeOverlay() {
     info_button_ = nullptr;
     title_label_ = nullptr;
     play_label_ = nullptr;
+    next_button_ = nullptr;
     repeat_label_ = nullptr;
     seek_ = nullptr;
     elapsed_label_ = nullptr;
@@ -162,6 +163,7 @@ void VideoPlayerScreen::buildUi() {
     shown_elapsed_s_ = -2;
     shown_total_s_ = -2;
     shown_message_.clear();
+    next_button_ = nullptr;
 
     /* Styleless, so a press changes nothing and never invalidates the video. */
     lv_obj_t *video = lv_container_create(screen);
@@ -280,7 +282,7 @@ void VideoPlayerScreen::rotate(bsp_rotation_t rotation) {
 }
 
 void VideoPlayerScreen::eject(const std::string &mount_point) {
-    if (s_active && path_is_under(s_active->path_, mount_point)) s_active->back();
+    if (s_active && path_is_under(s_active->path(), mount_point)) s_active->back();
 }
 
 void VideoPlayerScreen::onEnter() {
@@ -308,20 +310,17 @@ void VideoPlayerScreen::onEnter() {
     lv_refr_now(ui_);
     bsp_display_wait_draw();
 
-    player_open(path_);
-    player_set_loop(repeat_ != RepeatMode::Off);
-    lv_display_trigger_activity(ui_);
-
-    auto_start_ = true;
+    player_observe_state(playerStateChanged);
     auto_start_tick_ = 0;
+    openCurrent();
     timer_ = lv_timer_create([](lv_timer_t *timer) {
         static_cast<VideoPlayerScreen *>(lv_timer_get_user_data(timer))->tick();
-    }, kAutoStartPollMs, this);
-    refresh();
+    }, kRefreshPeriodMs, this);
 }
 
 void VideoPlayerScreen::onExit() {
     if (s_active == this) s_active = nullptr;
+    player_observe_state(nullptr);
     if (timer_) {
         lv_timer_delete(timer_);
         timer_ = nullptr;
@@ -352,7 +351,7 @@ void VideoPlayerScreen::showStartError(const std::string &message) {
 void VideoPlayerScreen::populateInfo() {
     if (!info_) return;
     lv_obj_clean(info_);
-    player_info_panel_build(info_, name_, player_media_summary(),
+    player_info_panel_build(info_, name(), player_media_summary(),
                             [this] { requestMode(UiMode::Bars); });
     lv_obj_update_layout(info_);
 }
@@ -384,7 +383,7 @@ void VideoPlayerScreen::buildTopBar(lv_obj_t *parent) {
     lv_obj_set_style_pad_right(title_label_, 24, 0);
     lv_obj_set_style_pad_ver(title_label_, 8, 0);
     lv_obj_set_style_text_font(title_label_, lv_widgets_body_font(), 0);
-    lv_label_set_text(title_label_, name_.c_str());
+    lv_label_set_text(title_label_, name().c_str());
 
     lv_spacer_create(parent, 1, 1, 1);
 
@@ -457,14 +456,19 @@ void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
             case RepeatMode::All: setRepeatMode(RepeatMode::One); break;
             case RepeatMode::One: setRepeatMode(RepeatMode::Off); break;
             }
-            player_set_loop(repeat_ != RepeatMode::Off);
+            player_set_loop(repeat_ == RepeatMode::One);
         });
         setRepeatMode(repeat_);
         return;
     }
 
     lv_obj_t *prev = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, lv_color_white());
-    lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [](lv_event_t *) { player_restart(); });
+    lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        lv_display_trigger_activity(ui_);
+        const PlayerStatus status = player_status();
+        if (status.position_us < kPrevTrackUs && advance(-1, true)) return;
+        restart(status.state == PlayerState::Playing || status.state == PlayerState::Finished);
+    });
 
     lv_obj_t *play = media_icon_button(parent, 120, &icon_72, TABLER_PLAYER_PLAY, lv_color_white(),
                                            &play_label_);
@@ -478,10 +482,94 @@ void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
         lv_display_trigger_activity(ui_);
     });
 
-    lv_obj_t *next = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, lv_color_white());
-    lv_obj_add_state(next, LV_STATE_DISABLED);
+    next_button_ = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, lv_color_white());
+    lv_obj_add_event_fn(next_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        lv_display_trigger_activity(ui_);
+        advance(1, true);
+    });
+    updateTransport();
 
     setPlayIcon(playing_);
+}
+
+void VideoPlayerScreen::openCurrent() {
+    awaiting_start_ = true;
+    scrubbing_ = false;
+    stop_bars_shown_ = false;
+    player_open(path());
+    player_set_loop(repeat_ == RepeatMode::One);
+
+    shown_elapsed_s_ = -2;
+    shown_total_s_ = -2;
+    setMessage({}, true);
+    if (seek_) lv_slider_set_value(seek_, 0, LV_ANIM_OFF);
+    updateTransport();
+    if (ui_) lv_display_trigger_activity(ui_);
+    refresh();
+}
+
+bool VideoPlayerScreen::advance(int delta, bool manual) {
+    const std::size_t before = playlist_->index();
+    if (!playlist_->step(delta, repeat_)) return false;
+    auto_opened_ = !manual;
+    if (manual) skips_ = 0;
+    if (playlist_->index() == before) {
+        restart(true);
+        return true;
+    }
+    openCurrent();
+    return true;
+}
+
+void VideoPlayerScreen::restart(bool resume) {
+    player_restart();
+    if (!resume) return;
+    player_play();
+    setPlayIcon(true);
+}
+
+void VideoPlayerScreen::updateTransport() {
+    if (!next_button_) return;
+    lv_obj_set_state(next_button_, LV_STATE_DISABLED, !playlist_->canStep(1, repeat_));
+}
+
+void VideoPlayerScreen::playerStateChanged() {
+    if (s_active) s_active->handleState();
+}
+
+void VideoPlayerScreen::handleState() {
+    if (mode_ == UiMode::Info) return;
+
+    const PlayerStatus status = player_status();
+    if (awaiting_start_) {
+        if (status.state == PlayerState::Paused) {
+            awaiting_start_ = false;
+            skips_ = 0;
+            player_play();
+            setPlayIcon(true);
+            lv_display_trigger_activity(ui_);
+            auto_start_tick_ = lv_tick_get();
+            /* The status still says paused, so refreshing here would flip the
+             * icon back. The Playing transition brings the next one. */
+            return;
+        }
+        if (status.state == PlayerState::Failed) {
+            awaiting_start_ = false;
+            if (auto_opened_ && ++skips_ < (int)playlist_->size() && advance(1, false)) return;
+        }
+    } else if (status.state == PlayerState::Finished && advance(1, false)) {
+        return;
+    }
+
+    const bool stopped = !awaiting_start_ && (status.state == PlayerState::Finished ||
+                                              status.state == PlayerState::Failed);
+    if (!stopped) {
+        stop_bars_shown_ = false;
+    } else if (!stop_bars_shown_) {
+        stop_bars_shown_ = true;
+        if (mode_ == UiMode::Hidden) setMode(UiMode::Bars);
+    }
+    refresh();
 }
 
 void VideoPlayerScreen::buildSeekRow(lv_obj_t *parent) {
@@ -546,6 +634,7 @@ void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
 
 void VideoPlayerScreen::setRepeatMode(RepeatMode mode) {
     repeat_ = mode;
+    updateTransport();
     if (!repeat_label_) return;
     switch (mode) {
     case RepeatMode::Off: lv_label_set_text(repeat_label_, TABLER_REPEAT_OFF); break;
@@ -569,29 +658,9 @@ void VideoPlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
 }
 
 void VideoPlayerScreen::tick() {
-    if (mode_ == UiMode::Info) return;
-    const PlayerState state = player_status().state;
-    if (auto_start_ && (state == PlayerState::Paused || state == PlayerState::Failed)) {
-        auto_start_ = false;
-        lv_timer_set_period(timer_, kRefreshPeriodMs);
-        if (state == PlayerState::Paused) {
-            player_play();
-            setPlayIcon(true);
-            lv_display_trigger_activity(ui_);
-            auto_start_tick_ = lv_tick_get();
-        }
-    }
-
-    const bool stopped = state == PlayerState::Finished || state == PlayerState::Failed;
-    if (!stopped) {
-        stop_bars_shown_ = false;
-    } else if (!stop_bars_shown_) {
-        stop_bars_shown_ = true;
-        if (mode_ == UiMode::Hidden) setMode(UiMode::Bars);
-    }
+    handleState();
 
     if (mode_ != UiMode::Bars) return;
-    refresh();
     if (!playing_ || scrubbing_) return;
     if (volume_slider_ && lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
     const uint32_t inactive_ms = lv_display_get_inactive_time(nullptr);
@@ -600,16 +669,27 @@ void VideoPlayerScreen::tick() {
     setMode(UiMode::Hidden);
 }
 
+void VideoPlayerScreen::setMessage(const std::string &message, bool force) {
+    if (!title_label_ || (!force && message == shown_message_)) return;
+    shown_message_ = message;
+    lv_label_set_text(title_label_, message.empty() ? name().c_str() : message.c_str());
+    lv_obj_set_style_text_color(title_label_, message.empty() ? lv_color_white()
+                                                              : lv_color_hex(kMessageColor), 0);
+}
+
 void VideoPlayerScreen::refresh() {
     if (!seek_ || mode_ != UiMode::Bars) return;
 
+    /* Until the file the player was told to open is loaded, its status and
+     * summary still describe the previous one. */
+    const bool ready = !awaiting_start_;
     const PlayerStatus status = player_status();
-    const bool playing = status.state == PlayerState::Playing;
+    const bool playing = ready && status.state == PlayerState::Playing;
     if (playing != playing_) setPlayIcon(playing);
-    const MediaSummary summary = player_media_summary();
+    const MediaSummary summary = ready ? player_media_summary() : MediaSummary{};
     lv_obj_set_state(info_button_, LV_STATE_DISABLED, !summary.valid);
 
-    const bool known = status.duration_us > 0 && status.state != PlayerState::Loading;
+    const bool known = ready && status.duration_us > 0 && status.state != PlayerState::Loading;
     setTime(total_label_, &shown_total_s_, known ? status.duration_us : -1);
     if (!scrubbing_) {
         setTime(elapsed_label_, &shown_elapsed_s_, known ? status.position_us : 0);
@@ -617,16 +697,14 @@ void VideoPlayerScreen::refresh() {
         lv_slider_set_value(seek_, (int32_t)value, LV_ANIM_OFF);
     }
 
-    std::string message = status.state == PlayerState::Failed ? status.error : std::string();
-    if (message.empty()) message = video_presenter_error();
-    if (message.empty() && summary.valid && summary.video.codec == CodecId::None) {
-        message = "no video track";
+    std::string message;
+    if (ready) {
+        if (status.state == PlayerState::Failed) message = status.error;
+        if (message.empty()) message = video_presenter_error();
+        if (message.empty() && summary.valid && summary.video.codec == CodecId::None) {
+            message = "no video track";
+        }
+        if (message.empty()) message = status.audio_note;
     }
-    if (message.empty()) message = status.audio_note;
-    if (message != shown_message_) {
-        shown_message_ = message;
-        lv_label_set_text(title_label_, message.empty() ? name_.c_str() : message.c_str());
-        lv_obj_set_style_text_color(title_label_, message.empty() ? lv_color_white()
-                                                                  : lv_color_hex(kMessageColor), 0);
-    }
+    setMessage(message, false);
 }

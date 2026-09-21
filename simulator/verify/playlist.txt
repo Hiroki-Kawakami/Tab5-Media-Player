@@ -1,0 +1,54 @@
+# Music/ is the audio playlist: a_aac, b_opus, c_alac (unplayable), d_pcm ...
+# Movies/Anime holds a single unplayable file, which is where a one-entry
+# playlist and a manual open that fails are checked.
+settle
+tap 360 226
+settle
+tap 360 320
+settle
+tap 360 160
+wait 1500
+capture playlist_first.jpg
+tap 484 1012
+wait 1200
+capture playlist_next.jpg
+tap 236 1012
+wait 1200
+capture playlist_prev.jpg
+wait 3500
+tap 236 1012
+wait 1000
+capture playlist_restart.jpg
+wait 6500
+capture playlist_auto_next.jpg
+wait 6500
+capture playlist_auto_skip.jpg
+tap 646 1012
+wait 400
+capture playlist_repeat_all.jpg
+tap 60 60
+settle
+tap 60 60
+settle
+tap 360 240
+settle
+tap 360 160
+settle
+tap 360 160
+wait 1500
+capture playlist_single_failed.jpg
+tap 40 40
+settle
+tap 60 60
+settle
+tap 360 240
+wait 900
+capture playlist_video_first.jpg
+tap 484 1135
+wait 900
+capture playlist_video_next.jpg
+tap 236 1135
+wait 900
+capture playlist_video_prev.jpg
+tap 40 40
+settle

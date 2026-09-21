@@ -46,6 +46,8 @@ wait 1000
 capture mkv_seek.jpg
 tap 640 860
 wait 300
+tap 640 860
+wait 300
 tap 640 1080
 wait 3500
 capture mkv_looped.jpg

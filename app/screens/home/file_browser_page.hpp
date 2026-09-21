@@ -5,10 +5,12 @@
 
 #pragma once
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 #include "home_page.hpp"
 #include "media/demuxer.hpp"
+#include "playback/playlist.hpp"
 #include "widgets.hpp"
 
 class FileBrowserPage : public HomePage, private ListDataSource {
@@ -35,6 +37,7 @@ private:
     int32_t scroll_y_ = 0;
 
     bool load_entries();
+    std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
 
     std::size_t rowCount() const override;
     int32_t rowHeight() const override;

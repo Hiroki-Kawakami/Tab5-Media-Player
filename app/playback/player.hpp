@@ -58,6 +58,7 @@ struct MediaSummary {
 };
 
 void player_start(const media_arena_t &arena);
+void player_observe_state(void (*on_change)());
 void player_open(const std::string &path);
 void player_close();
 void player_play();

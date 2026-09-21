@@ -124,14 +124,26 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
                     entry.directory || entry.kind != MediaKind::None);
 }
 
+std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) const {
+    const MediaKind kind = entries_[index].kind;
+    std::vector<PlaylistItem> items;
+    std::size_t current = 0;
+    for (std::size_t i = 0; i < entries_.size(); i++) {
+        const Entry &entry = entries_[i];
+        if (entry.directory || entry.kind != kind) continue;
+        if (i == index) current = items.size();
+        items.push_back({ entry.name, path_ + "/" + entry.name });
+    }
+    return std::make_shared<Playlist>(std::move(items), current);
+}
+
 void FileBrowserPage::didSelectRow(std::size_t index) {
     const Entry &entry = entries_[index];
-    const std::string path = path_ + "/" + entry.name;
     if (entry.directory) {
-        home_->push(std::make_shared<FileBrowserPage>(path, entry.name));
+        home_->push(std::make_shared<FileBrowserPage>(path_ + "/" + entry.name, entry.name));
     } else if (entry.kind == MediaKind::Audio) {
-        screen_manager.push(std::make_shared<AudioPlayerScreen>(entry.name, path));
+        screen_manager.push(std::make_shared<AudioPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Video) {
-        screen_manager.push(std::make_shared<VideoPlayerScreen>(entry.name, path));
+        screen_manager.push(std::make_shared<VideoPlayerScreen>(make_playlist(index)));
     }
 }

@@ -5,15 +5,17 @@
 
 #pragma once
 #include "playback/player.hpp"
+#include "playback/playlist.hpp"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
+#include <memory>
 #include <string>
 
 class AudioPlayerScreen : public NavigationScreen {
 public:
-    AudioPlayerScreen(std::string name, std::string path)
-        : name_(std::move(name)), path_(std::move(path)) {}
+    explicit AudioPlayerScreen(std::shared_ptr<Playlist> playlist)
+        : playlist_(std::move(playlist)) {}
     ~AudioPlayerScreen() override;
     void build() override;
     void onEnter() override;
@@ -21,7 +23,8 @@ public:
     static void eject(const std::string &mount_point);
 
 private:
-    enum class RepeatMode { Off, All, One };
+    const std::string &name() const { return playlist_->current().name; }
+    const std::string &path() const { return playlist_->current().path; }
 
     bool isLandscape() const;
     void buildContents();
@@ -32,23 +35,31 @@ private:
     void buildVolumeRow(lv_obj_t *parent);
     void relayout();
     void applyArtwork();
+    void resetArtwork();
+    void openCurrent();
+    bool advance(int delta, bool manual);
+    void restart(bool resume);
+    void updateTransport();
+    void handleState();
+    static void playerStateChanged();
     void setRepeatMode(RepeatMode mode);
     void setPlayIcon(bool playing);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
-    void tick();
     void refresh();
 
-    std::string name_;
-    std::string path_;
+    std::shared_ptr<Playlist> playlist_;
     bool playing_ = false;
     bool scrubbing_ = false;
-    bool auto_start_ = true;
+    bool awaiting_start_ = false;
+    bool auto_opened_ = false;
+    int skips_ = 0;
     bool landscape_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
 
     CoverArt cover_;
 
     lv_obj_t *play_label_ = nullptr;
+    lv_obj_t *next_button_ = nullptr;
     lv_obj_t *artwork_ = nullptr;
     int32_t artwork_side_ = 0;
     lv_obj_t *artwork_icon_ = nullptr;

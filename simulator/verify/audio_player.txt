@@ -37,6 +37,8 @@ capture audio_opus_paused.jpg
 tap 445 925
 wait 600
 tap 445 650
+wait 300
+tap 445 650
 wait 400
 capture audio_opus_repeat.jpg
 down 347 1100

@@ -5,17 +5,19 @@
 
 #pragma once
 #include "bsp_types.h"
+#include "playback/playlist.hpp"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
+#include <memory>
 #include <string>
 
 struct VideoInsets;
 
 class VideoPlayerScreen : public NavigationScreen {
 public:
-    VideoPlayerScreen(std::string name, std::string path)
-        : name_(std::move(name)), path_(std::move(path)) {}
+    explicit VideoPlayerScreen(std::shared_ptr<Playlist> playlist)
+        : playlist_(std::move(playlist)) {}
     ~VideoPlayerScreen() override;
     void build() override;
     void onEnter() override;
@@ -23,8 +25,10 @@ public:
     static void eject(const std::string &mount_point);
 
 private:
-    enum class RepeatMode { Off, All, One };
     enum class UiMode { Hidden, Bars, Settings, Info };
+
+    const std::string &name() const { return playlist_->current().name; }
+    const std::string &path() const { return playlist_->current().path; }
 
     bool openOverlay();
     void closeOverlay();
@@ -39,18 +43,26 @@ private:
     void buildTransport(lv_obj_t *parent, bool repeat_only);
     void buildSeekRow(lv_obj_t *parent);
     void buildVolumeRow(lv_obj_t *parent);
+    void openCurrent();
+    bool advance(int delta, bool manual);
+    void restart(bool resume);
+    void updateTransport();
+    void handleState();
+    static void playerStateChanged();
     void setRepeatMode(RepeatMode mode);
     void setPlayIcon(bool playing);
+    void setMessage(const std::string &message, bool force);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
     void tick();
     void refresh();
     void showStartError(const std::string &message);
 
-    std::string name_;
-    std::string path_;
+    std::shared_ptr<Playlist> playlist_;
     bool playing_ = false;
     bool scrubbing_ = false;
-    bool auto_start_ = true;
+    bool awaiting_start_ = false;
+    bool auto_opened_ = false;
+    int skips_ = 0;
     bool stop_bars_shown_ = false;
     bool info_paused_ = false;
     uint32_t auto_start_tick_ = 0;
@@ -66,6 +78,7 @@ private:
     lv_obj_t *info_button_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
+    lv_obj_t *next_button_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;
     lv_obj_t *seek_ = nullptr;
     lv_obj_t *elapsed_label_ = nullptr;

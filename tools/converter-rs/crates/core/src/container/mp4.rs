@@ -575,6 +575,7 @@ fn parse_track(trak: &[u8], index: u32, movie_timescale: u32) -> Result<Option<(
         _ => TrackKind::Audio(AudioTrack {
             channels: entry.channels,
             sample_rate: entry.sample_rate,
+            priming: u32::try_from(edit.media_time).unwrap_or(0),
             bit_rate: (span > 0)
                 .then(|| (bytes as u128 * 8 * timescale as u128 / span as u128) as u64)
                 .filter(|&b| b > 0)

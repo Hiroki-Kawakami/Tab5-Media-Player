@@ -25,7 +25,7 @@ pub enum Commands {
     Single(Vec<OsString>),
     Piped {
         decode: Vec<OsString>,
-        mux: Vec<OsString>,
+        mux: Option<Vec<OsString>>,
         settings: Settings,
     },
 }
@@ -68,7 +68,22 @@ impl Job<'_> {
         decode.push(self.input.into());
         decode.extend(["-map".into(), format!("0:{}", self.video.index).into()]);
         decode.extend(["-vf".into(), args::filter(picture).into()]);
-        decode.extend(strings(["-pix_fmt", "yuv420p", "-f", "rawvideo", "pipe:1"]));
+        decode.extend(strings(["-pix_fmt", "yuv420p"]));
+
+        if self.container == Container::Mp4 {
+            decode.extend(strings(["-c:v", "rawvideo"]));
+            if let Some(index) = self.audio.index() {
+                decode.extend(["-map".into(), format!("0:{index}").into()]);
+                decode.extend(args::audio(self.audio).into_iter().map(OsString::from));
+            }
+            decode.extend(strings(["-f", "matroska", "pipe:1"]));
+            return Commands::Piped {
+                decode,
+                mux: None,
+                settings,
+            };
+        }
+        decode.extend(strings(["-f", "rawvideo", "pipe:1"]));
 
         let mut mux = self.head();
         if let Some(rotation) = picture.rotation.and_then(|r| r.display_rotation) {
@@ -82,7 +97,7 @@ impl Job<'_> {
         self.tail(&mut mux, 1);
         Commands::Piped {
             decode,
-            mux,
+            mux: Some(mux),
             settings,
         }
     }

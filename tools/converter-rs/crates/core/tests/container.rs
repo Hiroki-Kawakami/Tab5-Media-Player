@@ -150,6 +150,10 @@ fn mp4_h264_aac_with_b_frames_and_edit_lists() {
     assert_eq!(track.aac_profile(), Some("LC"));
     assert_eq!((a.channels, a.sample_rate), (2, 44100));
     assert!(a.bit_rate.is_some());
+    assert_eq!(a.priming, 1024);
+    let index = track.index;
+    let (_, packets) = demux_all(&path);
+    assert_eq!(packets[&index][0].pts, -23219);
 }
 
 #[test]
@@ -380,7 +384,7 @@ fn mp4_mux_round_trip() {
     );
     assert_eq!(
         probe_value(&output, "v", "stream=codec_name,codec_tag_string"),
-        "mjpeg\nmp4v"
+        "mjpeg\njpeg"
     );
     assert_eq!(
         probe_value(&output, "v", "stream_side_data=rotation"),

@@ -5,11 +5,20 @@ use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Result, bail};
 
+use crate::framerate::Rate;
 use crate::jpeg::{Encoded, SizeModel};
 use crate::ratecontrol::{Bucket, Decision, RateControl};
 use crate::video::mjpeg::{PLAYER_MAX_FRAME, Settings};
 
 const LOOKAHEAD_SECONDS: f64 = 1.0;
+
+pub const TIMESCALE: u32 = 1_200_000;
+
+pub fn ticks(rate: Rate, frame: u64) -> u64 {
+    let ticks = frame as u128 * TIMESCALE as u128 * rate.den() as u128;
+    let num = rate.num() as u128;
+    ((ticks * 2 + num) / (num * 2)) as u64
+}
 
 pub struct Reorder<T> {
     pending: BTreeMap<usize, T>,

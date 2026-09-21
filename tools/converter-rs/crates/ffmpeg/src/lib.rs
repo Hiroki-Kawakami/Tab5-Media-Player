@@ -75,10 +75,18 @@ impl Conversion {
         let tools = &self.tools;
         match self.commands(&batch::part_path(&self.output), false) {
             command::Commands::Single(args) => vec![tools.command_line(&args)],
-            command::Commands::Piped { decode, mux, .. } => vec![
+            command::Commands::Piped {
+                decode,
+                mux: Some(mux),
+                ..
+            } => vec![
                 format!("{} \\", tools.command_line(&decode)),
                 "  | (built-in MJPEG encoder) \\".into(),
                 format!("  | {}", tools.command_line(&mux)),
+            ],
+            command::Commands::Piped { decode, .. } => vec![
+                format!("{} \\", tools.command_line(&decode)),
+                "  | (built-in MJPEG encoder and mp4 muxer)".into(),
             ],
         }
     }
@@ -97,11 +105,16 @@ impl Conversion {
                 mux,
                 settings,
             } => pipeline::run(
-                tools,
-                &decode,
-                &mux,
-                &self.video.picture,
-                &settings,
+                &pipeline::Job {
+                    tools,
+                    decode: &decode,
+                    mux: mux.as_deref(),
+                    input: &self.input,
+                    output: &part,
+                    picture: &self.video.picture,
+                    audio: &self.audio,
+                    settings: &settings,
+                },
                 monitor,
             )
             .map(Some),

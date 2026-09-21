@@ -19,6 +19,7 @@ pub enum Codec {
     Mpeg1Video,
     Mpeg2Video,
     Mjpeg,
+    Raw,
     Aac,
     Mp3,
     Opus,
@@ -42,6 +43,7 @@ impl Codec {
             Self::Mpeg1Video => "mpeg1video",
             Self::Mpeg2Video => "mpeg2video",
             Self::Mjpeg => "mjpeg",
+            Self::Raw => "rawvideo",
             Self::Aac => "aac",
             Self::Mp3 => "mp3",
             Self::Opus => "opus",
@@ -109,6 +111,7 @@ pub struct AudioTrack {
     pub channels: u32,
     pub sample_rate: u32,
     pub bit_rate: Option<u64>,
+    pub priming: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -165,6 +168,13 @@ fn av1_string(av1c: &[u8]) -> Option<String> {
 }
 
 impl Track {
+    pub fn audio(&self) -> Option<&AudioTrack> {
+        match &self.kind {
+            TrackKind::Audio(audio) => Some(audio),
+            _ => None,
+        }
+    }
+
     pub fn codec_string(&self) -> Option<String> {
         let e = &self.extradata;
         Some(match self.codec {

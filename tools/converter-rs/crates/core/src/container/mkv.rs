@@ -74,29 +74,41 @@ struct Input<S> {
 }
 
 impl<S: Source> Input<S> {
-    fn read(&mut self, pos: u64, len: usize) -> Result<&[u8]> {
-        let end = pos + len as u64;
-        if end > self.len {
-            bail!("truncated file");
-        }
+    fn fill(&mut self, pos: u64, len: usize) -> Result<usize> {
         let buf_end = self.buf_start + self.buf.len() as u64;
-        if pos < self.buf_start || end > buf_end {
-            let size = len.max(READ_CHUNK).min((self.len - pos) as usize);
-            self.buf.resize(size, 0);
-            self.source.read_at(pos, &mut self.buf)?;
-            self.buf_start = pos;
+        if pos >= self.buf_start && pos + len as u64 <= buf_end {
+            return Ok(len);
+        }
+        let size = len.max(READ_CHUNK).min((self.len - pos) as usize);
+        self.buf.resize(size, 0);
+        let filled = self.source.read_upto(pos, &mut self.buf)?;
+        self.buf.truncate(filled);
+        self.buf_start = pos;
+        if filled < size {
+            self.len = pos + filled as u64;
+        }
+        Ok(filled.min(len))
+    }
+
+    fn read(&mut self, pos: u64, len: usize) -> Result<&[u8]> {
+        if pos + len as u64 > self.len || self.fill(pos, len)? < len {
+            bail!("truncated file");
         }
         let start = (pos - self.buf_start) as usize;
         Ok(&self.buf[start..start + len])
     }
 
-    fn header(&mut self, pos: u64) -> Result<(u32, Option<u64>, u64)> {
+    fn header(&mut self, pos: u64) -> Result<Option<(u32, Option<u64>, u64)>> {
         let available = (self.len - pos).min(12) as usize;
-        let data = self.read(pos, available)?;
-        let mut r = Reader::new(data);
+        let available = self.fill(pos, available)?;
+        if available == 0 {
+            return Ok(None);
+        }
+        let start = (pos - self.buf_start) as usize;
+        let mut r = Reader::new(&self.buf[start..start + available]);
         let id = element_id(&mut r)?;
         let size = element_size(&mut r)?;
-        Ok((id, size, pos + (available - r.remaining()) as u64))
+        Ok(Some((id, size, pos + (available - r.remaining()) as u64)))
     }
 }
 
@@ -221,6 +233,7 @@ fn codec(codec_id: &str) -> Codec {
         "V_MPEG1" => Codec::Mpeg1Video,
         "V_MPEG2" => Codec::Mpeg2Video,
         "V_MJPEG" => Codec::Mjpeg,
+        "V_UNCOMPRESSED" => Codec::Raw,
         "A_MPEG/L3" => Codec::Mp3,
         "A_OPUS" => Codec::Opus,
         "A_VORBIS" => Codec::Vorbis,
@@ -328,6 +341,7 @@ fn parse_track(entry: &[u8], index: u32) -> Result<(Track, TrackState)> {
             channels,
             sample_rate: sample_rate as u32,
             bit_rate: None,
+            priming: (codec_delay as f64 * sample_rate / 1e9).round() as u32,
         }),
         _ => TrackKind::Other,
     };
@@ -372,7 +386,7 @@ impl<S: Source> Demuxer<S> {
             buf: Vec::new(),
             buf_start: 0,
         };
-        let (id, size, body) = input.header(0)?;
+        let (id, size, body) = input.header(0)?.context("empty input")?;
         if id != EBML {
             bail!("not an EBML file");
         }
@@ -388,7 +402,7 @@ impl<S: Source> Demuxer<S> {
                 }
             }
         }
-        let (id, size, mut pos) = input.header(body + size)?;
+        let (id, size, mut pos) = input.header(body + size)?.context("no Matroska segment")?;
         if id != SEGMENT {
             bail!("no Matroska segment");
         }
@@ -399,7 +413,9 @@ impl<S: Source> Demuxer<S> {
         let mut tracks = Vec::new();
         let mut states = Vec::new();
         while pos < end {
-            let (id, size, body) = input.header(pos)?;
+            let Some((id, size, body)) = input.header(pos)? else {
+                break;
+            };
             if id == CLUSTER {
                 break;
             }
@@ -472,7 +488,9 @@ impl<S: Source> Demuxer<S> {
             if self.pos >= self.end {
                 return Ok(None);
             }
-            let (id, size, body) = self.input.header(self.pos)?;
+            let Some((id, size, body)) = self.input.header(self.pos)? else {
+                return Ok(None);
+            };
             match id {
                 CLUSTER => {
                     self.pos = body;

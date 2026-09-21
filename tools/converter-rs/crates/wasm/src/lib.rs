@@ -14,7 +14,7 @@ use tab5conv_core::container::mux::{Mp4Muxer, MuxCodec, MuxKind, MuxTrack};
 use tab5conv_core::framerate::{FrameSelector, Rate};
 use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, HuffmanMode, Limits, SizeModel};
 use tab5conv_core::media::MediaInfo;
-use tab5conv_core::mjpeg::{Reorder, Scheduler, Tally};
+use tab5conv_core::mjpeg::{self, Reorder, Scheduler, Tally};
 use tab5conv_core::ratecontrol::Decision;
 use tab5conv_core::resample::Resampler;
 use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
@@ -30,7 +30,6 @@ use tab5conv_core::color::Matrix;
 
 pub(crate) const VIDEO_TRACK: usize = 0;
 const AUDIO_TRACK: usize = 1;
-const VIDEO_TIMESCALE: u32 = 1_200_000;
 const MAX_INTERLEAVE_BYTES: usize = 256 << 20;
 
 pub(crate) fn js_error(err: anyhow::Error) -> JsError {
@@ -625,7 +624,7 @@ fn mux_tracks(
 ) -> anyhow::Result<Vec<MuxTrack>> {
     let p = &planned.video.picture;
     let (codec, timescale) = match video {
-        VideoJob::Mjpeg(_) => (MuxCodec::Mjpeg, VIDEO_TIMESCALE),
+        VideoJob::Mjpeg(_) => (MuxCodec::Mjpeg, mjpeg::TIMESCALE),
         VideoJob::Mpeg2 { config, mux, .. } => (
             MuxCodec::Mpeg2 {
                 header: tab5conv_core::mpeg2::sequence_header(&config.settings),
@@ -842,13 +841,13 @@ impl Job {
                 .map_err(js_error)?;
             job.scheduler.feedback(&feedback);
             let (start, end) = (
-                mjpeg_ticks(rate, encoded_count),
-                mjpeg_ticks(rate, encoded_count + 1),
+                mjpeg::ticks(rate, encoded_count),
+                mjpeg::ticks(rate, encoded_count + 1),
             );
             self.interleaver.push(
                 VIDEO_TRACK,
                 Sample {
-                    time: (start as i128 * 1_000_000 / VIDEO_TIMESCALE as i128) as i64,
+                    time: (start as i128 * 1_000_000 / mjpeg::TIMESCALE as i128) as i64,
                     data: encoded.data,
                     duration: (end - start) as u32,
                     key: true,
@@ -949,12 +948,6 @@ impl Job {
         };
         Ok(json(&report))
     }
-}
-
-fn mjpeg_ticks(rate: Rate, frame: u64) -> u64 {
-    let ticks = frame as u128 * VIDEO_TIMESCALE as u128 * rate.den() as u128;
-    let num = rate.num() as u128;
-    ((ticks * 2 + num) / (num * 2)) as u64
 }
 
 #[wasm_bindgen]

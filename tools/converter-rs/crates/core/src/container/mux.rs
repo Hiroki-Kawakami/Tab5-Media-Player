@@ -387,7 +387,13 @@ fn sample_entry(w: &mut Writer, id: u32, track: &TrackState) {
     };
     match (&config.kind, &config.codec) {
         (MuxKind::Video { width, height, .. }, codec) => {
-            w.boxed(b"mp4v", |w| {
+            // VLC maps an mp4v/esds entry with objectTypeIndication 0x6C to its
+            // still-image JPEG decoder, which drops the track's rotation.
+            let entry = match codec {
+                MuxCodec::Mjpeg => b"jpeg",
+                _ => b"mp4v",
+            };
+            w.boxed(entry, |w| {
                 w.zeros(6);
                 w.u16(1);
                 w.zeros(16);
@@ -402,6 +408,7 @@ fn sample_entry(w: &mut Writer, id: u32, track: &TrackState) {
                 w.u16(0xFFFF);
                 match codec {
                     MuxCodec::Mpeg2 { header } => esds(w, id, 0x61, 0x11, bitrate, header),
+                    MuxCodec::Mjpeg => {}
                     _ => esds(w, id, 0x6C, 0x11, bitrate, &[]),
                 }
             });

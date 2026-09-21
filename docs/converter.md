@@ -20,7 +20,7 @@ version), so the tool is a workspace:
 | crate | holds |
 |---|---|
 | `crates/core` | spec parsing, presets, sizes, frame rates, audio copy/encode decisions, the MJPEG encoder and its rate control, the browser's MPEG-2 encoder (`mpeg2/`), frame scaling and colour conversion (`resample.rs`, `yuv.rs`), MP4/MKV demuxing and MP4 muxing (`container/`) |
-| `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline, batch output naming |
+| `crates/ffmpeg` | ffprobe, turning a plan into ffmpeg arguments, the MJPEG pipeline and its mp4 muxing, batch output naming |
 | `crates/cli` | `tab5conv` itself |
 | `crates/gui` | the desktop app (Tauri); its UI is `web/` |
 | `crates/wasm` | `core` for the browser version (wasm-bindgen) |
@@ -414,21 +414,43 @@ tools/converter-rs/target/release/examples/mpeg2 640 360 30 8 2 60 1 out.m2v rec
 The encoder is our own (`core/src/jpeg/`). That puts the choice of quantisation
 between the DCT and the entropy coder, so the quality of each frame can be
 decided from the whole timeline without encoding anything twice.
-`ffmpeg/src/pipeline.rs` runs it between two ffmpeg processes:
+`ffmpeg/src/pipeline.rs` runs it behind one ffmpeg process:
 
 ```
-ffmpeg (decode, fps, scale)
-  -> reader
+ffmpeg (decode, fps, scale; raw video + audio in one Matroska stream)
+  -> demuxer (core/container/demux.rs over a pipe)
   -> analysis workers  (DCT, size model)            one per core
   -> rate controller   (quality per frame)          one thread, in order
   -> encode workers    (quantise, Huffman, bits)    one per core
   -> writer            (reorder, feed back sizes)   one thread
-  -> ffmpeg -f mjpeg -framerate R -i pipe:0 (+ input audio, -c:v copy)
+  -> Mp4Muxer (core/container/mux.rs)
 ```
 
-- **The output is always constant frame rate.** Raw frames carry no
-  timestamps, so the muxer rebuilds them from `-framerate`. The `fps` filter is
-  therefore always applied, at the input's own rate if nothing lowers it.
+- **ffmpeg hands over both streams in one pipe.** It writes `rawvideo` and the
+  copied or re-encoded audio as live Matroska on stdout, and our own demuxer
+  splits them again. That is why there is no second ffmpeg to mux: the audio
+  arrives with its Matroska `CodecPrivate` (the AAC `AudioSpecificConfig`) and
+  its timestamps, which is everything the muxer needs.
+- **MJPEG gets a `jpeg` sample entry, not `mp4v` + `esds`.** ffmpeg's mp4 muxer
+  has no tag for MJPEG, so it falls back to `mp4v` with objectTypeIndication
+  0x6C, and VLC maps that to `VLC_CODEC_JPEG`: its libjpeg still-image decoder
+  (`modules/codec/jpeg.c`, priority 1000) then rebuilds the video format from
+  the JPEG's own EXIF and drops the track's rotation, so the tkhd matrix has no
+  effect. A plain `jpeg` entry reaches `VLC_CODEC_MJPG` and avcodec instead.
+  QuickTime, ffmpeg and the player read either.
+- **.mkv output still goes through a muxing ffmpeg**, since the built-in muxer
+  only writes MP4. That path keeps the older shape: raw frames in, JPEG frames
+  out to `ffmpeg -f mjpeg -framerate R -i pipe:0`.
+- **The output is always constant frame rate.** The demuxed raw frames are
+  timed from the target rate (`mjpeg::ticks`), shared with the browser version
+  so both write the same sample table. The `fps` filter is therefore always
+  applied, at the input's own rate if nothing lowers it.
+- **AAC/MP3 encoder priming survives.** When ffmpeg encodes, the delay comes
+  back as Matroska `CodecDelay`; when the audio is copied, it is read from the
+  source's `elst` (`AudioTrack::priming`). Either way it becomes the audio
+  track's `elst` media time, matching what ffmpeg's own mp4 muxer writes.
+- **The mp4 has its `moov` at the end.** Nothing here reads these files over a
+  network, and writing them in one pass costs no second pass over the output.
 - **Frames are BT.601 full range**, which is what JFIF decoders assume. The
   scale filter converts with `out_color_matrix=bt601:out_range=full`.
 - **Both worker stages run in parallel; only the controller is serial**, and
@@ -516,8 +538,8 @@ whatever ffmpeg the user has. `require_encoders` checks
 `ffmpeg -encoders` up front, so a build without `libx264` fails with a clear
 message instead of partway through.
 
-MJPEG is the exception: its encoder is built in (see [MJPEG](#mjpeg)), so
-ffmpeg only decodes and muxes.
+MJPEG is the exception: its encoder and, for mp4 output, its muxer are built
+in (see [MJPEG](#mjpeg)), so ffmpeg only decodes.
 
 ## Output size
 

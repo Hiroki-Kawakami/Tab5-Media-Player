@@ -7,13 +7,13 @@ volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
 
-Audio-only files play too: `*.m4a` (AAC, MP3, Opus or PCM in MP4) opens
-`AudioPlayerScreen` instead (see [Audio-only files](#audio-only-files)).
-`*.wav`, `*.mp3` and `*.aac` are the next containers to add, and `.opus`/Ogg
-is deliberately left out for now.
+Audio-only files play too, in `AudioPlayerScreen` (see
+[Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus or PCM in MP4),
+`*.wav` (16/24/32-bit PCM or IMA ADPCM), and `*.mp3` / `*.aac` as elementary
+streams. `.opus`/Ogg is deliberately left out for now.
 
-The planned additions are the remaining audio containers, images, playlists and
-playing a directory in order. None of them exist yet.
+The planned additions are images, playlists and playing a directory in order.
+None of them exist yet.
 Their names are in the layout so you can see where each would land. Only the
 decisions that are expensive to reverse later were taken now.
 
@@ -36,13 +36,14 @@ media_buffer          │           └─▶ present
 | path | role |
 |---|---|
 | `components/media_buffer/` | aligned read-ahead into the arena, packets as views into it |
-| `components/avi_demux/` | RIFF/AVI parsing, plain C with no app types |
+| `components/riff_demux/` | RIFF parsing, plain C with no app types: the chunk walk and WAVEFORMATEX in `riff.c`, then `avi_demux` and `wav_demux` on top |
+| `components/es_audio_demux/` | MP3 and ADTS AAC elementary streams, plain C with no app types |
 | `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
 | `components/mp4_demux/` | ISO BMFF/QuickTime parsing, plain C with no app types |
 | `components/vdec_common/` | PIE kernels on the packed picture layout and the thread hooks, shared by both decoders |
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
-| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, MKV and MP4 adapters |
+| `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, WAV, MKV, MP4 and elementary-stream adapters |
 | `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture |
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
 | `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
@@ -286,8 +287,10 @@ at the end and the restart on flush. What differs:
 - **No interlaced MPEG-2, no MPEG-1, no MPEG-PS/TS (`.mpg`, `.ts`, `.vob`).**
   See [`mpeg2.md`](mpeg2.md#scope).
 - **No sample aspect ratio.** Every codec is shown with square pixels.
-- **No `.wav`, `.mp3` or `.aac` yet**, and no `.opus`: Ogg needs page parsing
-  and a bisection over granule positions, which is worth its own step.
+- **No `.opus`**: Ogg needs page parsing and a bisection over granule
+  positions, which is worth its own step.
+- **No 8-bit WAV** (it is unsigned, and everything below is signed), no MS
+  ADPCM, and no MP3 inside WAV.
 - **No tags.** Title, artist and cover art are not read from any container, so
   the audio screen shows the file name and a placeholder.
 - **No playlist.** Both screens play exactly one file; the next-track button is
@@ -511,6 +514,40 @@ guessing the extension.
   - The reader's "produced something this pass" guard, which stops an empty
     file from seeking to 0 forever, used to count video packets only. An
     audio-only file therefore stopped at the end however loop was set.
+- **WAV is the same envelope as AVI, not the same demuxer.** The RIFF chunk
+  walk, the `fmt ` WAVEFORMATEX and the format-tag table are literally the same
+  bytes, so they live in `riff.c` and both demuxers call them; everything else
+  differs (AVI is indexed chunk streams on a frame timeline, WAV is one `data`
+  range with no packet boundaries at all). `avi_demux` keeps its frame-numbered
+  API; `wav_demux` is in µs like MP4.
+  - **Packets are cut by us, not by the file.** A packet is about 32 KB rounded
+    down to a whole PCM frame, or to a whole IMA ADPCM block, because
+    `audio_out` splits ADPCM by `block_align`. pts and seek are byte arithmetic
+    and therefore exact.
+  - **A `data` size of 0, or one past the end of the file, means the file is
+    what a streaming writer left behind**, so it is clamped to the file size.
+  - **`WAVE_FORMAT_EXTENSIBLE` resolves through the first two bytes of the
+    subformat GUID**, which is the tag the file would have used without it.
+- **MP3 and ADTS AAC share one demuxer.** Both are self-delimiting frames with
+  no container: the ID3/APE trimming, the resync and the byte-to-time seek are
+  the same code, and only the frame header parser differs. The codec is decided
+  at open by trying MP3 and then AAC on the first frames.
+  - **A sync word only counts when three frames chain into each other.**
+    Compressed payload is full of `FF` bytes, so a single header match finds
+    false positives, in the file's first bytes as much as after a seek.
+  - **ID3v2 is skipped from the size in its header** (plus the footer when the
+    flag is set), and ID3v1 and an APEv2 footer are trimmed off the end, so
+    neither is fed to the decoder as audio.
+  - **The duration is exact only with Xing/Info or VBRI**, which carry the
+    frame count. Without one it is the data size scaled by an average of the
+    first 64 frames. One frame is not enough: an encoder's first frames are
+    much smaller than its steady state, which sized the 6 s AAC fixture at 7 s.
+  - **The Xing frame is not played.** It is a valid, silent frame; it is
+    dropped, and the byte-to-time mapping starts after it.
+  - **Seeking is an estimate**: the byte position comes from the time ratio
+    (through the Xing TOC when there is one), and the time it reports back is
+    that byte position converted again, so the slider matches what plays. Only
+    CBR lands where it says.
 - **MP4 without a video track.** `parse_moov` only insists on one usable
   track; seek moves the audio cursor and reports its own pts, `stss` and the
   keyframe index stay video-only, and the duration falls back to the audio
@@ -921,3 +958,9 @@ nix develop -c ffmpeg -f lavfi -i sine=frequency=440:sample_rate=44100:duration=
 `b_opus.m4a` is `-c:a libopus` at `sample_rate=48000 -ac 2` with `-f mp4`
 forced (the `.m4a` extension picks the `ipod` muxer, which refuses Opus), and
 `c_alac.m4a` is `-c:a alac`.
+
+The same script then plays `d_pcm.wav` (`-c:a pcm_s16le`), `e_adpcm.wav`
+(`-c:a adpcm_ima_wav` at 22050 Hz), `f_mp3.mp3` (`-c:a libmp3lame -b:a 128k`,
+with a seek to the end), `g_vbr.mp3` (`-c:a libmp3lame -q:a 4`, so ffmpeg
+writes a Xing header) and `h_aac.aac` (`-c:a aac -f adts`), all 6 s of
+`sine` at `-ac 2`, and ends on the empty `track.aac`, which fails.

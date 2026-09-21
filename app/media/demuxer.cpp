@@ -10,6 +10,8 @@
 std::unique_ptr<Demuxer> avi_demuxer_create();
 std::unique_ptr<Demuxer> mkv_demuxer_create();
 std::unique_ptr<Demuxer> mp4_demuxer_create();
+std::unique_ptr<Demuxer> wav_demuxer_create();
+std::unique_ptr<Demuxer> es_audio_demuxer_create();
 
 namespace {
 
@@ -27,6 +29,9 @@ constexpr Format kFormats[] = {
     { ".m4v", "MP4", MediaKind::Video, mp4_demuxer_create },
     { ".mov", "QuickTime", MediaKind::Video, mp4_demuxer_create },
     { ".m4a", "MP4", MediaKind::Audio, mp4_demuxer_create },
+    { ".wav", "WAVE", MediaKind::Audio, wav_demuxer_create },
+    { ".mp3", "MP3", MediaKind::Audio, es_audio_demuxer_create },
+    { ".aac", "AAC", MediaKind::Audio, es_audio_demuxer_create },
 };
 
 bool starts_with_start_code(const uint8_t *data, std::size_t size) {

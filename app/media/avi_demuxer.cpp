@@ -22,13 +22,13 @@ CodecId map_video(avi_video_codec_t codec) {
     }
 }
 
-CodecId map_audio(avi_audio_codec_t codec) {
+CodecId map_audio(riff_audio_codec_t codec) {
     switch (codec) {
-    case AVI_AUDIO_CODEC_PCM: return CodecId::Pcm;
-    case AVI_AUDIO_CODEC_MP3: return CodecId::Mp3;
-    case AVI_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
-    case AVI_AUDIO_CODEC_AAC: return CodecId::Aac;
-    case AVI_AUDIO_CODEC_NONE: return CodecId::None;
+    case RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
+    case RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
+    case RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
+    case RIFF_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }

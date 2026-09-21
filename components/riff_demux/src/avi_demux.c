@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "avi_format.h"
+#include "riff.h"
 #include "media_buffer.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -49,10 +49,6 @@ struct avi_demux {
     uint8_t *audio_extra;
     uint8_t *video_extra;
 };
-
-static bool read_exact(media_buffer_t *reader, void *buffer, size_t size) {
-    return mb_read(reader, buffer, size) == size;
-}
 
 static int stream_of(const avi_demux_t *demux, uint32_t fourcc, uint8_t *kind) {
     const uint8_t *id = (const uint8_t *)&fourcc;
@@ -98,23 +94,6 @@ static avi_video_codec_t video_codec_of(uint32_t compression) {
     }
 }
 
-static avi_audio_codec_t audio_codec_of(uint16_t format_tag) {
-    switch (format_tag) {
-    case AVI_WAVE_FORMAT_PCM:
-        return AVI_AUDIO_CODEC_PCM;
-    case AVI_WAVE_FORMAT_MP3:
-        return AVI_AUDIO_CODEC_MP3;
-    case AVI_WAVE_FORMAT_IMA_ADPCM:
-        return AVI_AUDIO_CODEC_ADPCM_IMA;
-    case AVI_WAVE_FORMAT_AAC:
-    case AVI_WAVE_FORMAT_AAC_ADTS:
-    case AVI_WAVE_FORMAT_AAC_FAAD:
-        return AVI_AUDIO_CODEC_AAC;
-    default:
-        return AVI_AUDIO_CODEC_UNSUPPORTED;
-    }
-}
-
 static const char *video_codec_name(avi_video_codec_t codec) {
     switch (codec) {
     case AVI_VIDEO_CODEC_MJPEG: return "MJPEG";
@@ -124,53 +103,17 @@ static const char *video_codec_name(avi_video_codec_t codec) {
     }
 }
 
-static const char *audio_codec_name(avi_audio_codec_t codec) {
-    switch (codec) {
-    case AVI_AUDIO_CODEC_NONE: return "none";
-    case AVI_AUDIO_CODEC_PCM: return "PCM";
-    case AVI_AUDIO_CODEC_MP3: return "MP3";
-    case AVI_AUDIO_CODEC_ADPCM_IMA: return "IMA ADPCM";
-    case AVI_AUDIO_CODEC_AAC: return "AAC";
-    default: return "unsupported";
-    }
-}
-
-static void read_wave_extra(avi_demux_t *demux, uint32_t available) {
-    heap_caps_free(demux->audio_extra);
-    demux->audio_extra = NULL;
-    demux->info.audio.codec_private = NULL;
-    demux->info.audio.codec_private_size = 0;
-
-    uint16_t extra_size = 0;
-    if (available < sizeof(extra_size) || !read_exact(demux->reader, &extra_size, sizeof(extra_size))) {
-        return;
-    }
-    available -= sizeof(extra_size);
-    if (extra_size > available) extra_size = (uint16_t)available;
-    if (extra_size == 0 || extra_size > AVI_WAVE_FORMAT_EXTRA_LIMIT) return;
-
-    uint8_t *extra = heap_caps_malloc(extra_size, MALLOC_CAP_DEFAULT);
-    if (!extra) return;
-    if (!read_exact(demux->reader, extra, extra_size)) {
-        heap_caps_free(extra);
-        return;
-    }
-    demux->audio_extra = extra;
-    demux->info.audio.codec_private = extra;
-    demux->info.audio.codec_private_size = extra_size;
-}
-
 static void read_bitmap_extra(avi_demux_t *demux, uint32_t available) {
     heap_caps_free(demux->video_extra);
     demux->video_extra = NULL;
     demux->info.video.codec_private = NULL;
     demux->info.video.codec_private_size = 0;
     demux->nal_length_size = 0;
-    if (available == 0 || available > AVI_BITMAP_EXTRA_LIMIT) return;
+    if (available == 0 || available > RIFF_BITMAP_EXTRA_LIMIT) return;
 
     uint8_t *extra = heap_caps_malloc(available, MALLOC_CAP_DEFAULT);
     if (!extra) return;
-    if (!read_exact(demux->reader, extra, available)) {
+    if (!riff_read(demux->reader, extra, available)) {
         heap_caps_free(extra);
         return;
     }
@@ -188,19 +131,19 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
     bool have_header = false;
     const int index = demux->stream_count < AVI_MAX_STREAMS ? demux->stream_count : -1;
 
-    while (mb_tell(demux->reader) + (off_t)sizeof(avi_chunk_t) <= list_end) {
-        avi_chunk_t chunk;
-        if (!read_exact(demux->reader, &chunk, sizeof(chunk))) return;
+    while (mb_tell(demux->reader) + (off_t)sizeof(riff_chunk_t) <= list_end) {
+        riff_chunk_t chunk;
+        if (!riff_read(demux->reader, &chunk, sizeof(chunk))) return;
         const off_t body = mb_tell(demux->reader);
         const off_t next = body + chunk.size + (chunk.size & 1);
 
         if (chunk.fourcc == AVI_strh && chunk.size >= sizeof(strh)) {
-            if (!read_exact(demux->reader, &strh, sizeof(strh))) return;
+            if (!riff_read(demux->reader, &strh, sizeof(strh))) return;
             have_header = true;
         } else if (chunk.fourcc == AVI_strf && have_header && index >= 0) {
             if (strh.fourcc_type == AVI_vids && chunk.size >= sizeof(avi_bitmap_info_t)) {
                 avi_bitmap_info_t bitmap;
-                if (!read_exact(demux->reader, &bitmap, sizeof(bitmap))) return;
+                if (!riff_read(demux->reader, &bitmap, sizeof(bitmap))) return;
                 demux->stream_kind[index] = STREAM_VIDEO;
                 demux->info.video.codec = video_codec_of(bitmap.compression);
                 if (bitmap.width) demux->info.video.width = bitmap.width;
@@ -218,18 +161,20 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
                     }
                     read_bitmap_extra(demux, extra);
                 }
-            } else if (strh.fourcc_type == AVI_auds && chunk.size >= sizeof(avi_wave_format_t)) {
-                avi_wave_format_t wave;
-                if (!read_exact(demux->reader, &wave, sizeof(wave))) return;
+            } else if (strh.fourcc_type == AVI_auds) {
+                riff_audio_format_t format;
+                if (!riff_read_wave_format(demux->reader, chunk.size, &format)) return;
                 demux->stream_kind[index] = STREAM_AUDIO;
-                demux->info.audio.codec = audio_codec_of(wave.format_tag);
-                demux->info.audio.channels = (uint8_t)wave.channels;
-                demux->info.audio.sample_rate = wave.samples_per_sec;
-                demux->info.audio.bitrate_bps = wave.avg_bytes_per_sec * 8;
-                demux->info.audio.bits_per_sample =
-                    wave.bits_per_sample ? (uint8_t)wave.bits_per_sample : 16;
-                demux->info.audio.block_align = wave.block_align;
-                read_wave_extra(demux, chunk.size - sizeof(wave));
+                demux->info.audio.codec = format.codec;
+                demux->info.audio.channels = format.channels;
+                demux->info.audio.sample_rate = format.sample_rate;
+                demux->info.audio.bitrate_bps = format.bitrate_bps;
+                demux->info.audio.bits_per_sample = format.bits_per_sample;
+                demux->info.audio.block_align = format.block_align;
+                heap_caps_free(demux->audio_extra);
+                demux->audio_extra = format.extra;
+                demux->info.audio.codec_private = format.extra;
+                demux->info.audio.codec_private_size = format.extra_size;
             }
         }
         mb_seek(demux->reader, next);
@@ -239,22 +184,22 @@ static void parse_stream(avi_demux_t *demux, off_t list_end) {
 }
 
 static void parse_header_list(avi_demux_t *demux, off_t list_end) {
-    while (mb_tell(demux->reader) + (off_t)sizeof(avi_chunk_t) <= list_end) {
-        avi_chunk_t chunk;
-        if (!read_exact(demux->reader, &chunk, sizeof(chunk))) return;
+    while (mb_tell(demux->reader) + (off_t)sizeof(riff_chunk_t) <= list_end) {
+        riff_chunk_t chunk;
+        if (!riff_read(demux->reader, &chunk, sizeof(chunk))) return;
         const off_t body = mb_tell(demux->reader);
         const off_t next = body + chunk.size + (chunk.size & 1);
 
         if (chunk.fourcc == AVI_avih && chunk.size >= sizeof(avi_main_header_t)) {
             avi_main_header_t header;
-            if (!read_exact(demux->reader, &header, sizeof(header))) return;
+            if (!riff_read(demux->reader, &header, sizeof(header))) return;
             demux->info.video.width = header.width;
             demux->info.video.height = header.height;
             demux->info.video.frame_count = header.total_frames;
             demux->info.video.frame_interval_us = header.micro_sec_per_frame;
-        } else if (chunk.fourcc == AVI_LIST) {
+        } else if (chunk.fourcc == RIFF_ID_LIST) {
             uint32_t type = 0;
-            if (!read_exact(demux->reader, &type, sizeof(type))) return;
+            if (!riff_read(demux->reader, &type, sizeof(type))) return;
             if (type == AVI_strl) parse_stream(demux, next);
         }
         mb_seek(demux->reader, next);
@@ -263,10 +208,10 @@ static void parse_header_list(avi_demux_t *demux, off_t list_end) {
 
 static bool index_base_valid(avi_demux_t *demux, off_t base, uint32_t first_offset) {
     const off_t position = base + first_offset;
-    if (position < 0 || position + (off_t)sizeof(avi_chunk_t) > mb_size(demux->reader)) return false;
+    if (position < 0 || position + (off_t)sizeof(riff_chunk_t) > mb_size(demux->reader)) return false;
     mb_seek(demux->reader, position);
-    avi_chunk_t chunk;
-    if (!read_exact(demux->reader, &chunk, sizeof(chunk))) return false;
+    riff_chunk_t chunk;
+    if (!riff_read(demux->reader, &chunk, sizeof(chunk))) return false;
     uint8_t kind = STREAM_NONE;
     return stream_of(demux, chunk.fourcc, &kind) >= 0;
 }
@@ -307,7 +252,7 @@ static void build_index(avi_demux_t *demux) {
     mb_seek(demux->reader, demux->idx1_offset);
     for (uint32_t i = 0; i < entries; i++) {
         avi_index_entry_t entry;
-        if (!read_exact(demux->reader, &entry, sizeof(entry))) break;
+        if (!riff_read(demux->reader, &entry, sizeof(entry))) break;
         uint8_t kind = STREAM_NONE;
         if (stream_of(demux, entry.chunk_id, &kind) < 0) continue;
         if (kind != STREAM_VIDEO) {
@@ -380,27 +325,27 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
         return NULL;
     }
 
-    avi_chunk_t riff;
+    riff_chunk_t riff;
     uint32_t type = 0;
-    if (!read_exact(demux->reader, &riff, sizeof(riff)) ||
-        !read_exact(demux->reader, &type, sizeof(type)) ||
-        riff.fourcc != AVI_RIFF || type != AVI_TYPE) {
+    if (!riff_read(demux->reader, &riff, sizeof(riff)) ||
+        !riff_read(demux->reader, &type, sizeof(type)) ||
+        riff.fourcc != RIFF_ID_RIFF || type != RIFF_TYPE_AVI) {
         *error = "not an AVI file";
         avi_demux_close(demux);
         return NULL;
     }
 
     const off_t file_end = mb_size(demux->reader);
-    while (mb_tell(demux->reader) + (off_t)sizeof(avi_chunk_t) <= file_end) {
-        avi_chunk_t chunk;
-        if (!read_exact(demux->reader, &chunk, sizeof(chunk))) break;
+    while (mb_tell(demux->reader) + (off_t)sizeof(riff_chunk_t) <= file_end) {
+        riff_chunk_t chunk;
+        if (!riff_read(demux->reader, &chunk, sizeof(chunk))) break;
         const off_t body = mb_tell(demux->reader);
         off_t next = body + chunk.size + (chunk.size & 1);
         if (next < body || next > file_end) next = file_end;
 
-        if (chunk.fourcc == AVI_LIST) {
+        if (chunk.fourcc == RIFF_ID_LIST) {
             uint32_t list_type = 0;
-            if (!read_exact(demux->reader, &list_type, sizeof(list_type))) break;
+            if (!riff_read(demux->reader, &list_type, sizeof(list_type))) break;
             if (list_type == AVI_hdrl) {
                 parse_header_list(demux, next);
             } else if (list_type == AVI_movi) {
@@ -447,7 +392,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
              (unsigned)demux->info.video.frame_count,
              (unsigned)demux->info.video.frame_interval_us,
              (unsigned)demux->info.video.max_frame_bytes,
-             audio_codec_name(demux->info.audio.codec),
+             riff_audio_codec_name(demux->info.audio.codec),
              (unsigned)demux->info.audio.sample_rate, (unsigned)demux->info.audio.channels);
 
     mb_seek(demux->reader, demux->movi_start);
@@ -516,17 +461,17 @@ bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio) {
     if (!demux || !packet) return false;
     const size_t max_view = mb_arena_max_view(&demux->arena);
 
-    while (mb_tell(demux->reader) + (off_t)sizeof(avi_chunk_t) <= demux->movi_end) {
+    while (mb_tell(demux->reader) + (off_t)sizeof(riff_chunk_t) <= demux->movi_end) {
         const off_t start = mb_tell(demux->reader);
-        avi_chunk_t chunk;
-        if (!read_exact(demux->reader, &chunk, sizeof(chunk))) return false;
+        riff_chunk_t chunk;
+        if (!riff_read(demux->reader, &chunk, sizeof(chunk))) return false;
         const off_t next = mb_tell(demux->reader) + chunk.size + (chunk.size & 1);
 
         uint8_t kind = STREAM_NONE;
         if (stream_of(demux, chunk.fourcc, &kind) < 0) {
-            if (chunk.fourcc == AVI_LIST) {
+            if (chunk.fourcc == RIFF_ID_LIST) {
                 uint32_t list_type = 0;
-                if (!read_exact(demux->reader, &list_type, sizeof(list_type))) return false;
+                if (!riff_read(demux->reader, &list_type, sizeof(list_type))) return false;
                 continue;
             }
             mb_seek(demux->reader, next);

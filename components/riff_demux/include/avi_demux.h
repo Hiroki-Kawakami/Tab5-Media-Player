@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "media_buffer.h"
+#include "riff_audio.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,15 +23,6 @@ typedef enum {
     AVI_VIDEO_CODEC_UNSUPPORTED,
 } avi_video_codec_t;
 
-typedef enum {
-    AVI_AUDIO_CODEC_NONE,
-    AVI_AUDIO_CODEC_PCM,
-    AVI_AUDIO_CODEC_MP3,
-    AVI_AUDIO_CODEC_ADPCM_IMA,
-    AVI_AUDIO_CODEC_AAC,
-    AVI_AUDIO_CODEC_UNSUPPORTED,
-} avi_audio_codec_t;
-
 typedef struct {
     struct {
         avi_video_codec_t codec;
@@ -43,7 +35,7 @@ typedef struct {
         uint32_t codec_private_size;
     } video;
     struct {
-        avi_audio_codec_t codec;
+        riff_audio_codec_t codec;
         uint32_t sample_rate;
         uint32_t bitrate_bps;
         uint32_t max_frame_bytes;

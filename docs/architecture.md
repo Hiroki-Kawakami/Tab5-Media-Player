@@ -5,7 +5,7 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
-| `components/` | project-specific plain-C components (`media_buffer`, `avi_demux`, `mkv_demux`, `mp4_demux`, `vdec_common`, `h264_dec`, `mpeg2_dec`, `usb_msc`) |
+| `components/` | project-specific plain-C components (`media_buffer`, `riff_demux`, `es_audio_demux`, `mkv_demux`, `mp4_demux`, `vdec_common`, `h264_dec`, `mpeg2_dec`, `usb_msc`) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |

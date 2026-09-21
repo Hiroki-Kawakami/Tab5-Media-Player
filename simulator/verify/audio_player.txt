@@ -61,4 +61,44 @@ capture audio_unsupported.jpg
 tap 60 60
 settle
 capture audio_back_to_list.jpg
+tap 360 400
+wait 2000
+capture audio_wav_pcm.jpg
+tap 60 60
+settle
+tap 360 480
+wait 2000
+capture audio_wav_adpcm.jpg
+tap 60 60
+settle
+tap 360 560
+wait 1500
+down 240 974
+wait 200
+move 400 974
+wait 200
+move 480 974
+wait 300
+up
+wait 1200
+capture audio_mp3_seek.jpg
+wait 2500
+capture audio_mp3_end.jpg
+tap 60 60
+settle
+tap 360 640
+wait 2000
+capture audio_mp3_vbr.jpg
+tap 60 60
+settle
+tap 360 720
+wait 2000
+capture audio_aac_adts.jpg
+tap 60 60
+settle
+tap 360 800
+wait 1500
+capture audio_no_frames.jpg
+tap 60 60
+settle
 imu release

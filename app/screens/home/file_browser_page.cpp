@@ -41,7 +41,7 @@ void FileBrowserPage::release_requests() {
 }
 
 std::string FileBrowserPage::entry_path(std::size_t index) const {
-    return path_ + "/" + entries_[index].name;
+    return path_ + "/" + entries_[index].name.c_str();
 }
 
 void FileBrowserPage::request_visible() {
@@ -151,7 +151,7 @@ bool FileBrowserPage::load_entries() {
         if (ent->d_name[0] == '.') continue;
         const bool directory = ent->d_type == DT_DIR;
         const MediaKind kind = directory ? MediaKind::None : demuxer_media_kind(ent->d_name);
-        entries_.push_back({ent->d_name, directory, kind});
+        entries_.push_back({ PsramString(ent->d_name), directory, kind });
     }
     closedir(dir);
 
@@ -159,6 +159,7 @@ bool FileBrowserPage::load_entries() {
         if (a.directory != b.directory) return a.directory;
         return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
     });
+    entries_.shrink_to_fit();
     return true;
 }
 
@@ -176,14 +177,9 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 24, 0);
 
-    lv_obj_t *thumb = lv_container_create(row);
-    lv_obj_set_size(thumb, kThumbSide, kThumbSide);
-    lv_obj_remove_flag(thumb, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(thumb, 6, 0);
-    lv_obj_set_style_clip_corner(thumb, true, 0);
-
-    lv_obj_t *icon = lv_label_create(thumb);
-    lv_obj_center(icon);
+    lv_obj_t *icon = lv_label_create(row);
+    lv_obj_set_width(icon, kThumbSide);
+    lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(icon, lv_widgets_body_font(), 0);
 
     lv_obj_t *name = lv_label_create(row);
@@ -214,21 +210,29 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
                      : entry.kind == MediaKind::Video ? LV_SYMBOL_VIDEO
                      : entry.kind == MediaKind::Audio ? LV_SYMBOL_AUDIO
                                                       : LV_SYMBOL_FILE;
-    lv_obj_t *thumb = lv_obj_get_child(row, 0);
-    if (lv_obj_t *stale = lv_obj_get_child(thumb, 1)) lv_obj_delete(stale);
-    lv_obj_t *label = lv_obj_get_child(thumb, 0);
+    lv_obj_t *first = lv_obj_get_child(row, 0);
+    if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
+    lv_obj_t *label = lv_obj_get_child(row, 0);
     lv_label_set_text(label, icon);
+    lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
+    lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
+    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE,
+                    entry.directory || entry.kind != MediaKind::None);
 
     std::shared_ptr<const CoverPixels> pixels;
     if (!entry.directory && entry.kind != MediaKind::None) {
         pixels = media_cache_image(entry_path(index), kThumbSide);
     }
     lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);
-    if (pixels) cover_art_create(thumb, std::move(pixels));
-    lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
-    lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
-    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE,
-                    entry.directory || entry.kind != MediaKind::None);
+    /* Inserted first so flex puts it where the icon was; everything indexed
+       above is therefore read before this point. */
+    if (lv_obj_t *image = pixels ? cover_art_create(row, std::move(pixels)) : nullptr) {
+        lv_obj_set_size(image, kThumbSide, kThumbSide);
+        lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
+        lv_obj_set_style_radius(image, 6, 0);
+        lv_obj_set_style_clip_corner(image, true, 0);
+        lv_obj_move_to_index(image, 0);
+    }
 }
 
 std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) const {
@@ -239,7 +243,7 @@ std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) cons
         const Entry &entry = entries_[i];
         if (entry.directory || entry.kind != kind) continue;
         if (i == index) current = items.size();
-        items.push_back({ entry.name, entry_path(i) });
+        items.push_back({ entry.name.c_str(), entry_path(i) });
     }
     return std::make_shared<Playlist>(std::move(items), current);
 }
@@ -247,7 +251,7 @@ std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) cons
 void FileBrowserPage::didSelectRow(std::size_t index) {
     const Entry &entry = entries_[index];
     if (entry.directory) {
-        home_->push(std::make_shared<FileBrowserPage>(path_ + "/" + entry.name, entry.name));
+        home_->push(std::make_shared<FileBrowserPage>(entry_path(index), entry.name.c_str()));
     } else if (entry.kind == MediaKind::Audio) {
         media_cache_resolve(entry_path(index), MetaWantInfo, 0, kResolveTimeoutMs);
         screen_manager.push(std::make_shared<AudioPlayerScreen>(make_playlist(index)));

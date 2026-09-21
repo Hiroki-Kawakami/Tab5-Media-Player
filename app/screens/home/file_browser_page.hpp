@@ -10,6 +10,7 @@
 #include <vector>
 #include "home_page.hpp"
 #include "media/demuxer.hpp"
+#include "media/psram_allocator.hpp"
 #include "playback/playlist.hpp"
 #include "widgets.hpp"
 
@@ -25,14 +26,14 @@ public:
 
 private:
     struct Entry {
-        std::string name;
+        PsramString name;
         bool directory;
         MediaKind kind;
     };
 
     std::string path_;
     std::string title_;
-    std::vector<Entry> entries_;
+    PsramVector<Entry> entries_;
     bool loaded_ = false;
     bool opened_ = false;
     lv_obj_t *list_ = nullptr;

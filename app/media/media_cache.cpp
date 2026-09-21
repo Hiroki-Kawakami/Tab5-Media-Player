@@ -332,8 +332,7 @@ static void worker_task(void *) {
     while (!s_quit) {
         Request request;
         if (!take_request(&request)) {
-            artwork_codec_idle();
-            xSemaphoreTake(s_wake, pdMS_TO_TICKS(1000));
+            xSemaphoreTake(s_wake, portMAX_DELAY);
             continue;
         }
 

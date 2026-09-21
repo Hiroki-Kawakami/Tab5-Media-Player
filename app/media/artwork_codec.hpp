@@ -25,5 +25,4 @@ std::shared_ptr<CoverPixels> artwork_decode(const uint8_t *data, std::size_t siz
                                             bool rgb888);
 bool artwork_encode(const CoverPixels &pixels, PsramVector<uint8_t> *out);
 
-void artwork_codec_idle();
 void artwork_codec_close();

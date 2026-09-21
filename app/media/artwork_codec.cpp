@@ -7,7 +7,6 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "imgf_alloc.h"
 #include "imgf_decoder.h"
 #include "imgf_resize.h"
@@ -29,7 +28,6 @@ static const char *TAG = "artwork";
 static constexpr uint32_t kMaxWholeFramePixels = 1500 * 1000;
 static constexpr uint32_t kMaxSourcePixels = 4096 * 4096;
 static constexpr int kQuality = 90;
-static constexpr int64_t kIdleUs = 5 * 1000 * 1000;
 static constexpr std::size_t kAlignment = 64;
 /* jpeg_new_*_engine() dereferences its half-built handle when it runs out of
    DMA-capable internal RAM (IDF v6.1), so the engines are only asked for when
@@ -37,10 +35,8 @@ static constexpr std::size_t kAlignment = 64;
 static constexpr std::size_t kEngineReserve = 8 * 1024;
 
 static jpeg_enh_strip_decoder_handle_t s_decoder;
-static int64_t s_decoder_used;
 #ifdef ESP_PLATFORM
 static jpeg_encoder_handle_t s_encoder;
-static int64_t s_encoder_used;
 #endif
 
 CoverPixels::~CoverPixels() {
@@ -90,7 +86,6 @@ static bool engine_memory_available() {
 }
 
 static jpeg_enh_strip_decoder_handle_t decoder() {
-    s_decoder_used = esp_timer_get_time();
     if (s_decoder) return s_decoder;
     if (!engine_memory_available()) return nullptr;
 
@@ -258,7 +253,6 @@ std::shared_ptr<CoverPixels> artwork_decode(const uint8_t *data, std::size_t siz
 #ifdef ESP_PLATFORM
 
 static jpeg_encoder_handle_t encoder() {
-    s_encoder_used = esp_timer_get_time();
     if (s_encoder) return s_encoder;
     if (!engine_memory_available()) return nullptr;
 
@@ -327,20 +321,6 @@ bool artwork_encode(const CoverPixels &pixels, PsramVector<uint8_t> *out) {
 }
 
 #endif
-
-void artwork_codec_idle() {
-    const int64_t now = esp_timer_get_time();
-    if (s_decoder && now - s_decoder_used > kIdleUs) {
-        jpeg_enh_strip_decoder_del(s_decoder);
-        s_decoder = nullptr;
-    }
-#ifdef ESP_PLATFORM
-    if (s_encoder && now - s_encoder_used > kIdleUs) {
-        jpeg_del_encoder_engine(s_encoder);
-        s_encoder = nullptr;
-    }
-#endif
-}
 
 void artwork_codec_close() {
     if (s_decoder) {

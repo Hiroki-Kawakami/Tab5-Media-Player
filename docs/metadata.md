@@ -27,14 +27,56 @@ numbers it had (ring 48, bounce 16, depth 16) and lets the probe arena through
 ## One image, many files
 
 An album's tracks carry the same cover, so images are keyed by content, not by
-path: `image_id` is FNV-1a over the cover bytes plus their length, and the meta
-entry for a path only stores that id. Hashing 500 KB costs a linear PSRAM read
-(10-20 ms) against 1.2 s for the decode it saves, so there is no heuristic on
-tags or sizes — same bytes, same entry, whether or not the files agree on the
-album name.
+path: the meta entry for a path stores only an `image_id`, so there is no
+heuristic on tags or sizes — same bytes, same entry, whether or not the files
+agree on the album name.
+
+The id is a 32-bit FNV-1a over an 8 KB window 1 KB into the picture, paired
+with the exact byte count. Hashing all of a 500 KB cover measured 20 ms per
+file, which is most of what an info-only probe now costs; the header is what
+the window skips because encoders make it identical across an album. Two
+different pictures would have to share both a length and that window to
+collide, and the cost of losing that bet is one wrong thumbnail.
+
+An entry probed without its picture has no id yet — `has_cover` and
+`cover_at` are known, the bytes are not. The id is filled in the first time
+something actually reads them.
 
 Dedup does not save the probe itself: every file is opened anyway for its
 title. What it saves is decode, resize, encode and storage.
+
+## Reading a tag
+
+The picture is nearly all of a tagged file, so the tag reader walks the ID3
+frame list over the file rather than pulling the tag into memory: it reads
+each frame header, keeps the small text frames, and for a picture reads only
+the mime/description prefix to work out where the bytes start. With
+`want_cover` false it stops there and records the offset and length in
+`cover_at`; with it true it reads the picture straight into the buffer that
+becomes `CoverBytes`. Nothing is copied on the way, and an info-only probe of
+a file with a 400 KB cover costs 25 ms instead of 133 ms.
+
+Two things have to stay in one piece. Globally unsynchronised tags rewrite the
+byte stream, so frame lengths stop matching file offsets and those fall back
+to reading the whole tag; and mp4/mkv keep their pictures inside a parsed box,
+so they have no offset to report. For them `cover_scanned` stays false when
+the probe was told to skip pictures, which is how the cache knows that "no
+cover" is not yet an answer and a full probe is still owed.
+
+## Why reads are aligned to their file offset
+
+FATFS copies the leading partial sector of a read through its own window and
+then hands the rest to DMA. When the destination does not carry the same
+64-byte phase as the file offset, every sector after that bounces through an
+internal buffer instead: 6.4 MB/s against 11.3 MB/s, measured on the board
+with 512 KiB reads. `mb_read_alloc()` over-allocates and starts the data at
+the matching phase, and the windowed reader aligns its refills down for the
+same reason.
+
+That window starts at 8 KB and doubles while refills stay sequential. It used
+to be a flat 64 KB, which made the 10-byte ID3 header peek cost a 64 KB read —
+about 10 ms before anything had been parsed — while the frame scan that
+follows still wants the big window.
 
 ## Nothing of this lives in internal RAM
 
@@ -176,16 +218,16 @@ The JPEG header is parsed by `jpeg_image_size()`, shared with the MJPEG
 renderer; it also rejects progressive, so the hardware path is never tried for
 a frame it cannot take.
 
-The decoder and encoder engines are created on first use and released after
-five idle seconds: browsing a folder without covers, or playing audio, holds no
-JPEG hardware and no internal RAM.
+The decoder and encoder engines are created on first use and released when the
+worker stops: browsing a folder without covers, or playing audio, holds no JPEG
+hardware and no internal RAM.
 
 ## Stopping for the video player
 
 `VideoPlayerScreen::onEnter()` calls `media_cache_stop()` before it takes the
 shared SRAM, and `onExit()` calls `media_cache_start()` after it gives it back.
-Stop joins the worker (2 s budget), which frees its stack and the JPEG
-engines, and drops the raw, jpeg and decoded stores. The meta entries stay:
+Stop joins both worker tasks (2 s budget each), which frees their stacks and
+the JPEG engines, and drops the raw, jpeg and decoded stores. The meta entries stay:
 they are text, a few hundred KB at the cap, and keeping them is what makes the
 browser instant on the way back. `HomeScreen::onAppear()` lets the visible
 `FileBrowserPage` ask again for the images that were dropped.
@@ -209,10 +251,21 @@ placeholder that fills in changes no text.
 
 Requests carry a priority: `Blocking` (something is waiting for it), `Visible`
 (rows on screen), `Idle` (the rest of the directory, the next track). The
-worker takes the highest queue first and, while the player is playing, waits
+reader takes the highest queue first and, while the player is playing, waits
 200 ms between requests so prefetching cannot take the card away from playback.
 A token identifies the requester; `media_cache_cancel()` drops its queued
 requests when a page scrolls away or a screen leaves.
+
+The work runs as two tasks, because reading the card and decoding a picture
+share nothing: the reader produces a `DecodeJob` and the decoder turns it into
+pixels while the reader is already on the next file. One job may be queued
+between them — enough to hide the decode behind the read without holding a
+third picture in PSRAM.
+
+`FileBrowserPage` asks for the visible range twice: once for tags alone, then
+for tags and thumbnails. Since the queue is FIFO within a priority, every row
+gets its title before any picture is read, which is what makes a folder look
+answered while the thumbnails are still arriving.
 
 ## What is not there
 

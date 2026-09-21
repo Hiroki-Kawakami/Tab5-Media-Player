@@ -12,7 +12,7 @@ class EsAudioDemuxer : public Demuxer {
 public:
     ~EsAudioDemuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena) override;
+    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -22,12 +22,12 @@ private:
     es_audio_demux_t *demux_ = nullptr;
 };
 
-bool EsAudioDemuxer::open(const std::string &path, const media_arena_t &arena) {
+bool EsAudioDemuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = es_audio_demux_open(path.c_str(), &arena, &failure);
+    demux_ = es_audio_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this audio file";
         return false;

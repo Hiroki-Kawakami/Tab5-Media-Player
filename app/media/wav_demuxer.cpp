@@ -23,7 +23,7 @@ class WavDemuxer : public Demuxer {
 public:
     ~WavDemuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena) override;
+    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -33,12 +33,12 @@ private:
     wav_demux_t *demux_ = nullptr;
 };
 
-bool WavDemuxer::open(const std::string &path, const media_arena_t &arena) {
+bool WavDemuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = wav_demux_open(path.c_str(), &arena, &failure);
+    demux_ = wav_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this WAV";
         return false;

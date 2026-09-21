@@ -37,7 +37,7 @@ class AviDemuxer : public Demuxer {
 public:
     ~AviDemuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena) override;
+    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -53,12 +53,12 @@ private:
     int64_t gop_frame_ = -1;
 };
 
-bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
+bool AviDemuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = avi_demux_open(path.c_str(), &arena, &failure);
+    demux_ = avi_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this AVI";
         return false;

@@ -40,7 +40,10 @@ typedef struct {
 
 typedef struct es_audio_demux es_audio_demux_t;
 
+/* `want_cover` false skips reading any embedded picture; the tags still say
+   where it is. */
 es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *arena,
+                                      bool want_cover,
                                       const char **error);
 void es_audio_demux_close(es_audio_demux_t *demux);
 

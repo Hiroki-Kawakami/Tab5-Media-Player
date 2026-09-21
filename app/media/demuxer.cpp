@@ -5,6 +5,7 @@
 
 #include "demuxer.hpp"
 #include "h264_dec.h"
+#include "esp_heap_caps.h"
 #include <cstring>
 #include <strings.h>
 
@@ -91,6 +92,13 @@ bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<ui
     return true;
 }
 
+CoverBytes::CoverBytes(uint8_t *owner, const uint8_t *bytes, std::size_t count)
+    : owner(owner), bytes(bytes), count(count) {}
+
+CoverBytes::~CoverBytes() {
+    heap_caps_free(owner);
+}
+
 void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info) {
     info->tags.title = media_tags_get(&tags, MEDIA_TAG_TITLE);
     info->tags.artist = media_tags_get(&tags, MEDIA_TAG_ARTIST);
@@ -99,10 +107,14 @@ void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info) {
     info->tags.track = media_tags_get(&tags, MEDIA_TAG_TRACK);
     info->tags.date = media_tags_get(&tags, MEDIA_TAG_DATE);
 
+    info->cover_at = { (int64_t)tags.cover_at.offset, tags.cover_at.size };
+    info->cover_scanned = tags.cover_scanned;
     if (!tags.cover.data || !tags.cover.size) return;
-    info->cover.data = psram_make_shared<CoverBytes>(tags.cover.data,
-                                                     tags.cover.data + tags.cover.size);
-    info->cover.format = tags.cover.format == MEDIA_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
+    /* The tag struct lives in the demuxer's own allocation, never in read-only
+       memory: taking the picture out of it is what keeps the bytes uncopied. */
+    const media_cover_t cover = media_tags_take_cover(const_cast<media_tags_t *>(&tags));
+    info->cover.data = psram_make_shared<CoverBytes>(cover.owner, cover.data, cover.size);
+    info->cover.format = cover.format == MEDIA_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
 }
 
 MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,
@@ -115,6 +127,8 @@ MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, 
     summary.seekable = info.seekable;
     summary.tags = info.tags;
     summary.cover = info.cover;
+    summary.cover_at = info.cover_at;
+    summary.cover_scanned = info.cover_scanned;
     summary.video.codec = info.video.codec;
     summary.video.width = info.video.width;
     summary.video.height = info.video.height;

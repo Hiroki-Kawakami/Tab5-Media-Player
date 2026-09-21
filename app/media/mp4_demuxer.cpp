@@ -45,7 +45,7 @@ class Mp4Demuxer : public Demuxer {
 public:
     ~Mp4Demuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena) override;
+    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -56,12 +56,12 @@ private:
     mp4_demux_t *demux_ = nullptr;
 };
 
-bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena) {
+bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = mp4_demux_open(path.c_str(), &arena, &failure);
+    demux_ = mp4_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this MP4";
         return false;

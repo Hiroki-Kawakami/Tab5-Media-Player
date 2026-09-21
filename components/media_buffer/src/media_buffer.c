@@ -22,6 +22,7 @@ static const char *TAG = "media_buffer";
 #define MB_CHUNK_BYTES (64 * 1024)
 #define MB_DEPTH_CHUNKS 16
 #define MB_WAIT_MS 20
+#define MB_WINDOW_MIN_BYTES (8 * 1024)
 #define MB_WINDOW_BYTES (64 * 1024)
 #define MB_STOP_TIMEOUT_MS 2000
 #define MB_BOUNCE_REF 0xFFFFFFFFu
@@ -38,6 +39,7 @@ struct media_buffer {
     bool direct;
     off_t win_base;
     size_t win_len;
+    size_t win_size;
     bool interrupted;
     bool io_error;
     bool running;
@@ -270,12 +272,20 @@ void mb_close(media_buffer_t *buffer) {
 off_t mb_size(const media_buffer_t *buffer) { return buffer->size; }
 off_t mb_tell(const media_buffer_t *buffer) { return buffer->cursor; }
 
+/* Tag parsing reads a 10 byte frame header, then a frame body, then the next
+   header: a fixed 64 KB window makes the first of those cost a 64 KB read. The
+   window therefore starts small and doubles while refills stay sequential, so
+   a header peek is cheap and the frame scan that follows still gets the big
+   window back. Refills are aligned down to MB_READ_ALIGNMENT to keep the
+   bounce buffer in phase with the file offset (see mb_read_alloc). */
 static size_t read_windowed(media_buffer_t *buffer, void *out, size_t size) {
-    const size_t window = buffer->bounce_bytes < MB_WINDOW_BYTES ? buffer->bounce_bytes
-                                                                 : MB_WINDOW_BYTES;
+    const size_t cap = buffer->bounce_bytes < MB_WINDOW_BYTES ? buffer->bounce_bytes
+                                                              : MB_WINDOW_BYTES;
+    if (!buffer->win_size) buffer->win_size = MB_WINDOW_MIN_BYTES;
     size_t done = 0;
     while (done < size) {
         const off_t cursor = buffer->cursor;
+        size_t window = buffer->win_size < cap ? buffer->win_size : cap;
         if (size - done >= window) {
             const size_t got = read_at(buffer, cursor, (uint8_t *)out + done, size - done);
             buffer->cursor += (off_t)got;
@@ -283,9 +293,13 @@ static size_t read_windowed(media_buffer_t *buffer, void *out, size_t size) {
         }
         if (!buffer->win_len || cursor < buffer->win_base ||
             cursor >= buffer->win_base + (off_t)buffer->win_len) {
-            buffer->win_base = cursor;
+            const bool sequential =
+                buffer->win_len && cursor == buffer->win_base + (off_t)buffer->win_len;
+            buffer->win_size = sequential && window < cap ? window * 2 : MB_WINDOW_MIN_BYTES;
+            window = buffer->win_size < cap ? buffer->win_size : cap;
+            buffer->win_base = cursor - cursor % MB_READ_ALIGNMENT;
             buffer->win_len = read_at(buffer, buffer->win_base, buffer->bounce, window);
-            if (!buffer->win_len) break;
+            if (buffer->win_len <= (size_t)(cursor - buffer->win_base)) break;
         }
         const size_t offset = (size_t)(cursor - buffer->win_base);
         size_t take = buffer->win_len - offset;
@@ -295,6 +309,27 @@ static size_t read_windowed(media_buffer_t *buffer, void *out, size_t size) {
         done += take;
     }
     return done;
+}
+
+uint8_t *mb_read_alloc(media_buffer_t *buffer, off_t offset, size_t size, void **out_owner) {
+    if (out_owner) *out_owner = NULL;
+    if (!buffer || !out_owner || !size) return NULL;
+
+    const size_t skew = (size_t)(offset % MB_READ_ALIGNMENT);
+    const size_t bytes = (size + skew + MB_READ_ALIGNMENT - 1) / MB_READ_ALIGNMENT *
+                         MB_READ_ALIGNMENT;
+    uint8_t *owner = heap_caps_aligned_alloc(MB_READ_ALIGNMENT, bytes, MALLOC_CAP_SPIRAM);
+    if (!owner) owner = heap_caps_aligned_alloc(MB_READ_ALIGNMENT, bytes, MALLOC_CAP_DEFAULT);
+    if (!owner) return NULL;
+
+    uint8_t *data = owner + skew;
+    mb_seek(buffer, offset);
+    if (mb_read(buffer, data, size) != size) {
+        heap_caps_free(owner);
+        return NULL;
+    }
+    *out_owner = owner;
+    return data;
 }
 
 size_t mb_read(media_buffer_t *buffer, void *out, size_t size) {

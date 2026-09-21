@@ -35,6 +35,11 @@ static constexpr uint32_t kWorkerStackBytes = 8192;
 static constexpr uint32_t kDispatchPeriodMs = 100;
 static constexpr uint32_t kPlayingGapMs = 200;
 static constexpr uint32_t kStopTimeoutMs = 2000;
+static constexpr std::size_t kHashSkipBytes = 1024;
+static constexpr std::size_t kHashWindowBytes = 8 * 1024;
+/* One cover queued for the decoder while the reader fetches the next: enough
+   to hide the decode behind the SD read without holding a third picture. */
+static constexpr uint32_t kDecodeDepth = 1;
 
 namespace {
 
@@ -81,6 +86,15 @@ struct MetaSlot {
     uint64_t used = 0;
 };
 
+struct DecodeJob {
+    PsramString path;
+    std::shared_ptr<MediaEntry> entry;
+    CoverArt cover;
+    std::shared_ptr<JpegBytes> jpeg;
+    ImageKey key;
+    uint32_t token = 0;
+};
+
 struct Observer {
     uint32_t token;
     void (*on_ready)(const std::string &);
@@ -93,6 +107,7 @@ struct CacheState {
     ImageStore jpeg;
     ImageStore decoded;
     PsramDeque<Request> queues[3];
+    PsramDeque<DecodeJob> decodes;
     PsramVector<PsramString> completed;
     PsramVector<Observer> observers;
     uint64_t clock = 0;
@@ -104,10 +119,14 @@ struct CacheState {
 static media_arena_t s_arena;
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_wake;
+static SemaphoreHandle_t s_decode_wake;
+static SemaphoreHandle_t s_decode_room;
 static SemaphoreHandle_t s_stopped;
+static SemaphoreHandle_t s_decoder_stopped;
 static CacheState *s_state;
 static volatile bool s_quit;
-static volatile bool s_busy;
+static volatile bool s_reading;
+static volatile bool s_decoding;
 static bool s_running;
 static lv_timer_t *s_dispatch;
 
@@ -124,14 +143,24 @@ static bool panel_rgb888() {
     return bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
 }
 
+/* One window past the file header, paired with the exact byte count. The id
+   only has to tell two pictures apart, and hashing all of a 500 KB cover cost
+   20 ms per file; the header is skipped because encoders make it identical
+   across an album. */
 static uint64_t image_id_of(const CoverBytes &bytes) {
-    uint64_t hash = 0xCBF29CE484222325ull;
-    for (uint8_t byte : bytes) {
-        hash ^= byte;
-        hash *= 0x100000001B3ull;
+    const std::size_t size = bytes.size();
+    const std::size_t from = size > kHashSkipBytes ? kHashSkipBytes : 0;
+    std::size_t span = size - from;
+    if (span > kHashWindowBytes) span = kHashWindowBytes;
+
+    const uint8_t *data = bytes.data() + from;
+    uint32_t hash = 0x811C9DC5u;
+    for (std::size_t i = 0; i < span; i++) {
+        hash ^= data[i];
+        hash *= 0x01000193u;
     }
-    hash ^= (uint64_t)bytes.size() * 0x9E3779B97F4A7C15ull;
-    return hash ? hash : 1;
+    const uint64_t id = (uint64_t)hash << 32 | (uint32_t)size;
+    return id ? id : 1;
 }
 
 static void copy_text(char *out, std::size_t size, const std::string &text) {
@@ -238,6 +267,7 @@ static void forget_cover(const std::shared_ptr<MediaEntry> &entry) {
     Lock lock;
     release_image_id(entry->image_id);
     entry->has_cover = false;
+    entry->cover_scanned = true;
     entry->image_id = 0;
 }
 
@@ -254,15 +284,51 @@ static std::shared_ptr<MediaEntry> make_entry(const MediaSummary &summary, bool 
     copy_text(entry->title, sizeof(entry->title), summary.tags.title);
     copy_text(entry->artist, sizeof(entry->artist), summary.tags.artist);
     copy_text(entry->album, sizeof(entry->album), summary.tags.album);
+    entry->cover_at = summary.cover_at;
+    entry->cover_scanned = summary.cover_scanned;
     if (cover) {
         entry->image_id = image_id_of(*cover.data);
+        entry->has_cover = true;
+    } else if (summary.cover_at) {
         entry->has_cover = true;
     }
     return entry;
 }
 
-static void process(const Request &request) {
+/* The picture, from wherever it is cheapest: the recorded location when the
+   container gave one, otherwise a full probe that reads the tag again. */
+static CoverArt fetch_cover(const std::string &path, const std::shared_ptr<MediaEntry> &entry) {
+    if (entry->cover_at) {
+        CoverArt cover = media_probe_cover(path, s_arena, entry->cover_at);
+        if (cover) return cover;
+    }
+    MediaSummary summary;
+    std::string error;
+    if (!media_probe(path, s_arena, true, &summary, &error)) return {};
+    {
+        Lock lock;
+        entry->cover_scanned = true;
+    }
+    return summary.cover;
+}
+
+/* Completes an entry whose probe never saw the picture: the id is what the
+   image stores are keyed on and what media_cache_image() needs to answer. */
+static void adopt_image_id(const std::shared_ptr<MediaEntry> &entry, const CoverBytes &bytes) {
+    Lock lock;
+    entry->has_cover = true;
+    entry->cover_scanned = true;
+    if (entry->image_id) return;
+    entry->image_id = image_id_of(bytes);
+    s_state->uses[entry->image_id]++;
+}
+
+/* Stage one: everything that reads the card. Returns whether it left a job for
+   the decoder. */
+static bool prepare(const Request &request, DecodeJob *job) {
     const std::string path(request.path.c_str());
+    const bool want_image = (request.want & MetaWantImage) && request.side > 0;
+
     std::shared_ptr<MediaEntry> entry;
     {
         Lock lock;
@@ -273,7 +339,7 @@ static void process(const Request &request) {
     if (!entry) {
         MediaSummary summary;
         std::string error;
-        const bool ok = media_probe(path, s_arena, &summary, &error);
+        const bool ok = media_probe(path, s_arena, want_image, &summary, &error);
         cover = summary.cover;
         entry = make_entry(summary, ok, cover);
 
@@ -285,36 +351,68 @@ static void process(const Request &request) {
         evict_meta();
     }
 
-    if (!(request.want & MetaWantImage) || !entry->has_cover || request.side <= 0) return;
+    if (!want_image) return false;
+    /* A probe told to skip pictures leaves "no cover" unanswered unless the
+       container said where one was, so only a scanned entry can say no. */
+    if (!entry->has_cover && entry->cover_scanned) return false;
+
+    if (!entry->image_id) {
+        if (!cover) cover = fetch_cover(path, entry);
+        if (!cover) {
+            forget_cover(entry);
+            return false;
+        }
+        adopt_image_id(entry, *cover.data);
+    }
 
     const ImageKey key = { entry->image_id, request.side };
     std::shared_ptr<JpegBytes> jpeg;
     {
         Lock lock;
-        if (take_pixels(key)) return;
+        if (take_pixels(key)) return false;
         auto it = s_state->jpeg.map.find(key);
         if (it != s_state->jpeg.map.end()) {
             it->second.used = ++s_state->clock;
             jpeg = it->second.jpeg;
         }
     }
-
-    if (jpeg) {
-        const bool rgb888 = panel_rgb888();
-        auto pixels = artwork_decode(jpeg->data(), jpeg->size(), request.side, rgb888);
-        if (pixels) {
-            store_image(s_state->decoded, key, { pixels, nullptr, pixels->bytes, 0, rgb888 });
-            return;
+    if (!jpeg && !cover) {
+        cover = fetch_cover(path, entry);
+        if (!cover) {
+            forget_cover(entry);
+            return false;
         }
     }
 
-    if (!cover) {
-        MediaSummary summary;
-        std::string error;
-        if (!media_probe(path, s_arena, &summary, &error)) return;
-        cover = summary.cover;
+    job->path = request.path;
+    job->entry = entry;
+    job->cover = std::move(cover);
+    job->jpeg = std::move(jpeg);
+    job->key = key;
+    job->token = request.token;
+    return true;
+}
+
+/* Stage two: no file access, so it runs while the reader is on the next one. */
+static void finish(DecodeJob &job) {
+    if (job.jpeg) {
+        const bool rgb888 = panel_rgb888();
+        auto pixels = artwork_decode(job.jpeg->data(), job.jpeg->size(), job.key.side, rgb888);
+        if (pixels) {
+            store_image(s_state->decoded, job.key, { pixels, nullptr, pixels->bytes, 0, rgb888 });
+            return;
+        }
+        /* A re-encoded copy that will not decode is worse than none: drop it so
+           the next request goes back to the original picture. */
+        Lock lock;
+        auto it = s_state->jpeg.map.find(job.key);
+        if (it != s_state->jpeg.map.end()) {
+            s_state->jpeg.bytes -= it->second.bytes;
+            s_state->jpeg.map.erase(it);
+        }
+        return;
     }
-    if (!cover || !produce(entry->image_id, request.side, *cover.data)) forget_cover(entry);
+    if (!job.cover || !produce(job.key.id, job.key.side, *job.cover.data)) forget_cover(job.entry);
 }
 
 static bool take_request(Request *out) {
@@ -328,7 +426,18 @@ static bool take_request(Request *out) {
     return false;
 }
 
-static void worker_task(void *) {
+static void exit_task() {
+#ifdef ESP_PLATFORM
+    vTaskDeleteWithCaps(nullptr);
+#else
+    vTaskDelete(nullptr);
+#endif
+}
+
+/* Reading the card and decoding a picture share nothing, so they run as two
+   stages: while the decoder works on one cover the reader is already pulling
+   the next file's tags. */
+static void reader_task(void *) {
     while (!s_quit) {
         Request request;
         if (!take_request(&request)) {
@@ -336,12 +445,23 @@ static void worker_task(void *) {
             continue;
         }
 
-        s_busy = true;
-        process(request);
-        s_busy = false;
-
+        s_reading = true;
+        DecodeJob job;
+        const bool decode = prepare(request, &job);
+        s_reading = false;
         if (s_quit) break;
-        {
+
+        if (decode) {
+            while (xSemaphoreTake(s_decode_room, pdMS_TO_TICKS(50)) != pdTRUE) {
+                if (s_quit) break;
+            }
+            if (s_quit) break;
+            {
+                Lock lock;
+                s_state->decodes.push_back(std::move(job));
+            }
+            xSemaphoreGive(s_decode_wake);
+        } else {
             Lock lock;
             s_state->completed.push_back(request.path);
         }
@@ -350,13 +470,41 @@ static void worker_task(void *) {
         }
     }
 
-    artwork_codec_close();
     xSemaphoreGive(s_stopped);
-#ifdef ESP_PLATFORM
-    vTaskDeleteWithCaps(nullptr);
-#else
-    vTaskDelete(nullptr);
-#endif
+    exit_task();
+}
+
+static void decoder_task(void *) {
+    while (!s_quit) {
+        DecodeJob job;
+        bool have = false;
+        {
+            Lock lock;
+            if (!s_state->decodes.empty()) {
+                job = std::move(s_state->decodes.front());
+                s_state->decodes.pop_front();
+                have = true;
+            }
+        }
+        if (!have) {
+            xSemaphoreTake(s_decode_wake, portMAX_DELAY);
+            continue;
+        }
+        xSemaphoreGive(s_decode_room);
+
+        s_decoding = true;
+        finish(job);
+        s_decoding = false;
+        if (s_quit) break;
+        {
+            Lock lock;
+            s_state->completed.push_back(job.path);
+        }
+    }
+
+    artwork_codec_close();
+    xSemaphoreGive(s_decoder_stopped);
+    exit_task();
 }
 
 static void dispatch(lv_timer_t *) {
@@ -387,22 +535,35 @@ void media_cache_init(const media_arena_t &arena) {
     s_arena = arena;
     s_lock = xSemaphoreCreateMutex();
     s_wake = xSemaphoreCreateBinary();
+    s_decode_wake = xSemaphoreCreateBinary();
+    s_decode_room = xSemaphoreCreateCounting(kDecodeDepth, kDecodeDepth);
     s_stopped = xSemaphoreCreateBinary();
+    s_decoder_stopped = xSemaphoreCreateBinary();
+}
+
+static BaseType_t spawn(TaskFunction_t entry, const char *name) {
+#ifdef ESP_PLATFORM
+    return xTaskCreatePinnedToCoreWithCaps(entry, name, kWorkerStackBytes, nullptr, 2, nullptr, 0,
+                                           MALLOC_CAP_SPIRAM);
+#else
+    return xTaskCreatePinnedToCore(entry, name, kWorkerStackBytes, nullptr, 2, nullptr, 0);
+#endif
 }
 
 void media_cache_start() {
     if (!s_lock || s_running || !s_arena.data) return;
     s_quit = false;
     xSemaphoreTake(s_stopped, 0);
-#ifdef ESP_PLATFORM
-    const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
-        worker_task, "media_meta", kWorkerStackBytes, nullptr, 2, nullptr, 0, MALLOC_CAP_SPIRAM);
-#else
-    const BaseType_t created =
-        xTaskCreatePinnedToCore(worker_task, "media_meta", kWorkerStackBytes, nullptr, 2, nullptr, 0);
-#endif
-    if (created != pdPASS) {
+    xSemaphoreTake(s_decoder_stopped, 0);
+    if (spawn(reader_task, "media_meta") != pdPASS) {
         ESP_LOGE(TAG, "no memory for the worker task");
+        return;
+    }
+    if (spawn(decoder_task, "media_art") != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the decoder task");
+        s_quit = true;
+        xSemaphoreGive(s_wake);
+        xSemaphoreTake(s_stopped, pdMS_TO_TICKS(kStopTimeoutMs));
         return;
     }
     s_running = true;
@@ -413,8 +574,13 @@ void media_cache_stop() {
     if (!s_running) return;
     s_quit = true;
     xSemaphoreGive(s_wake);
+    xSemaphoreGive(s_decode_wake);
+    xSemaphoreGive(s_decode_room);
     if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "worker did not stop");
+    }
+    if (xSemaphoreTake(s_decoder_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+        ESP_LOGE(TAG, "decoder did not stop");
     }
     s_running = false;
     if (s_dispatch) {
@@ -424,6 +590,7 @@ void media_cache_stop() {
 
     Lock lock;
     for (auto &queue : s_state->queues) queue.clear();
+    s_state->decodes.clear();
     s_state->completed.clear();
     for (ImageStore *store : { &s_state->raw, &s_state->jpeg, &s_state->decoded }) {
         store->map.clear();
@@ -516,12 +683,24 @@ void media_cache_idle_cancel() {
 
 void media_cache_cancel(uint32_t token) {
     if (!s_lock || !token) return;
-    Lock lock;
-    for (auto &queue : s_state->queues) {
-        for (auto it = queue.begin(); it != queue.end();) {
-            it = it->token == token ? queue.erase(it) : it + 1;
+    uint32_t dropped = 0;
+    {
+        Lock lock;
+        for (auto &queue : s_state->queues) {
+            for (auto it = queue.begin(); it != queue.end();) {
+                it = it->token == token ? queue.erase(it) : it + 1;
+            }
+        }
+        for (auto it = s_state->decodes.begin(); it != s_state->decodes.end();) {
+            if (it->token != token) {
+                ++it;
+                continue;
+            }
+            it = s_state->decodes.erase(it);
+            dropped++;
         }
     }
+    while (dropped--) xSemaphoreGive(s_decode_room);
 }
 
 void media_cache_forget(const std::string &mount_point) {
@@ -557,7 +736,8 @@ static bool harness_command(int argc, const char *const *argv, void *) {
         for (int i = 0; i < 600; i++) {
             {
                 Lock lock;
-                bool pending = !s_state->completed.empty() || s_busy;
+                bool pending = !s_state->completed.empty() || s_reading || s_decoding ||
+                               !s_state->decodes.empty();
                 for (const auto &queue : s_state->queues) pending = pending || !queue.empty();
                 if (!pending) break;
             }

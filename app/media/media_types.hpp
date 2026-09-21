@@ -65,7 +65,25 @@ enum class CoverFormat {
     Png,
 };
 
-using CoverBytes = PsramVector<uint8_t>;
+/* Owns the buffer the picture was read into rather than a copy of it: the
+   bytes come off the SD card straight into their final home and are handed
+   from the tag reader to here by pointer. `owner` differs from `bytes` when
+   the read had to be offset to keep its alignment (see mb_read_alloc). */
+struct CoverBytes {
+    uint8_t *owner = nullptr;
+    const uint8_t *bytes = nullptr;
+    std::size_t count = 0;
+
+    CoverBytes() = default;
+    CoverBytes(uint8_t *owner, const uint8_t *bytes, std::size_t count);
+    ~CoverBytes();
+    CoverBytes(const CoverBytes &) = delete;
+    CoverBytes &operator=(const CoverBytes &) = delete;
+
+    const uint8_t *data() const { return bytes; }
+    std::size_t size() const { return count; }
+    bool empty() const { return count == 0; }
+};
 
 struct CoverArt {
     std::shared_ptr<const CoverBytes> data;
@@ -73,6 +91,20 @@ struct CoverArt {
 
     explicit operator bool() const { return data && !data->empty(); }
 };
+
+/* Where the picture sits in the file, so a pass that only wanted the tags can
+   be followed by one that reads the picture and nothing else. Zero size means
+   the container did not say (mp4 and mkv keep theirs inside a parsed box). */
+struct CoverLocation {
+    int64_t offset = 0;
+    uint32_t size = 0;
+
+    explicit operator bool() const { return size != 0; }
+};
+
+/* Whether a probe enumerated the pictures. False means it was told to skip
+   them and the container could not say where they were, so "no cover" is not
+   yet an answer. */
 
 struct MediaInfo {
     TrackInfo video;
@@ -82,6 +114,8 @@ struct MediaInfo {
     bool seekable = false;
     MediaTags tags;
     CoverArt cover;
+    CoverLocation cover_at;
+    bool cover_scanned = false;
 };
 
 struct MediaSummary {
@@ -92,6 +126,8 @@ struct MediaSummary {
     bool seekable = false;
     MediaTags tags;
     CoverArt cover;
+    CoverLocation cover_at;
+    bool cover_scanned = false;
     struct {
         CodecId codec = CodecId::None;
         uint32_t width = 0;

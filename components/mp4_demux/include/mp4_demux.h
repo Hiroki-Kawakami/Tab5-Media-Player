@@ -72,7 +72,8 @@ typedef struct {
 
 typedef struct mp4_demux mp4_demux_t;
 
-mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, const char **error);
+mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error);
 void mp4_demux_close(mp4_demux_t *demux);
 
 const mp4_info_t *mp4_demux_info(const mp4_demux_t *demux);

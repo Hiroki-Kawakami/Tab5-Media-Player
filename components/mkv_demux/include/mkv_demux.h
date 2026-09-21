@@ -73,7 +73,8 @@ typedef struct {
 
 typedef struct mkv_demux mkv_demux_t;
 
-mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, const char **error);
+mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error);
 void mkv_demux_close(mkv_demux_t *demux);
 
 const mkv_info_t *mkv_demux_info(const mkv_demux_t *demux);

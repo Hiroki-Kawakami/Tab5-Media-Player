@@ -317,7 +317,7 @@ static void handle_open(const std::string &path) {
         player_set_state(PlayerState::Failed, "unsupported file");
         return;
     }
-    if (!player_core.demuxer->open(path, s_arena)) {
+    if (!player_core.demuxer->open(path, s_arena, true)) {
         fail_open(player_core.demuxer->error());
         return;
     }

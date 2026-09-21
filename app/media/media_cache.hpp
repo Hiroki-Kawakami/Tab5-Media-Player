@@ -15,7 +15,11 @@
 struct MediaEntry {
     bool ok = false;
     bool has_cover = false;
+    /* Zero until the picture bytes have been seen: an info-only probe knows
+       there is one and where it is, but not what it hashes to. */
     uint64_t image_id = 0;
+    CoverLocation cover_at;
+    bool cover_scanned = false;
     int64_t duration_us = 0;
     CodecId audio_codec = CodecId::None;
     uint32_t sample_rate = 0;

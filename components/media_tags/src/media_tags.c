@@ -173,7 +173,8 @@ void media_tags_set_number(media_tags_t *tags, media_tag_field_t field, uint32_t
     }
 }
 
-static media_cover_format_t cover_format(const uint8_t *data, size_t size) {
+media_cover_format_t media_cover_format_of(const void *bytes, size_t size) {
+    const uint8_t *data = (const uint8_t *)bytes;
     static const uint8_t kPng[] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
     if (size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
         return MEDIA_COVER_JPEG;
@@ -182,25 +183,44 @@ static media_cover_format_t cover_format(const uint8_t *data, size_t size) {
     return MEDIA_COVER_NONE;
 }
 
+void media_tags_adopt_cover(media_tags_t *tags, uint8_t *owner, uint8_t *data, size_t size,
+                            bool front) {
+    if (!tags || !owner || !data || !size || size > MEDIA_COVER_MAX_BYTES) {
+        heap_caps_free(owner);
+        return;
+    }
+    const media_cover_format_t format = media_cover_format_of(data, size);
+    if (format == MEDIA_COVER_NONE || (tags->cover.data && (!front || tags->cover.front))) {
+        heap_caps_free(owner);
+        return;
+    }
+    heap_caps_free(tags->cover.owner);
+    tags->cover.owner = owner;
+    tags->cover.data = data;
+    tags->cover.size = (uint32_t)size;
+    tags->cover.format = format;
+    tags->cover.front = front;
+}
+
 void media_tags_set_cover(media_tags_t *tags, const void *data, size_t size, bool front) {
-    if (!data || size > MEDIA_COVER_MAX_BYTES) return;
-    const media_cover_format_t format = cover_format(data, size);
-    if (format == MEDIA_COVER_NONE) return;
+    if (!tags || !data || !size || size > MEDIA_COVER_MAX_BYTES) return;
+    if (media_cover_format_of(data, size) == MEDIA_COVER_NONE) return;
     if (tags->cover.data && (!front || tags->cover.front)) return;
 
     uint8_t *copy = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
     if (!copy) copy = heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
     if (!copy) return;
     memcpy(copy, data, size);
+    media_tags_adopt_cover(tags, copy, copy, size, front);
+}
 
-    heap_caps_free(tags->cover.data);
-    tags->cover.data = copy;
-    tags->cover.size = (uint32_t)size;
-    tags->cover.format = format;
-    tags->cover.front = front;
+media_cover_t media_tags_take_cover(media_tags_t *tags) {
+    const media_cover_t cover = tags->cover;
+    memset(&tags->cover, 0, sizeof(tags->cover));
+    return cover;
 }
 
 void media_tags_free(media_tags_t *tags) {
-    heap_caps_free(tags->cover.data);
+    heap_caps_free(tags->cover.owner);
     memset(tags, 0, sizeof(*tags));
 }

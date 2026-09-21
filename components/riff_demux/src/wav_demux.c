@@ -62,7 +62,8 @@ static const char *describe_format(wav_demux_t *demux, const riff_audio_format_t
     return NULL;
 }
 
-wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const char **error) {
+wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error) {
     const char *ignored = NULL;
     if (!error) error = &ignored;
     *error = NULL;
@@ -72,6 +73,7 @@ wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const 
         *error = "out of memory";
         return NULL;
     }
+    demux->info.tags.cover_scanned = true;
     demux->reader = mb_open(path, arena);
     if (!demux->reader) {
         *error = "cannot open the file";
@@ -112,7 +114,7 @@ wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const 
                 riff_read_info(demux->reader, next, &demux->info.tags);
             }
         } else if (chunk.fourcc == RIFF_ID_id3 || chunk.fourcc == RIFF_ID_ID3) {
-            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags);
+            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags, want_cover);
         }
         if (next > file_end) break;
         mb_seek(demux->reader, next);

@@ -147,9 +147,9 @@ static bool resync(es_audio_demux_t *demux, off_t from, off_t *found, frame_t *f
     return false;
 }
 
-static off_t read_id3v2(es_audio_demux_t *demux) {
+static off_t read_id3v2(es_audio_demux_t *demux, bool want_cover) {
     off_t start = 0;
-    media_tags_read_id3v2(demux->reader, 0, &start, &demux->info.tags);
+    media_tags_read_id3v2(demux->reader, 0, &start, &demux->info.tags, want_cover);
     return start;
 }
 
@@ -244,7 +244,7 @@ static int64_t us_for_byte(const es_audio_demux_t *demux, off_t offset) {
 }
 
 es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *arena,
-                                      const char **error) {
+                                      bool want_cover, const char **error) {
     const char *ignored = NULL;
     if (!error) error = &ignored;
     *error = NULL;
@@ -261,7 +261,8 @@ es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *are
         return NULL;
     }
 
-    demux->data_start = read_id3v2(demux);
+    demux->info.tags.cover_scanned = true;
+    demux->data_start = read_id3v2(demux, want_cover);
     demux->data_end = trim_tail(demux, mb_size(demux->reader));
     media_tags_read_id3v1(demux->reader, mb_size(demux->reader), &demux->info.tags);
     if (demux->data_end <= demux->data_start) {

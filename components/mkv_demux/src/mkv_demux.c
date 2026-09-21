@@ -135,6 +135,7 @@ struct mkv_demux {
     off_t attachments_offset;
     bool have_tags;
     bool have_attachments;
+    bool want_cover;
     uint64_t timestamp_scale;
     double duration;
     uint64_t video_track;
@@ -847,7 +848,7 @@ static void parse_attachments(mkv_demux_t *demux, span_t span) {
             if (child == ID_FILE_NAME) span_string(child_body, name, sizeof(name));
             if (child == ID_FILE_DATA) data = child_body;
         }
-        if (data.p) {
+        if (data.p && demux->want_cover) {
             media_tags_set_cover(&demux->info.tags, data.p, span_size(data),
                                  strncasecmp(name, "cover", 5) == 0);
         }
@@ -943,7 +944,8 @@ static const char *read_segment_headers(mkv_demux_t *demux) {
     return "no clusters in this MKV";
 }
 
-mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, const char **error) {
+mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error) {
     const char *ignored = NULL;
     if (!error) error = &ignored;
     *error = NULL;
@@ -954,6 +956,8 @@ mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, const 
         return NULL;
     }
     demux->arena = *arena;
+    demux->want_cover = want_cover;
+    demux->info.tags.cover_scanned = want_cover;
     demux->timestamp_scale = 1000000;
     demux->skip_before_us = -1;
 

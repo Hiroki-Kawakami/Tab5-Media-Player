@@ -306,7 +306,8 @@ static void build_index(avi_demux_t *demux) {
     demux->info.seekable = true;
 }
 
-avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const char **error) {
+avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error) {
     const char *ignored = NULL;
     if (!error) error = &ignored;
     *error = NULL;
@@ -318,6 +319,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
     }
 
     demux->arena = *arena;
+    demux->info.tags.cover_scanned = true;
     demux->reader = mb_open(path, arena);
     if (!demux->reader) {
         *error = "cannot open the file";
@@ -358,7 +360,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
             demux->idx1_offset = body;
             demux->idx1_size = chunk.size;
         } else if (chunk.fourcc == RIFF_ID_id3 || chunk.fourcc == RIFF_ID_ID3) {
-            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags);
+            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags, want_cover);
         }
         mb_seek(demux->reader, next);
     }

@@ -14,7 +14,8 @@ class Demuxer {
 public:
     virtual ~Demuxer() = default;
 
-    virtual bool open(const std::string &path, const media_arena_t &arena) = 0;
+    virtual bool open(const std::string &path, const media_arena_t &arena,
+                      bool want_cover) = 0;
     virtual void close() = 0;
     virtual bool isOpen() const = 0;
     virtual bool read(bool want_audio, Packet *out) = 0;
@@ -35,6 +36,8 @@ protected:
     std::string error_;
 };
 
+/* Moves the picture out of `tags` instead of copying it, so the bytes stay in
+   the buffer the tag reader read them into. */
 void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info);
 
 MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,

@@ -56,7 +56,14 @@ void FileBrowserPage::request_visible() {
     const std::size_t start = first > kLookahead ? first - kLookahead : 0;
     const std::size_t end = std::min(entries_.size(), first + rows + kLookahead);
 
+    /* Titles first for the whole visible range, then the thumbnails: reading a
+       tag without its cover art is a fraction of the cost, so the rows fill in
+       with text while the pictures are still coming. */
     media_cache_cancel(token_);
+    for (std::size_t i = start; i < end; i++) {
+        if (entries_[i].directory || entries_[i].kind == MediaKind::None) continue;
+        media_cache_request(entry_path(i), MetaWantInfo, 0, MetaPriority::Visible, token_);
+    }
     for (std::size_t i = start; i < end; i++) {
         if (entries_[i].directory || entries_[i].kind == MediaKind::None) continue;
         media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbSide,

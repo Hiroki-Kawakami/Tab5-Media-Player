@@ -66,7 +66,8 @@ typedef struct {
 
 typedef struct avi_demux avi_demux_t;
 
-avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const char **error);
+avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error);
 void avi_demux_close(avi_demux_t *demux);
 
 const avi_info_t *avi_demux_info(const avi_demux_t *demux);

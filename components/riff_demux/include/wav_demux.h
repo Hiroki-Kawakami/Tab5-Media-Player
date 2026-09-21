@@ -38,7 +38,8 @@ typedef struct {
 
 typedef struct wav_demux wav_demux_t;
 
-wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const char **error);
+wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error);
 void wav_demux_close(wav_demux_t *demux);
 
 const wav_info_t *wav_demux_info(const wav_demux_t *demux);

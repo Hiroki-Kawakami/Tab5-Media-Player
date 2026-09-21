@@ -161,6 +161,7 @@ struct mp4_demux {
     uint32_t movie_timescale;
     uint64_t movie_duration;
     bool fragmented;
+    bool want_cover;
     bool have_video;
     bool have_audio;
     track_t video;
@@ -759,7 +760,7 @@ static void parse_ilst(mp4_demux_t *demux, span_t ilst) {
         } else if (type == BOX_TRKN && size >= 6) {
             media_tags_set_number(&demux->info.tags, MEDIA_TAG_TRACK, be16(payload + 2),
                                   be16(payload + 4));
-        } else if (type == BOX_COVR) {
+        } else if (type == BOX_COVR && demux->want_cover) {
             media_tags_set_cover(&demux->info.tags, payload, size, true);
         }
     }
@@ -992,7 +993,8 @@ static void log_info(const char *path, const mp4_demux_t *demux) {
              (unsigned)info->audio.channels);
 }
 
-mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, const char **error) {
+mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, bool want_cover,
+                                const char **error) {
     const char *ignored = NULL;
     if (!error) error = &ignored;
     *error = NULL;
@@ -1003,6 +1005,8 @@ mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, const 
         return NULL;
     }
     demux->arena = *arena;
+    demux->want_cover = want_cover;
+    demux->info.tags.cover_scanned = want_cover;
     demux->skip_before_us = -1;
 
     demux->reader = mb_open(path, arena);

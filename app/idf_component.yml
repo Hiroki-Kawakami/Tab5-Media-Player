@@ -1,4 +1,7 @@
 dependencies:
+  # 9.6.0 emits a deprecation #warning for LV_ASSERT_HANDLER_INCLUDE, which -Werror rejects.
+  lvgl/lvgl:
+    version: "==9.5.0"
   # 2.6+ fails the build unless the ESP32-P4 is chip revision >= 3.0; this Tab5's is older.
   espressif/esp_audio_codec:
     version: ">=2.0.0,<2.6.0"

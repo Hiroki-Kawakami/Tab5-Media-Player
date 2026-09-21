@@ -318,17 +318,47 @@ names render as missing-glyph boxes until a font covering them is loaded.
 
 ## USB drive
 
-`components/usb_msc` wraps the USB host library and `usb_host_msc` for one
-drive on the Tab5's USB-A port, mounted at `/usb` by the Home screen's USB Drive
-button like the SD card. It lives here rather than in esp-devkit because a
-shared USB host library there should cover more than MSC.
+`components/usb_msc` drives one drive on the Tab5's USB-A port, mounted at
+`/usb` by the Home screen's USB Drive button like the SD card. It lives here
+rather than in esp-devkit because a shared USB host library there should cover
+more than MSC. `msc_bot.c` implements Bulk-Only Transport and the SCSI subset a
+drive needs (INQUIRY, TEST UNIT READY, REQUEST SENSE, READ CAPACITY(10),
+READ10/WRITE10) on top of the IDF host library, and `usb_msc.c` hands the
+result to FatFS through `ff_diskio_register`.
+
+The in-house transport replaced `usb_host_msc` because that component copies
+every data phase through its own transfer buffer. With the buffers in PSRAM
+(`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM`) a 64 KB read touched PSRAM
+three times: DMA in, then a CPU copy out. During 720x1280 playback, where the
+JPEG decoder and the panel scanout already saturate PSRAM, that copy cost about
+31% of each read and held throughput near what a 32 Mbps stream needs, so heavy
+scenes starved the reader. Its single transfer buffer also grew to the largest
+read FAT asked for, which made every 31-byte command sync a 64 KB cache range,
+and a failed regrow left a dangling pointer that the next command freed again
+(`usb_host_msc` 1.3.0).
+
+`data_stage()` avoids the copy by pointing the transfer at the caller's buffer:
+`urb_alloc()` only assigns `data_buffer`/`data_buffer_size` after allocating
+them separately, and `hcd_dwc.c`'s `cache_sync_data_buffer()` documents that
+class drivers may overwrite those fields. An IN transfer is synced with
+`ESP_CACHE_MSYNC_FLAG_DIR_M2C`, which has no unaligned path, so a borrowed
+buffer must be cache aligned in both address and size, and `num_bytes` must be
+a multiple of the endpoint's max packet size; anything else (FatFS's own window
+buffer) falls back to a bounce buffer. `media_buffer`'s chunks are 64 KB
+aligned, so playback reads always borrow. CBW and CSW ride a separate 512-byte
+transfer.
+
+Measured against `usb_host_msc` on the same drive and file: sequential 64 KB
+reads 12.9 -> 16.2 MB/s idle, and during 60 fps 720x1280 playback a 64 KB
+`media_buffer` chunk takes 10.2 ms instead of 14.4 ms, which is enough headroom
+to hold 50 fps where the old path dropped to 36 fps with bursts of 23 dropped
+frames in a row.
 
 The host stack is installed at boot so a drive plugged in later is seen. The
-driver is installed as soon as the drive enumerates, not at mount time:
-`usb_host_msc` only reports `MSC_DEVICE_DISCONNECTED` for installed devices, so
-an unmounted drive pulled out would otherwise go unnoticed. The install runs on
-the component's own task because `msc_host_install_device` needs the MSC
-background task to process events and would deadlock inside its callback.
+device is opened as soon as it enumerates, not at mount time, so a drive pulled
+out before mounting is still noticed. The open runs on the component's own
+worker task: transfers complete on the client task, so opening from the client
+event callback would deadlock.
 
 Pulling a mounted drive does not unmount it. The player may still hold a file
 open, and FAT must not be unregistered under an open fd; the disconnect sends
@@ -336,18 +366,10 @@ open, and FAT must not be unregistered under an open fd; the disconnect sends
 `/usb` file and drops the `/usb` pages from Home. The
 stale mount is released by the next `usb_msc_mount`, which runs from Home after
 the player and the `/usb` pages are gone. A drive plugged in while a stale mount is held
-is installed at that point too.
+is opened at that point too.
 
-`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` puts the USB transfer buffers in
-PSRAM. `usb_host_msc` grows its single transfer buffer to the largest read FAT
-asks for (64 KB chunks from `media_buffer`, more for an MP4 index), which
-internal DMA memory cannot supply during playback. When that allocation fails,
-`msc_bulk_transfer` has already freed the old buffer and leaves the dangling
-pointer in place; the next command frees it again and the heap asserts
-(`usb_host_msc` 1.3.0).
-
-The host stack, its two tasks here and the MSC driver's task take about
-12.5 KB of internal RAM at boot.
+The host stack and the component's three tasks take about 25 KB of internal RAM
+at boot.
 
 On the simulator the drive is `SIMULATOR_USB_PATH` (`run.sh` pins it to
 `simulator/usb`, gitignored), attached at boot when that directory exists.

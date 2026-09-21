@@ -1,5 +1,5 @@
 dependencies:
-  espressif/usb_host_msc:
-    version: "^1.3.0"
+  espressif/usb:
+    version: "^1.0.0"
     rules:
       - if: "target != linux"

@@ -42,6 +42,17 @@ static const char *TAG = "mp4_demux";
 #define BOX_ESDS FOURCC('e', 's', 'd', 's')
 #define BOX_WAVE FOURCC('w', 'a', 'v', 'e')
 #define BOX_DOPS FOURCC('d', 'O', 'p', 's')
+#define BOX_UDTA FOURCC('u', 'd', 't', 'a')
+#define BOX_META FOURCC('m', 'e', 't', 'a')
+#define BOX_ILST FOURCC('i', 'l', 's', 't')
+#define BOX_DATA FOURCC('d', 'a', 't', 'a')
+#define BOX_NAM FOURCC(0xA9, 'n', 'a', 'm')
+#define BOX_ART FOURCC(0xA9, 'A', 'R', 'T')
+#define BOX_ALB FOURCC(0xA9, 'a', 'l', 'b')
+#define BOX_AART FOURCC('a', 'A', 'R', 'T')
+#define BOX_DAY FOURCC(0xA9, 'd', 'a', 'y')
+#define BOX_TRKN FOURCC('t', 'r', 'k', 'n')
+#define BOX_COVR FOURCC('c', 'o', 'v', 'r')
 
 #define HANDLER_VIDEO FOURCC('v', 'i', 'd', 'e')
 #define HANDLER_AUDIO FOURCC('s', 'o', 'u', 'n')
@@ -720,6 +731,57 @@ static int track_score(const track_t *track, int unsupported) {
     return (track->codec != unsupported ? 2 : 0) + (track->enabled ? 1 : 0);
 }
 
+static bool tag_field_of(uint32_t type, media_tag_field_t *field) {
+    switch (type) {
+    case BOX_NAM: *field = MEDIA_TAG_TITLE; return true;
+    case BOX_ART: *field = MEDIA_TAG_ARTIST; return true;
+    case BOX_ALB: *field = MEDIA_TAG_ALBUM; return true;
+    case BOX_AART: *field = MEDIA_TAG_ALBUM_ARTIST; return true;
+    case BOX_DAY: *field = MEDIA_TAG_DATE; return true;
+    default: return false;
+    }
+}
+
+static void parse_ilst(mp4_demux_t *demux, span_t ilst) {
+    uint32_t type = 0;
+    span_t item;
+    while (span_box(&ilst, &type, &item)) {
+        span_t data;
+        if (!span_find(item, BOX_DATA, &data) || span_size(data) < 8) continue;
+        const uint32_t kind = be32(data.p) & 0xFFFFFF;
+        const uint8_t *payload = data.p + 8;
+        const size_t size = span_size(data) - 8;
+
+        media_tag_field_t field;
+        if (tag_field_of(type, &field)) {
+            media_tags_set(&demux->info.tags, field, payload, size,
+                           kind == 2 ? MEDIA_TEXT_UTF16BE : MEDIA_TEXT_UTF8);
+        } else if (type == BOX_TRKN && size >= 6) {
+            media_tags_set_number(&demux->info.tags, MEDIA_TAG_TRACK, be16(payload + 2),
+                                  be16(payload + 4));
+        } else if (type == BOX_COVR) {
+            media_tags_set_cover(&demux->info.tags, payload, size, true);
+        }
+    }
+}
+
+/* QuickTime writes meta as a plain box, ISO-BMFF as a full box. */
+static void parse_udta(mp4_demux_t *demux, span_t udta) {
+    span_t meta;
+    if (!span_find(udta, BOX_META, &meta)) return;
+
+    span_t ilst;
+    span_t body = meta;
+    if (span_size(body) >= 4) {
+        body.p += 4;
+        if (span_find(body, BOX_ILST, &ilst)) {
+            parse_ilst(demux, ilst);
+            return;
+        }
+    }
+    if (span_find(meta, BOX_ILST, &ilst)) parse_ilst(demux, ilst);
+}
+
 static const char *parse_moov(mp4_demux_t *demux, span_t moov) {
     int video_score = -1;
     int audio_score = -1;
@@ -727,6 +789,7 @@ static const char *parse_moov(mp4_demux_t *demux, span_t moov) {
     span_t body;
     while (span_box(&moov, &type, &body)) {
         if (type == BOX_MVEX) demux->fragmented = true;
+        if (type == BOX_UDTA) parse_udta(demux, body);
         if (type == BOX_MVHD && span_size(body) >= 4) {
             track_t header;
             memset(&header, 0, sizeof(header));
@@ -971,6 +1034,7 @@ mp4_demux_t *mp4_demux_open(const char *path, const media_arena_t *arena, const 
 
 void mp4_demux_close(mp4_demux_t *demux) {
     if (!demux) return;
+    media_tags_free(&demux->info.tags);
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->moov);
     heap_caps_free(demux->audio_private);

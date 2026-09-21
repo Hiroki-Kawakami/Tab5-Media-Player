@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include "playback/player.hpp"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
@@ -30,6 +31,7 @@ private:
     void buildTransport(lv_obj_t *parent);
     void buildVolumeRow(lv_obj_t *parent);
     void relayout();
+    void applyArtwork();
     void setRepeatMode(RepeatMode mode);
     void setPlayIcon(bool playing);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
@@ -44,7 +46,14 @@ private:
     bool landscape_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
 
+    CoverArt cover_;
+
     lv_obj_t *play_label_ = nullptr;
+    lv_obj_t *artwork_ = nullptr;
+    int32_t artwork_side_ = 0;
+    lv_obj_t *artwork_icon_ = nullptr;
+    lv_obj_t *artwork_image_ = nullptr;
+    lv_obj_t *title_label_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;
     lv_obj_t *seek_ = nullptr;
     lv_obj_t *elapsed_label_ = nullptr;
@@ -56,5 +65,6 @@ private:
 
     int64_t shown_elapsed_s_ = -1;
     int64_t shown_total_s_ = -1;
+    std::string shown_title_;
     std::string shown_subtitle_;
 };

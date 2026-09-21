@@ -6,6 +6,8 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <string>
 #include <vector>
 #include "bsp_types.h"
 
@@ -42,12 +44,41 @@ struct TrackInfo {
     bsp_rotation_t rotation = BSP_ROTATION_0;
 };
 
+struct MediaTags {
+    std::string title;
+    std::string artist;
+    std::string album;
+    std::string album_artist;
+    std::string track;
+    std::string date;
+
+    bool empty() const {
+        return title.empty() && artist.empty() && album.empty() && album_artist.empty() &&
+               track.empty() && date.empty();
+    }
+};
+
+enum class CoverFormat {
+    None,
+    Jpeg,
+    Png,
+};
+
+struct CoverArt {
+    std::shared_ptr<const std::vector<uint8_t>> data;
+    CoverFormat format = CoverFormat::None;
+
+    explicit operator bool() const { return data && !data->empty(); }
+};
+
 struct MediaInfo {
     TrackInfo video;
     TrackInfo audio;
     int64_t duration_us = 0;
     int64_t frame_interval_us = 0;
     bool seekable = false;
+    MediaTags tags;
+    CoverArt cover;
 };
 
 struct Packet {

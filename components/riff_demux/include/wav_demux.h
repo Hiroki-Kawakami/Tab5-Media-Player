@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "media_buffer.h"
+#include "media_tags.h"
 #include "riff_audio.h"
 
 #ifdef __cplusplus
@@ -25,6 +26,7 @@ typedef struct {
     const uint8_t *codec_private;
     uint32_t codec_private_size;
     int64_t duration_us;
+    media_tags_t tags;
 } wav_info_t;
 
 typedef struct {

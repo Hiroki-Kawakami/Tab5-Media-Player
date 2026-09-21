@@ -7,6 +7,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -21,6 +22,7 @@ static const char *TAG = "mkv_demux";
 #define ID_SEEK_ID           0x53AB
 #define ID_SEEK_POSITION     0x53AC
 #define ID_INFO              0x1549A966
+#define ID_TITLE             0x7BA9
 #define ID_TIMESTAMP_SCALE   0x2AD7B1
 #define ID_DURATION          0x4489
 #define ID_TRACKS            0x1654AE6B
@@ -55,6 +57,15 @@ static const char *TAG = "mkv_demux";
 #define ID_CUE_TRACK_POS     0xB7
 #define ID_CUE_TRACK         0xF7
 #define ID_CUE_CLUSTER_POS   0xF1
+#define ID_TAGS              0x1254C367
+#define ID_TAG               0x7373
+#define ID_SIMPLE_TAG        0x67C8
+#define ID_TAG_NAME          0x45A3
+#define ID_TAG_STRING        0x4487
+#define ID_ATTACHMENTS       0x1941A469
+#define ID_ATTACHED_FILE     0x61A7
+#define ID_FILE_NAME         0x466E
+#define ID_FILE_DATA         0x465C
 
 #define TRACK_TYPE_VIDEO 1
 #define TRACK_TYPE_AUDIO 2
@@ -69,6 +80,8 @@ static const char *TAG = "mkv_demux";
 #define MKV_MAX_EBML_HEADER_BYTES 4096
 #define MKV_MAX_HEADER_BYTES (256 * 1024)
 #define MKV_MAX_CUE_POINT_BYTES 1024
+#define MKV_MAX_TAGS_BYTES (256 * 1024)
+#define MKV_MAX_ATTACHMENTS_BYTES (4 * 1024 * 1024)
 #define MKV_MAX_CUES 60000
 #define MKV_PROBE_BLOCKS 64
 #define MKV_ROTATION_TOLERANCE_DEG 1.0
@@ -118,6 +131,10 @@ struct mkv_demux {
     off_t segment_end;
     off_t first_cluster;
     off_t cues_offset;
+    off_t tags_offset;
+    off_t attachments_offset;
+    bool have_tags;
+    bool have_attachments;
     uint64_t timestamp_scale;
     double duration;
     uint64_t video_track;
@@ -212,6 +229,10 @@ static bool span_next(span_t *span, uint32_t *id, span_t *body) {
     return true;
 }
 
+static size_t span_size(span_t body) {
+    return (size_t)(body.end - body.p);
+}
+
 static uint64_t span_uint(span_t body) {
     uint64_t value = 0;
     for (const uint8_t *p = body.p; p < body.end && p < body.p + 8; p++) value = (value << 8) | *p;
@@ -270,8 +291,12 @@ static void parse_seek_head(mkv_demux_t *demux, span_t span) {
                 have_position = true;
             }
         }
-        if (target == ID_CUES && have_position && !demux->cues_offset) {
-            demux->cues_offset = demux->segment_start + (off_t)position;
+        if (!have_position) continue;
+        const off_t offset = demux->segment_start + (off_t)position;
+        if (target == ID_CUES && !demux->cues_offset) demux->cues_offset = offset;
+        if (target == ID_TAGS && !demux->tags_offset) demux->tags_offset = offset;
+        if (target == ID_ATTACHMENTS && !demux->attachments_offset) {
+            demux->attachments_offset = offset;
         }
     }
 }
@@ -285,6 +310,9 @@ static void parse_info(mkv_demux_t *demux, span_t span) {
             if (scale) demux->timestamp_scale = scale;
         } else if (id == ID_DURATION) {
             demux->duration = span_float(body);
+        } else if (id == ID_TITLE) {
+            media_tags_set(&demux->info.tags, MEDIA_TAG_TITLE, body.p, span_size(body),
+                           MEDIA_TEXT_UTF8);
         }
     }
 }
@@ -757,6 +785,102 @@ static void log_info(const char *path, const mkv_info_t *info) {
              (unsigned)info->audio.sample_rate, (unsigned)info->audio.channels);
 }
 
+static bool tag_field_of(const char *name, media_tag_field_t *field) {
+    if (strcmp(name, "TITLE") == 0) *field = MEDIA_TAG_TITLE;
+    else if (strcmp(name, "ARTIST") == 0) *field = MEDIA_TAG_ARTIST;
+    else if (strcmp(name, "ALBUM") == 0) *field = MEDIA_TAG_ALBUM;
+    else if (strcmp(name, "ALBUM_ARTIST") == 0) *field = MEDIA_TAG_ALBUM_ARTIST;
+    else if (strcmp(name, "PART_NUMBER") == 0) *field = MEDIA_TAG_TRACK;
+    else if (strcmp(name, "DATE_RELEASED") == 0 || strcmp(name, "DATE_RECORDED") == 0) {
+        *field = MEDIA_TAG_DATE;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static void parse_simple_tags(mkv_demux_t *demux, span_t span) {
+    uint32_t id = 0;
+    span_t body;
+    while (span_next(&span, &id, &body)) {
+        if (id != ID_SIMPLE_TAG) continue;
+
+        char name[32] = "";
+        span_t value = { NULL, NULL };
+        span_t nested = body;
+        uint32_t child = 0;
+        span_t child_body;
+        while (span_next(&body, &child, &child_body)) {
+            if (child == ID_TAG_NAME) span_string(child_body, name, sizeof(name));
+            if (child == ID_TAG_STRING) value = child_body;
+        }
+
+        media_tag_field_t field;
+        if (value.p && tag_field_of(name, &field)) {
+            media_tags_set(&demux->info.tags, field, value.p, span_size(value), MEDIA_TEXT_UTF8);
+        }
+        parse_simple_tags(demux, nested);
+    }
+}
+
+static void parse_tags(mkv_demux_t *demux, span_t span) {
+    demux->have_tags = true;
+    uint32_t id = 0;
+    span_t body;
+    while (span_next(&span, &id, &body)) {
+        if (id == ID_TAG) parse_simple_tags(demux, body);
+    }
+}
+
+static void parse_attachments(mkv_demux_t *demux, span_t span) {
+    demux->have_attachments = true;
+    uint32_t id = 0;
+    span_t body;
+    while (span_next(&span, &id, &body)) {
+        if (id != ID_ATTACHED_FILE) continue;
+
+        char name[32] = "";
+        span_t data = { NULL, NULL };
+        uint32_t child = 0;
+        span_t child_body;
+        while (span_next(&body, &child, &child_body)) {
+            if (child == ID_FILE_NAME) span_string(child_body, name, sizeof(name));
+            if (child == ID_FILE_DATA) data = child_body;
+        }
+        if (data.p) {
+            media_tags_set_cover(&demux->info.tags, data.p, span_size(data),
+                                 strncasecmp(name, "cover", 5) == 0);
+        }
+    }
+}
+
+/* Tags and Attachments may follow the clusters, where the header walk stops. */
+static void read_tag_element(mkv_demux_t *demux, off_t offset, uint32_t want, size_t limit,
+                             void (*parse)(mkv_demux_t *, span_t)) {
+    if (offset <= 0 || offset >= demux->segment_end) return;
+    mb_seek(demux->reader, offset);
+
+    uint32_t id = 0;
+    uint64_t size = 0;
+    if (!read_header(demux->reader, &id, &size) || id != want) return;
+    uint8_t *data = load_body(demux->reader, size, limit);
+    if (!data) return;
+
+    const span_t span = { data, data + size };
+    parse(demux, span);
+    heap_caps_free(data);
+}
+
+static void read_deferred_tags(mkv_demux_t *demux) {
+    if (!demux->have_tags) {
+        read_tag_element(demux, demux->tags_offset, ID_TAGS, MKV_MAX_TAGS_BYTES, parse_tags);
+    }
+    if (!demux->have_attachments) {
+        read_tag_element(demux, demux->attachments_offset, ID_ATTACHMENTS,
+                         MKV_MAX_ATTACHMENTS_BYTES, parse_attachments);
+    }
+}
+
 static const char *read_ebml_header(mkv_demux_t *demux) {
     uint32_t id = 0;
     uint64_t size = 0;
@@ -793,6 +917,7 @@ static const char *read_segment_headers(mkv_demux_t *demux) {
         if (!read_header(demux->reader, &id, &size)) break;
         if (id == ID_CLUSTER) {
             demux->first_cluster = position;
+            read_deferred_tags(demux);
             return NULL;
         }
         if (size == MKV_UNKNOWN_SIZE) return "unsupported MKV layout";
@@ -806,6 +931,10 @@ static const char *read_segment_headers(mkv_demux_t *demux) {
             if (id == ID_INFO) parse_info(demux, span);
             if (id == ID_TRACKS) parse_tracks(demux, span);
             heap_caps_free(data);
+        } else if (id == ID_TAGS || id == ID_ATTACHMENTS) {
+            read_tag_element(demux, position, id,
+                             id == ID_TAGS ? MKV_MAX_TAGS_BYTES : MKV_MAX_ATTACHMENTS_BYTES,
+                             id == ID_TAGS ? parse_tags : parse_attachments);
         } else if (id == ID_CUES && !demux->cues_offset) {
             demux->cues_offset = position;
         }
@@ -867,6 +996,7 @@ mkv_demux_t *mkv_demux_open(const char *path, const media_arena_t *arena, const 
 
 void mkv_demux_close(mkv_demux_t *demux) {
     if (!demux) return;
+    media_tags_free(&demux->info.tags);
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->cues);
     heap_caps_free(demux->audio_private);

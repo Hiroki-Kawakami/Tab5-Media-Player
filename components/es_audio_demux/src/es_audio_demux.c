@@ -144,17 +144,10 @@ static bool resync(es_audio_demux_t *demux, off_t from, off_t *found, frame_t *f
     return false;
 }
 
-static off_t skip_id3v2(es_audio_demux_t *demux) {
-    uint8_t header[10];
-    mb_seek(demux->reader, 0);
-    if (mb_read(demux->reader, header, sizeof(header)) != sizeof(header)) return 0;
-    if (memcmp(header, "ID3", 3) != 0) return 0;
-    if ((header[6] | header[7] | header[8] | header[9]) & 0x80) return 0;
-
-    off_t size = 10 + ((off_t)header[6] << 21 | (off_t)header[7] << 14 | (off_t)header[8] << 7 |
-                       (off_t)header[9]);
-    if (header[5] & 0x10) size += 10;
-    return size;
+static off_t read_id3v2(es_audio_demux_t *demux) {
+    off_t start = 0;
+    media_tags_read_id3v2(demux->reader, 0, &start, &demux->info.tags);
+    return start;
 }
 
 static off_t trim_tail(es_audio_demux_t *demux, off_t end) {
@@ -265,8 +258,9 @@ es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *are
         return NULL;
     }
 
-    demux->data_start = skip_id3v2(demux);
+    demux->data_start = read_id3v2(demux);
     demux->data_end = trim_tail(demux, mb_size(demux->reader));
+    media_tags_read_id3v1(demux->reader, mb_size(demux->reader), &demux->info.tags);
     if (demux->data_end <= demux->data_start) {
         *error = "this file carries no audio";
         es_audio_demux_close(demux);
@@ -321,6 +315,7 @@ es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *are
 
 void es_audio_demux_close(es_audio_demux_t *demux) {
     if (!demux) return;
+    media_tags_free(&demux->info.tags);
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux);
 }

@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "media_buffer.h"
+#include "media_tags.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,7 @@ typedef struct {
     uint8_t channels;
     int64_t duration_us;
     bool duration_exact;
+    media_tags_t tags;
 } es_audio_info_t;
 
 typedef struct {

@@ -10,6 +10,7 @@
 #include <sys/types.h>
 
 #include "media_buffer.h"
+#include "media_tags.h"
 #include "riff_audio.h"
 #include "riff_format.h"
 
@@ -36,3 +37,7 @@ riff_audio_codec_t riff_audio_codec_of_tag(uint16_t format_tag);
 /* Reads a WAVEFORMATEX body of `chunk_size` bytes from the current position.
  * `out->extra` is heap memory the caller frees. */
 bool riff_read_wave_format(media_buffer_t *reader, uint32_t chunk_size, riff_audio_format_t *out);
+
+/* Reads the chunks of a LIST INFO whose type fourcc the caller has already
+ * consumed, up to `end`. */
+void riff_read_info(media_buffer_t *reader, off_t end, media_tags_t *tags);

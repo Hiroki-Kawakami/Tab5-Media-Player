@@ -96,6 +96,7 @@ bool MkvDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.frame_interval_us = mkv->video.frame_interval_us;
     info_.duration_us = mkv->duration_us;
     info_.seekable = mkv->seekable;
+    demuxer_apply_tags(mkv->tags, &info_);
     return true;
 }
 

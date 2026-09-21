@@ -90,6 +90,20 @@ bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<ui
     return true;
 }
 
+void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info) {
+    info->tags.title = media_tags_get(&tags, MEDIA_TAG_TITLE);
+    info->tags.artist = media_tags_get(&tags, MEDIA_TAG_ARTIST);
+    info->tags.album = media_tags_get(&tags, MEDIA_TAG_ALBUM);
+    info->tags.album_artist = media_tags_get(&tags, MEDIA_TAG_ALBUM_ARTIST);
+    info->tags.track = media_tags_get(&tags, MEDIA_TAG_TRACK);
+    info->tags.date = media_tags_get(&tags, MEDIA_TAG_DATE);
+
+    if (!tags.cover.data || !tags.cover.size) return;
+    info->cover.data = std::make_shared<std::vector<uint8_t>>(
+        tags.cover.data, tags.cover.data + tags.cover.size);
+    info->cover.format = tags.cover.format == MEDIA_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
+}
+
 MediaKind demuxer_media_kind(const char *name) {
     const Format *format = format_of(name);
     return format ? format->kind : MediaKind::None;

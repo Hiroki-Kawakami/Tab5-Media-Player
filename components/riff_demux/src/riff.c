@@ -98,3 +98,33 @@ bool riff_read_wave_format(media_buffer_t *reader, uint32_t chunk_size, riff_aud
     out->extra = read_extra(reader, available, &out->extra_size);
     return true;
 }
+
+static bool info_field(uint32_t fourcc, media_tag_field_t *field) {
+    switch (fourcc) {
+    case RIFF_ID_INAM: *field = MEDIA_TAG_TITLE; return true;
+    case RIFF_ID_IART: *field = MEDIA_TAG_ARTIST; return true;
+    case RIFF_ID_IPRD: *field = MEDIA_TAG_ALBUM; return true;
+    case RIFF_ID_ICRD: *field = MEDIA_TAG_DATE; return true;
+    case RIFF_ID_IPRT:
+    case RIFF_ID_ITRK: *field = MEDIA_TAG_TRACK; return true;
+    default: return false;
+    }
+}
+
+void riff_read_info(media_buffer_t *reader, off_t end, media_tags_t *tags) {
+    riff_chunk_t chunk;
+    off_t body = 0;
+    off_t next = 0;
+    while (riff_next_chunk(reader, end, &chunk, &body, &next)) {
+        media_tag_field_t field;
+        if (info_field(chunk.fourcc, &field) && chunk.size) {
+            char text[MEDIA_TAG_TEXT_BYTES];
+            const size_t want = chunk.size < sizeof(text) ? chunk.size : sizeof(text);
+            if (riff_read(reader, text, want)) {
+                media_tags_set(tags, field, text, want, MEDIA_TEXT_LATIN1);
+            }
+        }
+        if (next > end) break;
+        mb_seek(reader, next);
+    }
+}

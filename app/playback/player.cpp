@@ -230,6 +230,7 @@ static void reader_stop() {
     if (player_core.demuxer) player_core.demuxer->interrupt(true);
     if (xSemaphoreTake(s_reader_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) == pdTRUE) {
         xSemaphoreGive(s_reader_idle);
+        if (player_core.demuxer) player_core.demuxer->interrupt(false);
     } else {
         ESP_LOGW(TAG, "reader did not settle");
     }
@@ -346,6 +347,8 @@ static void handle_open(const std::string &path) {
     summary.file_bytes = player_core.demuxer->bytes();
     summary.duration_us = info.duration_us;
     summary.seekable = info.seekable;
+    summary.tags = info.tags;
+    summary.cover = info.cover;
     summary.video.codec = info.video.codec;
     summary.video.width = info.video.width;
     summary.video.height = info.video.height;

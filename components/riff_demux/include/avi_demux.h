@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "media_buffer.h"
+#include "media_tags.h"
 #include "riff_audio.h"
 
 #ifdef __cplusplus
@@ -46,6 +47,7 @@ typedef struct {
         uint32_t codec_private_size;
     } audio;
     bool seekable;
+    media_tags_t tags;
 } avi_info_t;
 
 typedef enum {

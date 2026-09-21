@@ -351,10 +351,14 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
             } else if (list_type == AVI_movi) {
                 demux->movi_start = mb_tell(demux->reader);
                 demux->movi_end = next;
+            } else if (list_type == RIFF_ID_INFO) {
+                riff_read_info(demux->reader, next, &demux->info.tags);
             }
         } else if (chunk.fourcc == AVI_idx1) {
             demux->idx1_offset = body;
             demux->idx1_size = chunk.size;
+        } else if (chunk.fourcc == RIFF_ID_id3 || chunk.fourcc == RIFF_ID_ID3) {
+            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags);
         }
         mb_seek(demux->reader, next);
     }
@@ -402,6 +406,7 @@ avi_demux_t *avi_demux_open(const char *path, const media_arena_t *arena, const 
 
 void avi_demux_close(avi_demux_t *demux) {
     if (!demux) return;
+    media_tags_free(&demux->info.tags);
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->points);
     heap_caps_free(demux->key_flags);

@@ -95,6 +95,7 @@ bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.frame_interval_us = mp4->video.frame_interval_us;
     info_.duration_us = mp4->duration_us;
     info_.seekable = mp4->seekable;
+    demuxer_apply_tags(mp4->tags, &info_);
     return true;
 }
 

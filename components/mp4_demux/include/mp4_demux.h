@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "media_buffer.h"
+#include "media_tags.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,6 +53,7 @@ typedef struct {
     } audio;
     int64_t duration_us;
     bool seekable;
+    media_tags_t tags;
 } mp4_info_t;
 
 typedef enum {

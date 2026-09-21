@@ -6,6 +6,7 @@
 #pragma once
 #include "media_types.hpp"
 #include "media_buffer.h"
+#include "media_tags.h"
 #include <memory>
 #include <string>
 
@@ -33,6 +34,8 @@ protected:
     MediaInfo info_;
     std::string error_;
 };
+
+void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info);
 
 bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<uint8_t> *annexb,
                            uint8_t *nal_length_size);

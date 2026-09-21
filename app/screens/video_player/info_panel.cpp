@@ -139,6 +139,21 @@ static void build_general(lv_obj_t *contents, const std::string &name,
     add_row(section, "Seek", summary.seekable ? "Supported" : "Unsupported");
 }
 
+static void build_tags(lv_obj_t *contents, const MediaTags &tags) {
+    auto section = lv_setting_section_create(contents, "Tags", &kPanelColors);
+    lv_obj_update_layout(section);
+    const int32_t width = lv_obj_get_content_width(section);
+
+    if (!tags.title.empty()) add_wide_row(section, "Title", tags.title.c_str(), width);
+    if (!tags.artist.empty()) add_wide_row(section, "Artist", tags.artist.c_str(), width);
+    if (!tags.album.empty()) add_wide_row(section, "Album", tags.album.c_str(), width);
+    if (!tags.album_artist.empty()) {
+        add_wide_row(section, "Album Artist", tags.album_artist.c_str(), width);
+    }
+    if (!tags.track.empty()) add_row(section, "Track", tags.track.c_str());
+    if (!tags.date.empty()) add_row(section, "Date", tags.date.c_str());
+}
+
 static void build_video(lv_obj_t *contents, const MediaSummary &summary) {
     auto section = lv_setting_section_create(contents, "Video", &kPanelColors);
     char text[64];
@@ -264,6 +279,7 @@ void player_info_panel_build(lv_obj_t *root, const std::string &name, const Medi
 
     build_general(contents, name, summary);
     if (!summary.valid) return;
+    if (!summary.tags.empty()) build_tags(contents, summary.tags);
     build_video(contents, summary);
     build_audio(contents, summary);
     cache_contents(contents);

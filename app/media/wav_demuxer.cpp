@@ -56,6 +56,7 @@ bool WavDemuxer::open(const std::string &path, const media_arena_t &arena) {
                                      wav->codec_private + wav->codec_private_size);
     info_.duration_us = wav->duration_us;
     info_.seekable = true;
+    demuxer_apply_tags(wav->tags, &info_);
     return true;
 }
 

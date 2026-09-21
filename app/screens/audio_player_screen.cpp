@@ -5,11 +5,10 @@
 
 #include "audio_player_screen.hpp"
 #include "media_player.hpp"
-#include "playback/player.hpp"
+#include "screens/cover_art.hpp"
 #include "screens/media_controls.hpp"
 #include "resources.h"
 
-#include <algorithm>
 #include <cstdio>
 
 static constexpr uint32_t kRefreshPeriodMs = 500;
@@ -19,7 +18,7 @@ static constexpr int32_t kPad = 24;
 static constexpr int32_t kGap = 24;
 static constexpr int32_t kTimeWidth = 100;
 static constexpr int32_t kIconButton = 72;
-static constexpr int32_t kMinArtwork = 160;
+static constexpr int32_t kArtworkSide = 552;
 static constexpr int32_t kArtworkRadius = 24;
 
 static constexpr uint32_t kForegroundColor = 0x101010;
@@ -66,6 +65,12 @@ static std::string format_summary(const MediaSummary &summary) {
     return text;
 }
 
+static std::string format_tags(const MediaTags &tags) {
+    if (tags.artist.empty()) return tags.album;
+    if (tags.album.empty()) return tags.artist;
+    return tags.artist + " - " + tags.album;
+}
+
 void AudioPlayerScreen::build() {
     createNavigation(name_.c_str(), LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
     lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
@@ -88,6 +93,10 @@ void AudioPlayerScreen::relayout() {
 void AudioPlayerScreen::buildContents() {
     lv_obj_clean(contents_);
     play_label_ = nullptr;
+    artwork_ = nullptr;
+    artwork_icon_ = nullptr;
+    artwork_image_ = nullptr;
+    title_label_ = nullptr;
     repeat_label_ = nullptr;
     seek_ = nullptr;
     elapsed_label_ = nullptr;
@@ -98,6 +107,7 @@ void AudioPlayerScreen::buildContents() {
     scrubbing_ = false;
     shown_elapsed_s_ = -2;
     shown_total_s_ = -2;
+    shown_title_.clear();
     shown_subtitle_.clear();
 
     landscape_ = isLandscape();
@@ -111,29 +121,17 @@ void AudioPlayerScreen::buildContents() {
     lv_obj_update_layout(root_);
 
     const int32_t width = lv_obj_get_width(contents_) - 2 * kPad;
-    const int32_t height = lv_obj_get_height(contents_) - 2 * kPad;
     lv_obj_t *controls = create_column(contents_);
     lv_obj_set_height(controls, LV_SIZE_CONTENT);
 
-    if (landscape_) {
-        const int32_t side = std::max(std::min(height, width / 2), kMinArtwork);
-        lv_obj_set_width(controls, width - side - kGap);
-        buildTitle(controls);
-        buildSeekRow(controls);
-        buildTransport(controls);
-        buildVolumeRow(controls);
-        buildArtwork(contents_, side);
-    } else {
-        lv_obj_set_width(controls, width);
-        buildTitle(controls);
-        buildSeekRow(controls);
-        buildTransport(controls);
-        buildVolumeRow(controls);
-        lv_obj_update_layout(contents_);
-        const int32_t room = height - lv_obj_get_height(controls) - kGap;
-        lv_obj_t *artwork = buildArtwork(contents_, std::clamp(room, kMinArtwork, width));
-        lv_obj_move_to_index(artwork, 0);
-    }
+    lv_obj_set_width(controls, landscape_ ? width - kArtworkSide - kGap : width);
+    buildTitle(controls);
+    buildSeekRow(controls);
+    buildTransport(controls);
+    buildVolumeRow(controls);
+
+    lv_obj_t *artwork = buildArtwork(contents_, kArtworkSide);
+    if (!landscape_) lv_obj_move_to_index(artwork, 0);
 
     setPlayIcon(playing_);
     setRepeatMode(repeat_);
@@ -141,17 +139,35 @@ void AudioPlayerScreen::buildContents() {
 }
 
 lv_obj_t *AudioPlayerScreen::buildArtwork(lv_obj_t *parent, int32_t side) {
-    lv_obj_t *artwork = lv_container_create(parent, lv_color_hex(kArtworkColor));
-    lv_obj_set_size(artwork, side, side);
-    lv_obj_set_style_radius(artwork, kArtworkRadius, 0);
-    lv_obj_remove_flag(artwork, LV_OBJ_FLAG_SCROLLABLE);
+    artwork_ = lv_container_create(parent, lv_color_hex(kArtworkColor));
+    artwork_side_ = side;
+    lv_obj_set_size(artwork_, side, side);
+    lv_obj_set_style_radius(artwork_, kArtworkRadius, 0);
+    lv_obj_set_style_clip_corner(artwork_, true, 0);
+    lv_obj_remove_flag(artwork_, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *icon = lv_label_create(artwork);
-    lv_label_set_text(icon, TABLER_MUSIC);
-    lv_obj_set_style_text_font(icon, &icon_120, 0);
-    lv_obj_set_style_text_color(icon, lv_color_hex(kArtworkIconColor), 0);
-    lv_obj_center(icon);
-    return artwork;
+    artwork_icon_ = lv_label_create(artwork_);
+    lv_label_set_text(artwork_icon_, TABLER_MUSIC);
+    lv_obj_set_style_text_font(artwork_icon_, &icon_120, 0);
+    lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kArtworkIconColor), 0);
+    lv_obj_center(artwork_icon_);
+
+    applyArtwork();
+    return artwork_;
+}
+
+void AudioPlayerScreen::applyArtwork() {
+    if (!artwork_ || artwork_image_ || !cover_) return;
+
+    artwork_image_ = cover_art_create(artwork_, cover_, artwork_side_);
+    if (!artwork_image_) {
+        cover_ = {};
+        return;
+    }
+    if (artwork_icon_) {
+        lv_obj_delete(artwork_icon_);
+        artwork_icon_ = nullptr;
+    }
 }
 
 void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
@@ -161,12 +177,12 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(box, 8, 0);
 
-    lv_obj_t *title = lv_label_create(box);
-    lv_obj_set_width(title, lv_pct(100));
-    lv_obj_set_style_text_font(title, lv_widgets_title_font(), 0);
-    lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(title, name_.c_str());
+    title_label_ = lv_label_create(box);
+    lv_obj_set_width(title_label_, lv_pct(100));
+    lv_obj_set_style_text_font(title_label_, lv_widgets_title_font(), 0);
+    lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text(title_label_, name_.c_str());
 
     subtitle_label_ = lv_label_create(box);
     lv_obj_set_width(subtitle_label_, lv_pct(100));
@@ -324,10 +340,23 @@ void AudioPlayerScreen::refresh() {
         lv_slider_set_value(seek_, (int32_t)value, LV_ANIM_OFF);
     }
 
+    const MediaSummary summary = player_media_summary();
+    if (!cover_ && summary.cover) {
+        cover_ = summary.cover;
+        applyArtwork();
+    }
+
+    const std::string &title = summary.tags.title.empty() ? name_ : summary.tags.title;
+    if (title != shown_title_) {
+        shown_title_ = title;
+        lv_label_set_text(title_label_, title.c_str());
+    }
+
     std::string message = status.state == PlayerState::Failed ? status.error : std::string();
     if (message.empty()) message = status.audio_note;
     const bool failed = !message.empty();
-    if (message.empty()) message = format_summary(player_media_summary());
+    if (message.empty()) message = format_tags(summary.tags);
+    if (message.empty()) message = format_summary(summary);
     if (message != shown_subtitle_) {
         shown_subtitle_ = message;
         lv_label_set_text(subtitle_label_, message.c_str());
@@ -338,6 +367,7 @@ void AudioPlayerScreen::refresh() {
 
 void AudioPlayerScreen::onEnter() {
     s_active = this;
+    cover_ = {};
     player_open(path_);
     player_set_loop(repeat_ != RepeatMode::Off);
 

@@ -1,0 +1,79 @@
+# Tagged samples: Music/z_tag_* (ID3v2.4 + JPEG cover, ID3v2.3 + wide PNG cover,
+# ID3v1 only, MP4 ilst + covr, WAVE LIST INFO) and Movies/z_tag.mkv.
+settle
+tap 360 226
+settle
+tap 360 320
+settle
+tap 360 1200
+wait 1500
+capture tags_id3v24.jpg
+imu rot90
+wait 800
+settle
+capture tags_id3v24_landscape.jpg
+imu rot0
+wait 800
+settle
+tap 60 60
+settle
+tap 360 1120
+wait 1500
+capture tags_id3v23_png.jpg
+tap 60 60
+settle
+tap 360 1040
+wait 1500
+capture tags_id3v1.jpg
+tap 60 60
+settle
+tap 360 880
+wait 1500
+capture tags_mp4_ilst.jpg
+tap 60 60
+settle
+tap 360 960
+wait 1500
+capture tags_wav_info.jpg
+tap 60 60
+settle
+tap 60 60
+settle
+tap 360 240
+settle
+tap 360 1040
+wait 2500
+tap 360 640
+wait 500
+tap 676 40
+wait 800
+capture tags_mkv_info.jpg
+tap 668 692
+wait 600
+settle
+tap 40 40
+settle
+tap 360 960
+wait 2500
+tap 360 640
+wait 500
+tap 676 40
+wait 800
+capture tags_avi_info.jpg
+tap 668 692
+wait 600
+settle
+tap 40 40
+settle
+tap 60 60
+settle
+tap 360 480
+settle
+tap 360 1040
+wait 2500
+tap 360 640
+wait 500
+tap 676 40
+wait 800
+capture tags_mp4_info.jpg
+imu release

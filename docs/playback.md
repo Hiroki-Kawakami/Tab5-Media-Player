@@ -331,6 +331,12 @@ memory instead of copying packets out. It uses `open()/read()` rather than
 - **A view can wait on the player** (pins held by the player or the ring), so
   `reader_stop()` interrupts the buffer before waiting for the reader to park.
   An interrupted read rewinds the demuxer to the element it started on.
+- **The interrupt is dropped as soon as the reader has parked**, not when the
+  reader is started again: `Demuxer::seek()` runs in between, and the MP3/AAC
+  resync reads the file to find its frame boundaries. With the flag still up
+  `wait_for()` refuses every read, so those seeks failed silently — and only
+  where the target was outside the ring, which is why short files (the whole
+  file resident) and every index-driven seek looked fine.
 - **Pins are dropped wholesale** (`releaseAll()`) in `refill_free_queues()`,
   after every holder has been flushed. A packet still queued in a ring is never
   released one by one.
@@ -554,6 +560,51 @@ guessing the extension.
   `mdhd` when `mvhd` has none. A video track that is present but unsupported
   still fails the open, so a broken video file does not quietly play as audio.
 
+## Tags and cover art
+
+`components/media_tags` holds the struct every demuxer fills, the conversion to
+UTF-8 and the ID3v2/ID3v1 parser. ID3 is shared rather than living in
+`es_audio_demux` because it turns up in more than one container: a WAV or AVI
+`id3 ` chunk is the same bytes.
+
+- **Text is fixed-size UTF-8 inside the struct, not heap strings.** The C info
+  structs are plain values the C++ layer copies out of; a pointer per field
+  would put an ownership rule on every one of them to save a few hundred bytes.
+  The cover art is the only allocation, and `media_tags_free()` at demux close
+  is the only rule.
+- **The first non-empty value of a field wins.** That is what lets a parser
+  walk from the better source to the worse one without tracking which it has
+  seen: ID3v2, then the ID3v1 block at the end of the same MP3.
+- **The cover bytes are copied once per layer.** The demuxer copies them out of
+  a buffer of its own (MP4's `covr` sits inside the `moov` it already holds),
+  and the C++ wrapper copies them into a `shared_ptr` the UI can outlive the
+  demuxer with — the player task owns the demuxer and closes it without asking
+  the screen. 2 MB is the cap; more than that is dropped rather than left to
+  compete with the arena for PSRAM.
+- **Only JPEG and PNG are kept, decided from the first bytes** rather than the
+  declared type, because that is what `image_framework` decodes. Every
+  Matroska attachment is offered to the same check, so a font attachment is
+  rejected without a rule about names.
+- **Matroska `Tags` and `Attachments` may sit after the clusters**, where the
+  header walk stops. Their `SeekHead` entries are recorded like the Cues' one
+  and read before the walk returns; a file with neither loses nothing.
+- **Matroska target levels are ignored.** ffmpeg writes a file-level TITLE at
+  the album level (50), so honouring the level would turn every song title into
+  an album name.
+- **RIFF `LIST INFO` is why the WAV walk no longer stops at `data`.** The list
+  is written after the audio as often as before it, and stepping over a chunk
+  is a seek.
+- **The artwork is decoded on the LVGL task**, at the size of the square, with
+  the JPEG decoder's 1/N hint doing most of the scaling. It is decoded once per
+  layout, kept as an RGB565 image in PSRAM and freed with the image object, the
+  same shape as the Media Info cache. **It is slow enough to be felt**: a
+  500 KB cover is 1.2 s of software JPEG on the board (16 ms on the host), and
+  the UI — the seek bar included — is frozen for that long as the screen opens.
+  Prefetching the artwork is the fix; doing the same decode on a worker task
+  only moves the wait.
+- **Non-ASCII tags render as missing-glyph boxes**, the same limitation file
+  names have (see [architecture](architecture.md#sd-card)).
+
 ## The audio screen
 
 `AudioPlayerScreen` is a plain `ScreenManager` screen on the main display, so
@@ -563,13 +614,20 @@ the whole screen rather than something sitting on top of a picture. Rotation is
 `LV_EVENT_SIZE_CHANGED` on the root, which rebuilds the contents on the next
 LVGL tick like Home does.
 
-- **The artwork is a square sized from what the controls leave over**, so it is
-  built after them and moved in front of them. In portrait that is the width or
-  the leftover height, whichever is smaller; in landscape the controls take the
-  left half and the square takes the contents height.
-- **It is a placeholder.** No demuxer reads tags yet, so the title is the file
-  name and the second line carries the audio format, or the failure in orange.
-  Reading title, artist and cover art is a separate step.
+- **The artwork is one fixed 552 px square in both orientations**, so that a
+  rotation can reuse the artwork it has already decoded rather than asking for
+  another size. The number is what the landscape layout happened to leave and
+  is meant to be tuned by hand, not derived. It is still built after the
+  controls and, in portrait, moved in front of them.
+- **The title is the tag title and the second line is artist and album**,
+  falling back to the file name and the audio format when the file carries no
+  tags; a failure or an audio note still takes the second line, in orange. The
+  navigation bar keeps the file name either way, so the file a title belongs to
+  stays identifiable.
+- **Tags and cover art arrive after the screen is built.** The summary is only
+  valid once the file is open, so the periodic refresh is what fills them in,
+  and the artwork replaces the note icon in place rather than rebuilding the
+  layout.
 - **The transport widgets are shared with the video player**
   (`app/screens/media_controls.*`): the icon buttons, the sliders, the time
   text and the whole behaviour of the volume row, which is the part that must
@@ -964,3 +1022,24 @@ The same script then plays `d_pcm.wav` (`-c:a pcm_s16le`), `e_adpcm.wav`
 with a seek to the end), `g_vbr.mp3` (`-c:a libmp3lame -q:a 4`, so ffmpeg
 writes a Xing header) and `h_aac.aac` (`-c:a aac -f adts`), all 6 s of
 `sine` at `-ac 2`, and ends on the empty `track.aac`, which fails.
+
+`simulator/verify/media_tags.txt` checks the tag path: `Music/z_tag_v24.mp3`
+(ID3v2.4 with a 600x600 JPEG cover), `z_tag_v23.mp3` (ID3v2.3 with a 640x360
+PNG, which letterboxes inside the square), `z_tag_v1.mp3` (an ID3v1 block
+appended by hand — ffmpeg's `-write_id3v1` writes nothing when the metadata
+went into an ID3v2 tag), `z_tag.m4a` (`ilst` with `covr`) and `z_tag.wav`
+(`LIST INFO`), then the Media Info panel of `Movies/z_tag.mkv`,
+`Movies/z_tag.avi` and `Test MP4/z_tag.mp4`. All of them are remuxes of the
+fixtures already there, named to sort last so no other script's rows move:
+
+```sh
+nix develop -c ffmpeg -f lavfi -i testsrc=size=600x600:rate=1 -frames:v 1 cover.jpg
+nix develop -c ffmpeg -i simulator/sdcard/Music/f_mp3.mp3 -i cover.jpg \
+    -map 0:a -map 1:v -c copy -id3v2_version 4 -disposition:v attached_pic \
+    -metadata title="Night Drive" -metadata artist="The Tab Fives" \
+    -metadata album="Pocket Symphony" -metadata track="3/12" -metadata date="2026" \
+    simulator/sdcard/Music/z_tag_v24.mp3
+```
+
+The Matroska one also carries the cover as an attachment
+(`-attach cover.jpg -metadata:s:t mimetype=image/jpeg`).

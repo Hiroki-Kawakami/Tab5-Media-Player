@@ -36,6 +36,8 @@ struct MediaSummary {
     int64_t file_bytes = 0;
     int64_t duration_us = 0;
     bool seekable = false;
+    MediaTags tags;
+    CoverArt cover;
     struct {
         CodecId codec = CodecId::None;
         uint32_t width = 0;

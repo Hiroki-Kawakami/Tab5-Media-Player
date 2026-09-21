@@ -101,6 +101,7 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.frame_interval_us = interval_us_;
     info_.duration_us = (int64_t)avi->video.frame_count * interval_us_;
     info_.seekable = avi->seekable;
+    demuxer_apply_tags(avi->tags, &info_);
     next_video_pts_us_ = 0;
     return true;
 }

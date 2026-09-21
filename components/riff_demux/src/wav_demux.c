@@ -100,12 +100,19 @@ wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const 
     while (riff_next_chunk(demux->reader, file_end, &chunk, &body, &next)) {
         if (chunk.fourcc == RIFF_ID_fmt && !have_format) {
             have_format = riff_read_wave_format(demux->reader, chunk.size, &format);
-        } else if (chunk.fourcc == RIFF_ID_data) {
+        } else if (chunk.fourcc == RIFF_ID_data && !demux->data_start) {
             demux->data_start = body;
             demux->data_end = body + chunk.size;
             if (chunk.size == 0 || demux->data_end > file_end) demux->data_end = file_end;
-            if (have_format) break;
             next = demux->data_end + (demux->data_end & 1);
+        } else if (chunk.fourcc == RIFF_ID_LIST) {
+            uint32_t list_type = 0;
+            if (riff_read(demux->reader, &list_type, sizeof(list_type)) &&
+                list_type == RIFF_ID_INFO) {
+                riff_read_info(demux->reader, next, &demux->info.tags);
+            }
+        } else if (chunk.fourcc == RIFF_ID_id3 || chunk.fourcc == RIFF_ID_ID3) {
+            media_tags_read_id3v2(demux->reader, body, NULL, &demux->info.tags);
         }
         if (next > file_end) break;
         mb_seek(demux->reader, next);
@@ -156,6 +163,7 @@ wav_demux_t *wav_demux_open(const char *path, const media_arena_t *arena, const 
 
 void wav_demux_close(wav_demux_t *demux) {
     if (!demux) return;
+    media_tags_free(&demux->info.tags);
     if (demux->reader) mb_close(demux->reader);
     heap_caps_free(demux->extra);
     heap_caps_free(demux);

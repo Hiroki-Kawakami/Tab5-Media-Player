@@ -42,6 +42,7 @@ bool EsAudioDemuxer::open(const std::string &path, const media_arena_t &arena) {
     info_.audio.bits = 16;
     info_.duration_us = es->duration_us;
     info_.seekable = true;
+    demuxer_apply_tags(es->tags, &info_);
     return true;
 }
 

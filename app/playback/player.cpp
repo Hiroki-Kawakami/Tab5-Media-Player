@@ -48,7 +48,6 @@ enum class Command {
     Seek,
     Loop,
     Eject,
-    SuspendVideo,
     Repaint,
 };
 
@@ -118,7 +117,6 @@ static int64_t s_interval_us;
 static int64_t s_reorder_lead_us;
 static int64_t s_max_pts_us;
 
-static bool s_video_suspended;
 static bool s_want_poster;
 static bool s_have_pending;
 static int s_pending_slot;
@@ -420,7 +418,6 @@ static void close_source() {
 }
 
 static void reset_timeline() {
-    s_video_suspended = false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_summary = {};
     s_audio_note.clear();
@@ -611,15 +608,9 @@ static void handle_seek(int64_t position_us) {
     }
 }
 
-static void handle_suspend_video(bool suspended) {
-    if (s_video_suspended == suspended) return;
-    s_video_suspended = suspended;
-    if (!suspended) skip_to_keyframe(INT64_MIN);
-}
-
 static void handle_repaint() {
     if (!video_presenter_needs_source() || s_repaint_slot < 0) return;
-    if (s_state == PlayerState::Playing && !s_video_suspended) return;
+    if (s_state == PlayerState::Playing) return;
     submit(s_repaint_slot, true, 0);
 }
 
@@ -646,7 +637,6 @@ static void handle_command(const CommandItem &item) {
     case Command::Seek:    handle_seek(item.value); break;
     case Command::Loop:    handle_loop(item.value != 0); break;
     case Command::Eject:   handle_eject(*item.path); break;
-    case Command::SuspendVideo: handle_suspend_video(item.value != 0); break;
     case Command::Repaint: handle_repaint(); break;
     }
     delete item.path;
@@ -703,19 +693,6 @@ static void step_playing() {
     const int64_t now = media_clock_us();
     const int slot = s_pending_slot;
     const VideoSlot &frame = s_video[slot];
-    if (s_video_suspended) {
-        if (now < due) {
-            const TickType_t ticks = pdMS_TO_TICKS((due - now) / 1000);
-            vTaskDelay(ticks ? ticks : 1);
-            return;
-        }
-        s_have_pending = false;
-        xSemaphoreTake(s_lock, portMAX_DELAY);
-        s_next_us = pts + s_interval_us;
-        xSemaphoreGive(s_lock);
-        slot_release(slot);
-        return;
-    }
     if (s_skip_to_keyframe && (!frame.keyframe || before(pts, s_skip_until_us))) {
         s_have_pending = false;
         xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -816,9 +793,6 @@ void player_restart() { send_command(Command::Restart); }
 void player_seek(int64_t position_us) { send_command(Command::Seek, nullptr, position_us); }
 void player_set_loop(bool loop) { send_command(Command::Loop, nullptr, loop ? 1 : 0); }
 void player_eject(const std::string &mount_point) { send_command(Command::Eject, &mount_point); }
-void player_suspend_video(bool suspended) {
-    send_command(Command::SuspendVideo, nullptr, suspended ? 1 : 0);
-}
 void player_repaint() { send_command(Command::Repaint); }
 
 MediaSummary player_media_summary() {

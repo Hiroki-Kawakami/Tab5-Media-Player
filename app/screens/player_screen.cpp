@@ -184,6 +184,7 @@ void PlayerScreen::closeOverlay() {
     volume_label_ = nullptr;
     volume_slider_ = nullptr;
     scrubbing_ = false;
+    info_paused_ = false;
 }
 
 void PlayerScreen::buildUi() {
@@ -239,6 +240,13 @@ void PlayerScreen::setMode(UiMode mode) {
     if (!ui_ || mode == mode_) return;
     mode_ = mode;
 
+    if (mode == UiMode::Info) {
+        info_paused_ = player_status().state == PlayerState::Playing;
+        if (info_paused_) player_pause();
+    }
+    const bool resume = info_paused_ && mode != UiMode::Info;
+    if (resume) info_paused_ = false;
+
     /* The UI leaving an area has to be painted out before the video takes it
      * back, and the video has to be clipped out of an area before the UI is
      * drawn into it. */
@@ -247,10 +255,7 @@ void PlayerScreen::setMode(UiMode mode) {
         lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
-    if (mode != UiMode::Info) {
-        lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
-        player_suspend_video(false);
-    }
+    if (mode != UiMode::Info) lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
@@ -270,6 +275,13 @@ void PlayerScreen::setMode(UiMode mode) {
     if (mode == UiMode::Hidden) return;
     lv_display_trigger_activity(ui_);
     refresh();
+
+    /* After refresh(): the command is async, so the status it reads there still
+     * says paused and the icon would flip back. */
+    if (resume) {
+        player_play();
+        setPlayIcon(true);
+    }
 }
 
 void PlayerScreen::requestMode(UiMode mode) {
@@ -312,6 +324,7 @@ void PlayerScreen::onEnter() {
     s_active = this;
     rotation_ = ui_orientation_current();
     mode_ = UiMode::Bars;
+    info_paused_ = false;
     if (!openOverlay()) return;
 
     const SharedSram sram = media_player_acquire_sram();
@@ -375,11 +388,9 @@ void PlayerScreen::showStartError(const std::string &message) {
 
 void PlayerScreen::populateInfo() {
     if (!info_) return;
-    player_suspend_video(false);
     lv_obj_clean(info_);
     player_info_panel_build(info_, name_, player_media_summary(),
-                            [this] { requestMode(UiMode::Bars); },
-                            [](bool scrolling) { player_suspend_video(scrolling); });
+                            [this] { requestMode(UiMode::Bars); });
     lv_obj_update_layout(info_);
 }
 
@@ -623,6 +634,7 @@ void PlayerScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t us) {
 }
 
 void PlayerScreen::tick() {
+    if (mode_ == UiMode::Info) return;
     const PlayerState state = player_status().state;
     if (auto_start_ && (state == PlayerState::Paused || state == PlayerState::Failed)) {
         auto_start_ = false;

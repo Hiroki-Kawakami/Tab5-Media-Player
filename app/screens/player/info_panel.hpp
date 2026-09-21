@@ -10,5 +10,4 @@
 #include "playback/player.hpp"
 
 void player_info_panel_build(lv_obj_t *root, const std::string &name, const MediaSummary &summary,
-                             std::function<void()> on_close,
-                             std::function<void(bool)> on_scroll);
+                             std::function<void()> on_close);

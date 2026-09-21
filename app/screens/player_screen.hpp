@@ -54,6 +54,7 @@ private:
     bool scrubbing_ = false;
     bool auto_start_ = true;
     bool stop_bars_shown_ = false;
+    bool info_paused_ = false;
     uint32_t auto_start_tick_ = 0;
     RepeatMode repeat_ = RepeatMode::Off;
     UiMode mode_ = UiMode::Bars;

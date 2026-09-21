@@ -180,14 +180,16 @@ after the first is a copy instead of fills, rounded rects and glyph blending.
 Nothing in the panel changes while it is open, so one render is enough. If the
 allocation fails the widgets are simply left in place.
 
-Scrolling it is still the one place where the UI and the video are both busy at
-once, and on the board neither keeps up: the scroll crawls and playback
-stalls. So a
-scroll suspends the video — `player_suspend_video()` drops video packets as
-they come due instead of decoding them, which leaves the reader pacing the file
-as before and the audio playing, and the picture picks up at the next keyframe
-when the scroll ends. It is cleared whenever the panel is built or left, since
-a panel torn down mid-scroll never sends the closing event.
+Even cached, the panel and the video are both busy at once on the board and
+neither keeps up: the scroll crawls and playback stalls. Suspending only the
+decoding while the scroll runs was not enough — the reader and the audio keep
+the memory bus busy, and the picture still broke up. So the panel plays over a
+stopped picture instead: `setMode()` pauses playback when Media Info opens, and
+plays again when it closes, but only if it was playing when the panel opened.
+Paused, the player task blocks on its command queue, which leaves the whole
+bus to the UI. Pausing before the insets move matters: `handle_repaint()`
+ignores a repaint while playing, so it is the pause that lets the still picture
+be redrawn into the area the panel leaves it.
 
 ## Home screen
 

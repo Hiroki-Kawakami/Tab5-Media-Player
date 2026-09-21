@@ -37,6 +37,9 @@ protected:
 
 void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info);
 
+MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,
+                                const std::string &audio_note);
+
 bool h264_config_to_annexb(const uint8_t *data, std::size_t size, std::vector<uint8_t> *annexb,
                            uint8_t *nal_length_size);
 

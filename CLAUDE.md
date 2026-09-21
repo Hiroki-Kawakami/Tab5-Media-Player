@@ -21,6 +21,9 @@ submodule.
 - [`docs/mpeg2.md`](docs/mpeg2.md) — the in-house MPEG-2 decoder: scope, the
   row-parallel two-core design, the PIE IDCT, and bit-exact checks against
   `ffmpeg -idct simple`.
+- [`docs/metadata.md`](docs/metadata.md) — the background tags/cover-art/
+  thumbnail cache: the probe arena, image dedup, the budgets, and what stops
+  while the video player is open.
 - [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
   LVGL fonts, icon fonts and images from `app/resources/resources.json` at
   build time.

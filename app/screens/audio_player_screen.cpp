@@ -8,10 +8,13 @@
 #include "screens/cover_art.hpp"
 #include "screens/media_controls.hpp"
 #include "resources.h"
+#include "esp_timer.h"
 
 #include <cstdio>
 
 static constexpr uint32_t kRefreshPeriodMs = 500;
+static constexpr uint32_t kResolveTimeoutMs = 700;
+static constexpr int64_t kPrefetchDelayUs = 2000000;
 static constexpr int64_t kPrevTrackUs = 3000000;
 static constexpr int32_t kSeekRange = 1000;
 static constexpr int32_t kPad = 24;
@@ -46,29 +49,36 @@ static lv_obj_t *create_column(lv_obj_t *parent) {
     return column;
 }
 
-static std::string format_summary(const MediaSummary &summary) {
-    if (!summary.valid || summary.audio.codec == CodecId::None) return {};
+static std::string format_audio(CodecId codec, unsigned rate, unsigned channel_count) {
+    if (codec == CodecId::None) return {};
     char text[64];
-    const char *codec = codec_name(summary.audio.codec);
-    const unsigned rate = summary.audio.sample_rate;
-    const char *channels = summary.audio.channels == 1   ? "mono"
-                         : summary.audio.channels == 2   ? "stereo"
-                                                         : nullptr;
+    const char *name = codec_name(codec);
+    const char *channels = channel_count == 1   ? "mono"
+                         : channel_count == 2   ? "stereo"
+                                                : nullptr;
     if (!rate) {
-        snprintf(text, sizeof(text), "%s", codec);
+        snprintf(text, sizeof(text), "%s", name);
     } else if (channels) {
-        snprintf(text, sizeof(text), "%s  %.1f kHz  %s", codec, rate / 1000.0, channels);
+        snprintf(text, sizeof(text), "%s  %.1f kHz  %s", name, rate / 1000.0, channels);
     } else {
-        snprintf(text, sizeof(text), "%s  %.1f kHz  %uch", codec, rate / 1000.0,
-                 (unsigned)summary.audio.channels);
+        snprintf(text, sizeof(text), "%s  %.1f kHz  %uch", name, rate / 1000.0, channel_count);
     }
     return text;
 }
 
+static std::string format_summary(const MediaSummary &summary) {
+    if (!summary.valid) return {};
+    return format_audio(summary.audio.codec, summary.audio.sample_rate, summary.audio.channels);
+}
+
+static std::string format_names(const std::string &artist, const std::string &album) {
+    if (artist.empty()) return album;
+    if (album.empty()) return artist;
+    return artist + " - " + album;
+}
+
 static std::string format_tags(const MediaTags &tags) {
-    if (tags.artist.empty()) return tags.album;
-    if (tags.album.empty()) return tags.artist;
-    return tags.artist + " - " + tags.album;
+    return format_names(tags.artist, tags.album);
 }
 
 void AudioPlayerScreen::build() {
@@ -168,9 +178,11 @@ void AudioPlayerScreen::resetArtwork() {
 }
 
 void AudioPlayerScreen::applyArtwork() {
-    if (!artwork_ || artwork_image_ || !cover_) return;
+    if (!artwork_ || artwork_image_) return;
+    if (!cover_) cover_ = media_cache_image(path(), artwork_side_);
+    if (!cover_) return;
 
-    artwork_image_ = cover_art_create(artwork_, cover_, artwork_side_);
+    artwork_image_ = cover_art_create(artwork_, cover_);
     if (!artwork_image_) {
         cover_ = {};
         return;
@@ -179,6 +191,45 @@ void AudioPlayerScreen::applyArtwork() {
         lv_obj_delete(artwork_icon_);
         artwork_icon_ = nullptr;
     }
+}
+
+std::string AudioPlayerScreen::currentTitle() const {
+    if (meta_ && meta_->title[0]) return meta_->title;
+    return name();
+}
+
+void AudioPlayerScreen::requestMeta() {
+    meta_ = media_cache_resolve(path(), MetaWantInfo, 0, kResolveTimeoutMs);
+    media_cache_request(path(), MetaWantInfo | MetaWantImage, kArtworkSide,
+                        MetaPriority::Blocking, token_);
+    prefetch_after_us_ = esp_timer_get_time() + kPrefetchDelayUs;
+    prefetched_ = false;
+}
+
+void AudioPlayerScreen::prefetchNeighbours() {
+    if (prefetched_ || prefetch_after_us_ == 0) return;
+    if (!playing_ || esp_timer_get_time() < prefetch_after_us_) return;
+    prefetched_ = true;
+
+    const std::size_t count = playlist_->size();
+    if (count < 2) return;
+    const std::size_t index = playlist_->index();
+    const std::size_t next = (index + 1) % count;
+    const std::size_t previous = (index + count - 1) % count;
+
+    media_cache_request(playlist_->at(next).path, MetaWantInfo | MetaWantImage, kArtworkSide,
+                        MetaPriority::Idle, token_);
+    if (previous != next) {
+        media_cache_request(playlist_->at(previous).path, MetaWantInfo, 0, MetaPriority::Idle,
+                            token_);
+    }
+}
+
+void AudioPlayerScreen::metaReady(const std::string &path) {
+    if (!s_active || s_active->path() != path) return;
+    if (!s_active->meta_) s_active->meta_ = media_cache_lookup(path);
+    s_active->applyArtwork();
+    s_active->refresh();
 }
 
 void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
@@ -193,7 +244,8 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
     lv_obj_set_style_text_font(title_label_, lv_widgets_title_font(), 0);
     lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(title_label_, name().c_str());
+    shown_title_ = currentTitle();
+    lv_label_set_text(title_label_, shown_title_.c_str());
 
     subtitle_label_ = lv_label_create(box);
     lv_obj_set_width(subtitle_label_, lv_pct(100));
@@ -305,7 +357,9 @@ void AudioPlayerScreen::openCurrent() {
     awaiting_start_ = true;
     scrubbing_ = false;
     cover_ = {};
+    meta_ = nullptr;
     resetArtwork();
+    requestMeta();
     player_open(path());
     player_set_loop(repeat_ == RepeatMode::One);
 
@@ -313,7 +367,7 @@ void AudioPlayerScreen::openCurrent() {
     shown_elapsed_s_ = -2;
     shown_total_s_ = -2;
     if (title_label_) {
-        shown_title_ = name();
+        shown_title_ = currentTitle();
         lv_label_set_text(title_label_, shown_title_.c_str());
     }
     if (subtitle_label_) {
@@ -355,6 +409,7 @@ void AudioPlayerScreen::playerStateChanged() {
 }
 
 void AudioPlayerScreen::handleState() {
+    prefetchNeighbours();
     const PlayerStatus status = player_status();
     if (awaiting_start_) {
         if (status.state == PlayerState::Paused) {
@@ -422,12 +477,9 @@ void AudioPlayerScreen::refresh() {
     }
 
     const MediaSummary summary = ready ? player_media_summary() : MediaSummary{};
-    if (!cover_ && summary.cover) {
-        cover_ = summary.cover;
-        applyArtwork();
-    }
+    applyArtwork();
 
-    const std::string &title = summary.tags.title.empty() ? name() : summary.tags.title;
+    const std::string title = currentTitle();
     if (title != shown_title_) {
         shown_title_ = title;
         lv_label_set_text(title_label_, title.c_str());
@@ -439,7 +491,11 @@ void AudioPlayerScreen::refresh() {
         if (message.empty()) message = status.audio_note;
     }
     const bool failed = !message.empty();
+    if (message.empty() && meta_) message = format_names(meta_->artist, meta_->album);
     if (message.empty()) message = format_tags(summary.tags);
+    if (message.empty() && meta_) {
+        message = format_audio(meta_->audio_codec, meta_->sample_rate, meta_->channels);
+    }
     if (message.empty()) message = format_summary(summary);
     if (message != shown_subtitle_) {
         shown_subtitle_ = message;
@@ -451,6 +507,9 @@ void AudioPlayerScreen::refresh() {
 
 void AudioPlayerScreen::onEnter() {
     s_active = this;
+    media_cache_idle_cancel();
+    if (!token_) token_ = media_cache_token();
+    media_cache_observe(token_, metaReady);
     player_observe_state(playerStateChanged);
     openCurrent();
     timer_ = lv_timer_create([](lv_timer_t *timer) {
@@ -460,6 +519,8 @@ void AudioPlayerScreen::onEnter() {
 
 void AudioPlayerScreen::onExit() {
     if (s_active == this) s_active = nullptr;
+    media_cache_unobserve(token_);
+    media_cache_cancel(token_);
     player_observe_state(nullptr);
     if (timer_) {
         lv_timer_delete(timer_);

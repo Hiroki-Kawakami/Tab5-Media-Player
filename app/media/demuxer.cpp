@@ -4,6 +4,7 @@
  */
 
 #include "demuxer.hpp"
+#include "h264_dec.h"
 #include <cstring>
 #include <strings.h>
 
@@ -99,9 +100,45 @@ void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info) {
     info->tags.date = media_tags_get(&tags, MEDIA_TAG_DATE);
 
     if (!tags.cover.data || !tags.cover.size) return;
-    info->cover.data = std::make_shared<std::vector<uint8_t>>(
-        tags.cover.data, tags.cover.data + tags.cover.size);
+    info->cover.data = psram_make_shared<CoverBytes>(tags.cover.data,
+                                                     tags.cover.data + tags.cover.size);
     info->cover.format = tags.cover.format == MEDIA_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
+}
+
+MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,
+                                const std::string &audio_note) {
+    MediaSummary summary;
+    summary.valid = true;
+    summary.container = demuxer_format_name(path);
+    summary.file_bytes = file_bytes;
+    summary.duration_us = info.duration_us;
+    summary.seekable = info.seekable;
+    summary.tags = info.tags;
+    summary.cover = info.cover;
+    summary.video.codec = info.video.codec;
+    summary.video.width = info.video.width;
+    summary.video.height = info.video.height;
+    summary.video.frame_interval_us = info.frame_interval_us;
+    summary.video.rotation = info.video.rotation;
+    if (info.video.codec == CodecId::H264 && !info.video.codec_private.empty()) {
+        h264_dec_stream_info_t stream = {};
+        const char *failure = nullptr;
+        if (h264_dec_probe(info.video.codec_private.data(), info.video.codec_private.size(), 0,
+                           &stream, &failure)) {
+            summary.video.profile_idc = stream.profile_idc;
+            summary.video.level_idc = stream.level_idc;
+        }
+    }
+    summary.audio.codec = info.audio.codec;
+    summary.audio.sample_rate = info.audio.sample_rate;
+    summary.audio.bitrate_bps = info.audio.bitrate_bps;
+    summary.audio.channels = info.audio.channels;
+    summary.audio.bits = info.audio.bits;
+    if (!summary.audio.bitrate_bps && info.audio.codec == CodecId::Pcm) {
+        summary.audio.bitrate_bps = info.audio.sample_rate * info.audio.channels * info.audio.bits;
+    }
+    summary.audio.note = audio_note;
+    return summary;
 }
 
 MediaKind demuxer_media_kind(const char *name) {

@@ -69,6 +69,10 @@ void HomeScreen::eject(const std::string &mount_point) {
     });
 }
 
+void HomeScreen::onAppear() {
+    if (visible_) visible_->on_appear();
+}
+
 bool HomeScreen::is_landscape() const {
     return lv_obj_get_width(root_) > lv_obj_get_height(root_);
 }

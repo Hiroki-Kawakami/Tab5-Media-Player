@@ -30,33 +30,6 @@ struct PlayerStatus {
     std::string error;
 };
 
-struct MediaSummary {
-    bool valid = false;
-    const char *container = "";
-    int64_t file_bytes = 0;
-    int64_t duration_us = 0;
-    bool seekable = false;
-    MediaTags tags;
-    CoverArt cover;
-    struct {
-        CodecId codec = CodecId::None;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        int64_t frame_interval_us = 0;
-        bsp_rotation_t rotation = BSP_ROTATION_0;
-        uint8_t profile_idc = 0;
-        uint8_t level_idc = 0;
-    } video;
-    struct {
-        CodecId codec = CodecId::None;
-        uint32_t sample_rate = 0;
-        uint32_t bitrate_bps = 0;
-        uint8_t channels = 0;
-        uint8_t bits = 0;
-        std::string note;
-    } audio;
-};
-
 void player_start(const media_arena_t &arena);
 void player_observe_state(void (*on_change)());
 void player_open(const std::string &path);

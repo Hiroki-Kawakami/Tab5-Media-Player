@@ -36,6 +36,9 @@ struct es_audio_demux {
     uint64_t samples;
     bool have_toc;
     uint8_t toc[ES_TOC_ENTRIES];
+    /* Off the stack: every task that opens one of these files would otherwise
+       carry 4 KiB it needs nowhere else. */
+    uint8_t scan[ES_SCAN_BYTES];
 };
 
 static uint32_t be32(const uint8_t *p) {
@@ -123,12 +126,12 @@ static bool frames_chain(es_audio_demux_t *demux, off_t offset, frame_t *first) 
 }
 
 static bool resync(es_audio_demux_t *demux, off_t from, off_t *found, frame_t *frame) {
-    uint8_t buffer[ES_SCAN_BYTES];
+    uint8_t *buffer = demux->scan;
     off_t scanned = 0;
     while (from < demux->data_end && scanned < ES_SCAN_LIMIT) {
         mb_seek(demux->reader, from);
-        const size_t want = (size_t)(demux->data_end - from) < sizeof(buffer)
-                                ? (size_t)(demux->data_end - from) : sizeof(buffer);
+        const size_t want = (size_t)(demux->data_end - from) < ES_SCAN_BYTES
+                                ? (size_t)(demux->data_end - from) : ES_SCAN_BYTES;
         const size_t got = mb_read(demux->reader, buffer, want);
         if (got < ES_HEADER_BYTES) return false;
         for (size_t i = 0; i + ES_HEADER_BYTES <= got; i++) {
@@ -246,7 +249,7 @@ es_audio_demux_t *es_audio_demux_open(const char *path, const media_arena_t *are
     if (!error) error = &ignored;
     *error = NULL;
 
-    es_audio_demux_t *demux = heap_caps_calloc(1, sizeof(*demux), MALLOC_CAP_DEFAULT);
+    es_audio_demux_t *demux = heap_caps_calloc(1, sizeof(*demux), MALLOC_CAP_SPIRAM);
     if (!demux) {
         *error = "out of memory";
         return NULL;

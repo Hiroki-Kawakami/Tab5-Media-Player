@@ -292,8 +292,6 @@ at the end and the restart on flush. What differs:
   positions, which is worth its own step.
 - **No 8-bit WAV** (it is unsigned, and everything below is signed), no MS
   ADPCM, and no MP3 inside WAV.
-- **No tags.** Title, artist and cover art are not read from any container, so
-  the audio screen shows the file name and a placeholder.
 - **No stored playlists.** The only source of a `Playlist` is a directory
   listing; `.m3u` and friends are not read, and there is no queue the user can
   edit.
@@ -597,14 +595,12 @@ UTF-8 and the ID3v2/ID3v1 parser. ID3 is shared rather than living in
 - **RIFF `LIST INFO` is why the WAV walk no longer stops at `data`.** The list
   is written after the audio as often as before it, and stepping over a chunk
   is a seek.
-- **The artwork is decoded on the LVGL task**, at the size of the square, with
-  the JPEG decoder's 1/N hint doing most of the scaling. It is decoded once per
-  layout, kept as an RGB565 image in PSRAM and freed with the image object, the
-  same shape as the Media Info cache. **It is slow enough to be felt**: a
-  500 KB cover is 1.2 s of software JPEG on the board (16 ms on the host), and
-  the UI — the seek bar included — is frozen for that long as the screen opens.
-  Prefetching the artwork is the fix; doing the same decode on a worker task
-  only moves the wait.
+- **The artwork is decoded on the metadata worker**, never on the LVGL task,
+  and the screens ask `media_cache` for pixels that are already there (see
+  [`metadata.md`](metadata.md)). Decoding where it is shown was slow enough to
+  be felt: a 500 KB cover is 1.2 s of software JPEG on the board (16 ms on the
+  host), and the UI — the seek bar included — was frozen for that long as the
+  screen opened.
 - **Non-ASCII tags render as missing-glyph boxes**, the same limitation file
   names have (see [architecture](architecture.md#sd-card)).
 
@@ -627,10 +623,15 @@ LVGL tick like Home does.
   tags; a failure or an audio note still takes the second line, in orange. The
   navigation bar keeps the file name either way, so the file a title belongs to
   stays identifiable.
-- **Tags and cover art arrive after the screen is built.** The summary is only
-  valid once the file is open, so the periodic refresh is what fills them in,
-  and the artwork replaces the note icon in place rather than rebuilding the
-  layout.
+- **The title is resolved before the screen appears.** It comes from
+  `media_cache` (the browser has usually prefetched the row), not from the
+  player's summary, which is only valid once the file is open — that was what
+  showed the file name first and swapped in the title a moment later. The
+  artwork still arrives afterwards and replaces the note icon in place rather
+  than rebuilding the layout; a picture that fills in changes no text.
+- **The next and previous tracks are prefetched** two seconds into playback, so
+  a skip has its title and artwork ready. The requests are cancelled when the
+  track changes.
 - **The transport widgets are shared with the video player**
   (`app/screens/media_controls.*`): the icon buttons, the sliders, the time
   text and the whole behaviour of the volume row, which is the part that must
@@ -684,6 +685,7 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
 | `mpeg2_rows` | 2 | the other half of the MPEG-2 rows, core 1 |
 | `media_audio` | 6 | audio ring → `audio_out_write` |
+| `media_meta` | 2 | tags, cover art and thumbnails, core 0, stack in PSRAM (see [`metadata.md`](metadata.md)); stopped while the video player is open |
 
 Audio has the highest priority because a late audio write is audible and a
 late frame is not. The presenter sits at 6 too, on core 0 with the decoder,

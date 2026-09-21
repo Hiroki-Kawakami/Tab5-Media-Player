@@ -19,6 +19,9 @@ extern "C" {
 typedef struct {
     uint8_t *data;
     size_t size;
+    /* Header and tag reads only: no read-ahead task, mb_read() is served from a
+       window instead, and mb_view() always fails. */
+    bool direct;
 } media_arena_t;
 
 typedef struct media_buffer media_buffer_t;

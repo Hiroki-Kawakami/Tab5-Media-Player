@@ -75,6 +75,10 @@ PSRAM fragmentation making it unavailable after the UI has been used for a
 while. It cannot be a `.bss` array like the SRAM buffer, because `.bss` stays in
 internal RAM.
 
+A second, 512 KB arena is allocated next to it for the metadata worker, which
+opens files for their tags and cover art while the player holds the big one
+(see [`metadata.md`](metadata.md)).
+
 ## Audio decoder memory
 
 `CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n` keeps the P4's 32 KiB LP/RTC

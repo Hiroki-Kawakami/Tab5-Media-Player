@@ -5,6 +5,7 @@
 
 #include "media_buffer.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -21,6 +22,7 @@ static const char *TAG = "media_buffer";
 #define MB_CHUNK_BYTES (64 * 1024)
 #define MB_DEPTH_CHUNKS 16
 #define MB_WAIT_MS 20
+#define MB_WINDOW_BYTES (64 * 1024)
 #define MB_STOP_TIMEOUT_MS 2000
 #define MB_BOUNCE_REF 0xFFFFFFFFu
 
@@ -33,6 +35,9 @@ struct media_buffer {
     int filled;
     int want;
     bool readahead;
+    bool direct;
+    off_t win_base;
+    size_t win_len;
     bool interrupted;
     bool io_error;
     bool running;
@@ -44,6 +49,7 @@ struct media_buffer {
     SemaphoreHandle_t done;
     uint8_t *ring;
     int ring_chunks;
+    int depth;
     uint16_t *pins;
     uint8_t *bounce;
     size_t bounce_bytes;
@@ -123,7 +129,7 @@ static void readahead_task(void *arg) {
         xSemaphoreTake(buffer->lock, portMAX_DELAY);
         if (buffer->readahead && !buffer->io_error) {
             drop_consumed(buffer);
-            const int depth = buffer->want > MB_DEPTH_CHUNKS ? buffer->want : MB_DEPTH_CHUNKS;
+            const int depth = buffer->want > buffer->depth ? buffer->want : buffer->depth;
             offset = buffer->base + (off_t)buffer->filled * MB_CHUNK_BYTES;
             if (buffer->filled < depth && offset < buffer->size) {
                 const int next = (buffer->head + buffer->filled) % buffer->ring_chunks;
@@ -159,14 +165,19 @@ static void readahead_task(void *arg) {
     }
 
     xSemaphoreGive(buffer->done);
+#ifdef ESP_PLATFORM
+    vTaskDeleteWithCaps(NULL);
+#else
     vTaskDelete(NULL);
+#endif
 }
 
 media_buffer_t *mb_open(const char *path, const media_arena_t *arena) {
     const size_t bounce_bytes = arena ? bounce_bytes_for(arena->size) : 0;
     const int bounce_chunks = (int)(bounce_bytes / MB_CHUNK_BYTES);
     const int ring_chunks = arena ? (int)((arena->size - bounce_bytes) / MB_CHUNK_BYTES) : 0;
-    const int window = bounce_chunks + 1 > MB_DEPTH_CHUNKS ? bounce_chunks + 1 : MB_DEPTH_CHUNKS;
+    const int depth = ring_chunks / 2 < MB_DEPTH_CHUNKS ? ring_chunks / 2 : MB_DEPTH_CHUNKS;
+    const int window = bounce_chunks + 1 > depth ? bounce_chunks + 1 : depth;
     if (!arena || !arena->data || (uintptr_t)arena->data % MB_ARENA_ALIGNMENT != 0 ||
         bounce_chunks == 0 || ring_chunks < window * 2) {
         ESP_LOGE(TAG, "unusable arena");
@@ -174,10 +185,15 @@ media_buffer_t *mb_open(const char *path, const media_arena_t *arena) {
     }
 
     const int fd = open(path, O_RDONLY);
-    if (fd < 0) return NULL;
+    if (fd < 0) {
+        ESP_LOGE(TAG, "open %s: errno %d", path, errno);
+        return NULL;
+    }
 
-    media_buffer_t *buffer = heap_caps_calloc(1, sizeof(*buffer), MALLOC_CAP_DEFAULT);
+    media_buffer_t *buffer = heap_caps_calloc(1, sizeof(*buffer), MALLOC_CAP_SPIRAM);
+    if (!buffer) buffer = heap_caps_calloc(1, sizeof(*buffer), MALLOC_CAP_DEFAULT);
     if (!buffer) {
+        ESP_LOGE(TAG, "no memory for the buffer");
         close(fd);
         return NULL;
     }
@@ -191,10 +207,15 @@ media_buffer_t *mb_open(const char *path, const media_arena_t *arena) {
     buffer->size = info.st_size;
     buffer->ring = arena->data;
     buffer->ring_chunks = ring_chunks;
+    buffer->depth = depth;
+    buffer->direct = arena->direct;
     buffer->bounce = arena->data + (size_t)ring_chunks * MB_CHUNK_BYTES;
     buffer->bounce_bytes = bounce_bytes;
 
-    buffer->pins = heap_caps_calloc((size_t)ring_chunks, sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+    buffer->pins = heap_caps_calloc((size_t)ring_chunks, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (!buffer->pins) {
+        buffer->pins = heap_caps_calloc((size_t)ring_chunks, sizeof(uint16_t), MALLOC_CAP_DEFAULT);
+    }
     buffer->lock = xSemaphoreCreateMutex();
     buffer->io_lock = xSemaphoreCreateMutex();
     buffer->wake = xSemaphoreCreateBinary();
@@ -202,12 +223,20 @@ media_buffer_t *mb_open(const char *path, const media_arena_t *arena) {
     buffer->done = xSemaphoreCreateBinary();
     if (!buffer->pins || !buffer->lock || !buffer->io_lock || !buffer->wake || !buffer->data ||
         !buffer->done) {
+        ESP_LOGE(TAG, "no memory for the buffer objects");
         mb_close(buffer);
         return NULL;
     }
 
-    if (xTaskCreatePinnedToCore(readahead_task, "media_readahead", 3072, buffer, 3, NULL, 0) !=
-        pdPASS) {
+#ifdef ESP_PLATFORM
+    const BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
+        readahead_task, "media_readahead", 3072, buffer, 3, NULL, 0, MALLOC_CAP_SPIRAM);
+#else
+    const BaseType_t created =
+        xTaskCreatePinnedToCore(readahead_task, "media_readahead", 3072, buffer, 3, NULL, 0);
+#endif
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "no memory for the read-ahead task");
         mb_close(buffer);
         return NULL;
     }
@@ -241,11 +270,43 @@ void mb_close(media_buffer_t *buffer) {
 off_t mb_size(const media_buffer_t *buffer) { return buffer->size; }
 off_t mb_tell(const media_buffer_t *buffer) { return buffer->cursor; }
 
+static size_t read_windowed(media_buffer_t *buffer, void *out, size_t size) {
+    const size_t window = buffer->bounce_bytes < MB_WINDOW_BYTES ? buffer->bounce_bytes
+                                                                 : MB_WINDOW_BYTES;
+    size_t done = 0;
+    while (done < size) {
+        const off_t cursor = buffer->cursor;
+        if (size - done >= window) {
+            const size_t got = read_at(buffer, cursor, (uint8_t *)out + done, size - done);
+            buffer->cursor += (off_t)got;
+            return done + got;
+        }
+        if (!buffer->win_len || cursor < buffer->win_base ||
+            cursor >= buffer->win_base + (off_t)buffer->win_len) {
+            buffer->win_base = cursor;
+            buffer->win_len = read_at(buffer, buffer->win_base, buffer->bounce, window);
+            if (!buffer->win_len) break;
+        }
+        const size_t offset = (size_t)(cursor - buffer->win_base);
+        size_t take = buffer->win_len - offset;
+        if (take > size - done) take = size - done;
+        memcpy((uint8_t *)out + done, buffer->bounce + offset, take);
+        buffer->cursor += (off_t)take;
+        done += take;
+    }
+    return done;
+}
+
 size_t mb_read(media_buffer_t *buffer, void *out, size_t size) {
     if (buffer->cursor >= buffer->size) return 0;
     if (buffer->cursor + (off_t)size > buffer->size) size = (size_t)(buffer->size - buffer->cursor);
 
     xSemaphoreTake(buffer->lock, portMAX_DELAY);
+    if (buffer->direct) {
+        const size_t got = read_windowed(buffer, out, size);
+        xSemaphoreGive(buffer->lock);
+        return got;
+    }
     if (!buffer->readahead) {
         const off_t offset = buffer->cursor;
         xSemaphoreGive(buffer->lock);
@@ -411,6 +472,7 @@ void mb_skip(media_buffer_t *buffer, off_t delta) {
 }
 
 void mb_set_readahead(media_buffer_t *buffer, bool enabled) {
+    if (buffer->direct) return;
     xSemaphoreTake(buffer->lock, portMAX_DELAY);
     buffer->readahead = enabled;
     if (!enabled) restart_window(buffer);

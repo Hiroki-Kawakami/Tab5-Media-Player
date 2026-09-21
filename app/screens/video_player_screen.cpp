@@ -4,6 +4,7 @@
  */
 
 #include "video_player_screen.hpp"
+#include "media/media_cache.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
 #include "screens/media_controls.hpp"
@@ -287,6 +288,7 @@ void VideoPlayerScreen::eject(const std::string &mount_point) {
 
 void VideoPlayerScreen::onEnter() {
     s_active = this;
+    media_cache_stop();
     rotation_ = ui_orientation_current();
     mode_ = UiMode::Bars;
     info_paused_ = false;
@@ -325,12 +327,14 @@ void VideoPlayerScreen::onExit() {
         lv_timer_delete(timer_);
         timer_ = nullptr;
     }
-    if (!ui_) return;
-    player_close();
-    closeOverlay();
-    video_presenter_end();
-    ui_orientation_set_listener(nullptr, nullptr);
-    media_player_release_sram();
+    if (ui_) {
+        player_close();
+        closeOverlay();
+        video_presenter_end();
+        ui_orientation_set_listener(nullptr, nullptr);
+        media_player_release_sram();
+    }
+    media_cache_start();
 }
 
 VideoPlayerScreen::~VideoPlayerScreen() {

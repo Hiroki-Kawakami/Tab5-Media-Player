@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include "media/media_cache.hpp"
 #include "playback/player.hpp"
 #include "playback/playlist.hpp"
 #include "screen_manager.hpp"
@@ -36,6 +37,10 @@ private:
     void relayout();
     void applyArtwork();
     void resetArtwork();
+    void requestMeta();
+    void prefetchNeighbours();
+    std::string currentTitle() const;
+    static void metaReady(const std::string &path);
     void openCurrent();
     bool advance(int delta, bool manual);
     void restart(bool resume);
@@ -56,7 +61,11 @@ private:
     bool landscape_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
 
-    CoverArt cover_;
+    std::shared_ptr<const MediaEntry> meta_;
+    std::shared_ptr<const CoverPixels> cover_;
+    uint32_t token_ = 0;
+    int64_t prefetch_after_us_ = 0;
+    bool prefetched_ = false;
 
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *next_button_ = nullptr;

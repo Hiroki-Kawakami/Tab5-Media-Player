@@ -5,8 +5,12 @@ tap 360 226
 settle
 tap 360 320
 settle
+meta drain
+settle
 tap 360 1200
 wait 1500
+meta drain
+settle
 capture tags_id3v24.jpg
 imu rot90
 wait 800
@@ -19,21 +23,29 @@ tap 60 60
 settle
 tap 360 1120
 wait 1500
+meta drain
+settle
 capture tags_id3v23_png.jpg
 tap 60 60
 settle
 tap 360 1040
 wait 1500
+meta drain
+settle
 capture tags_id3v1.jpg
 tap 60 60
 settle
 tap 360 880
 wait 1500
+meta drain
+settle
 capture tags_mp4_ilst.jpg
 tap 60 60
 settle
 tap 360 960
 wait 1500
+meta drain
+settle
 capture tags_wav_info.jpg
 tap 60 60
 settle

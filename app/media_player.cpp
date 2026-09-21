@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "bench/h264_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
+#include "media/media_cache.hpp"
 #include "playback/player.hpp"
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
@@ -22,6 +23,7 @@
 static const char *TAG = "media_player";
 
 static constexpr std::size_t kMediaArenaBytes = 4 * 1024 * 1024;
+static constexpr std::size_t kProbeArenaBytes = 512 * 1024;
 
 alignas(64) static uint8_t s_shared_sram[kSharedSramBytes];
 static lv_display_t *s_main;
@@ -69,6 +71,7 @@ esp_err_t media_player_set_display_pixel_format(bsp_pixel_format_t format) {
     const esp_err_t err = bsp_display_reconfigure(format, 0);
     display_manager.set_color_format(s_main);
     display_manager.set_visible(s_main, true);
+    media_cache_invalidate_decoded();
     return err;
 }
 
@@ -102,6 +105,18 @@ void app_entry() {
         ESP_LOGE(TAG, "no memory for the media arena");
     }
     player_start(arena);
+
+    media_arena_t probe_arena = {};
+    probe_arena.data = static_cast<uint8_t *>(heap_caps_aligned_alloc(
+        MB_ARENA_ALIGNMENT, kProbeArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
+    if (probe_arena.data) {
+        probe_arena.size = kProbeArenaBytes;
+        probe_arena.direct = true;
+        media_cache_init(probe_arena);
+    } else {
+        ESP_LOGE(TAG, "no memory for the probe arena");
+    }
+    media_cache_register_harness();
     h264_bench_register();
     mpeg2_bench_register();
 
@@ -110,6 +125,7 @@ void app_entry() {
         player_eject(kUsbMountPoint);
         lv_lock();
         lv_async_call([] {
+            media_cache_forget(kUsbMountPoint);
             AudioPlayerScreen::eject(kUsbMountPoint);
             VideoPlayerScreen::eject(kUsbMountPoint);
             if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
@@ -123,6 +139,7 @@ void app_entry() {
 #endif
 
     lv_async_call([] {
+        media_cache_start();
         ui_orientation_start(s_main, settings_rotation_locked(), settings_locked_rotation());
         auto home = std::make_shared<HomeScreen>();
         s_home = home;

@@ -20,6 +20,7 @@ public:
     Playlist(std::vector<PlaylistItem> items, std::size_t index);
 
     const PlaylistItem &current() const { return items_[index_]; }
+    const PlaylistItem &at(std::size_t index) const { return items_[index]; }
     std::size_t size() const { return items_.size(); }
     std::size_t index() const { return index_; }
 

@@ -1,0 +1,40 @@
+# Browser thumbnails and the metadata cache: Music/ holds the tagged samples
+# (JPEG cover, wide PNG cover, no cover), Movies/ has none.
+settle
+tap 360 226
+settle
+tap 360 320
+settle
+meta drain
+settle
+capture thumbs_music.jpg
+meta stats
+down 360 1100
+wait 30
+move 360 800
+wait 30
+move 360 500
+wait 30
+up
+settle
+meta drain
+settle
+capture thumbs_scrolled.jpg
+tap 100 60
+settle
+tap 360 240
+settle
+tap 360 240
+wait 2000
+tap 360 640
+wait 600
+tap 40 40
+settle
+tap 60 60
+settle
+tap 360 320
+settle
+meta drain
+settle
+capture thumbs_after_video.jpg
+meta stats

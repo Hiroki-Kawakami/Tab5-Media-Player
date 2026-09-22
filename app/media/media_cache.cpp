@@ -61,7 +61,7 @@ struct ImageKeyHash {
 using JpegBytes = PsramVector<uint8_t>;
 
 struct ImageEntry {
-    std::shared_ptr<CoverPixels> pixels;
+    std::shared_ptr<ImagePixels> pixels;
     std::shared_ptr<JpegBytes> jpeg;
     std::size_t bytes = 0;
     uint64_t used = 0;
@@ -223,7 +223,7 @@ static void store_image(ImageStore &store, const ImageKey &key, ImageEntry entry
     evict_images(store);
 }
 
-static std::shared_ptr<const CoverPixels> take_pixels(const ImageKey &key) {
+static std::shared_ptr<const ImagePixels> take_pixels(const ImageKey &key) {
     auto raw = s_state->raw.map.find(key);
     if (raw != s_state->raw.map.end()) {
         raw->second.used = ++s_state->clock;
@@ -629,7 +629,7 @@ std::shared_ptr<const MediaEntry> media_cache_lookup(const std::string &path) {
     return find_meta(path);
 }
 
-std::shared_ptr<const CoverPixels> media_cache_image(const std::string &path, int32_t side) {
+std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, int32_t side) {
     if (!s_lock || side <= 0) return nullptr;
     Lock lock;
     auto entry = find_meta(path);

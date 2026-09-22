@@ -5,7 +5,7 @@
 
 #include "audio_player_screen.hpp"
 #include "media_player.hpp"
-#include "screens/cover_art.hpp"
+#include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
 #include "resources.h"
 #include "esp_timer.h"
@@ -182,7 +182,7 @@ void AudioPlayerScreen::applyArtwork() {
     if (!cover_) cover_ = media_cache_image(path(), artwork_side_);
     if (!cover_) return;
 
-    artwork_image_ = cover_art_create(artwork_, cover_);
+    artwork_image_ = image_object_create(artwork_, cover_);
     if (!artwork_image_) {
         cover_ = {};
         return;

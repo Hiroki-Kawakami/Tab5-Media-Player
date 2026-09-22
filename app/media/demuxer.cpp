@@ -34,6 +34,9 @@ constexpr Format kFormats[] = {
     { ".wav", "WAVE", MediaKind::Audio, wav_demuxer_create },
     { ".mp3", "MP3", MediaKind::Audio, es_audio_demuxer_create },
     { ".aac", "AAC", MediaKind::Audio, es_audio_demuxer_create },
+    { ".jpg", "JPEG", MediaKind::Image, nullptr },
+    { ".jpeg", "JPEG", MediaKind::Image, nullptr },
+    { ".png", "PNG", MediaKind::Image, nullptr },
 };
 
 bool starts_with_start_code(const uint8_t *data, std::size_t size) {
@@ -167,5 +170,5 @@ const char *demuxer_format_name(const std::string &path) {
 
 std::unique_ptr<Demuxer> demuxer_create(const std::string &path) {
     const Format *format = format_of(path.c_str());
-    return format ? format->create() : nullptr;
+    return format && format->create ? format->create() : nullptr;
 }

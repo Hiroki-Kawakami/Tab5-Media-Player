@@ -33,6 +33,8 @@ call it.
 
 The media pipeline (containers, decode, presentation, audio, and the extension
 points left for MKV/H.264/playlists) is described in [`playback.md`](playback.md).
+The image viewer, which shares the decoders but none of the playback machinery,
+is described in [`images.md`](images.md).
 
 ## Shared SRAM buffer
 
@@ -199,8 +201,9 @@ be redrawn into the area the panel leaves it.
 
 ## Home screen
 
-`HomeScreen` is one of three ScreenManager screens, next to `VideoPlayerScreen`
-and `AudioPlayerScreen` (see [`playback.md`](playback.md#the-audio-screen)). The menu
+`HomeScreen` is one of four ScreenManager screens, next to `VideoPlayerScreen`,
+`AudioPlayerScreen` (see [`playback.md`](playback.md#the-audio-screen)) and
+`ImageViewerScreen` (see [`images.md`](images.md)). The menu
 (SD Card, USB Drive, Display, Sound) and the settings/file browser pages are not
 separate screens but a page stack inside it (`app/screens/home/`), because
 landscape shows both at once: the menu on the left, the top page on the right.

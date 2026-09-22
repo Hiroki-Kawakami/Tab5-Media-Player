@@ -45,10 +45,6 @@ static uint8_t *s_strips[2];
 static jpeg_encoder_handle_t s_encoder;
 #endif
 
-CoverPixels::~CoverPixels() {
-    heap_caps_free(data);
-}
-
 static std::size_t align_up(std::size_t value) {
     return (value + kAlignment - 1) / kAlignment * kAlignment;
 }
@@ -58,8 +54,8 @@ static uint8_t *alloc_dma(std::size_t bytes) {
         heap_caps_aligned_alloc(kAlignment, align_up(bytes), MALLOC_CAP_SPIRAM));
 }
 
-static std::shared_ptr<CoverPixels> alloc_pixels(uint16_t width, uint16_t height, bool rgb888) {
-    auto pixels = std::make_shared<CoverPixels>();
+static std::shared_ptr<ImagePixels> alloc_pixels(uint16_t width, uint16_t height, bool rgb888) {
+    auto pixels = std::make_shared<ImagePixels>();
     pixels->width = width;
     pixels->height = height;
     pixels->rgb888 = rgb888;
@@ -127,7 +123,7 @@ static uint32_t ppa_scale(uint32_t width, uint32_t height, uint16_t dst_w, uint1
     return kScaleDenominator;
 }
 
-static std::shared_ptr<CoverPixels> decode_hardware(const uint8_t *data, std::size_t size,
+static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::size_t size,
                                                     uint32_t width, uint32_t height, int32_t side,
                                                     bool rgb888) {
     if ((width + kStripRows - 1) / kStripRows * kStripRows > kMaxStripWidth) return nullptr;
@@ -172,7 +168,7 @@ static std::shared_ptr<CoverPixels> decode_hardware(const uint8_t *data, std::si
 
     uint16_t out_w = 0;
     uint16_t out_h = 0;
-    std::shared_ptr<CoverPixels> pixels;
+    std::shared_ptr<ImagePixels> pixels;
     if (imgf_resize_compute_dst((uint16_t)mid_w, (uint16_t)mid_h, &opts, &out_w, &out_h) ==
         IMGF_OK) {
         pixels = alloc_pixels(out_w, out_h, rgb888);
@@ -186,7 +182,7 @@ static std::shared_ptr<CoverPixels> decode_hardware(const uint8_t *data, std::si
     return pixels;
 }
 
-static std::shared_ptr<CoverPixels> decode_streaming(const uint8_t *data, std::size_t size,
+static std::shared_ptr<ImagePixels> decode_streaming(const uint8_t *data, std::size_t size,
                                                      imgf_format_t format, int32_t side,
                                                      bool rgb888) {
     imgf_decoder_t *dec = imgf_make_decoder(format);
@@ -211,7 +207,7 @@ static std::shared_ptr<CoverPixels> decode_streaming(const uint8_t *data, std::s
 
     imgf_err_t err = IMGF_OK;
     imgf_resizer_t *resizer = imgf_resizer_create(src_w, src_h, src_pf, &opts, &err);
-    std::shared_ptr<CoverPixels> pixels;
+    std::shared_ptr<ImagePixels> pixels;
     uint8_t *row = nullptr;
     if (resizer) {
         pixels = alloc_pixels(imgf_resizer_dst_width(resizer), imgf_resizer_dst_height(resizer),
@@ -257,7 +253,7 @@ static std::shared_ptr<CoverPixels> decode_streaming(const uint8_t *data, std::s
     return pixels;
 }
 
-std::shared_ptr<CoverPixels> artwork_decode(const uint8_t *data, std::size_t size, int32_t side,
+std::shared_ptr<ImagePixels> artwork_decode(const uint8_t *data, std::size_t size, int32_t side,
                                             bool rgb888) {
     if (!data || size == 0 || side <= 0) return nullptr;
 
@@ -293,7 +289,7 @@ static jpeg_encoder_handle_t encoder() {
     return s_encoder;
 }
 
-bool artwork_encode(const CoverPixels &pixels, PsramVector<uint8_t> *out) {
+bool artwork_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
     jpeg_encoder_handle_t handle = encoder();
     if (!handle) return false;
 
@@ -319,7 +315,7 @@ bool artwork_encode(const CoverPixels &pixels, PsramVector<uint8_t> *out) {
 
 #else
 
-bool artwork_encode(const CoverPixels &pixels, PsramVector<uint8_t> *out) {
+bool artwork_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
     imgf_jpege_opts_t opts = {};
     opts.quality = kQuality;
     opts.subsample = IMGF_JPEG_SUBSAMPLE_420;

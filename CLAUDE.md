@@ -21,6 +21,8 @@ submodule.
 - [`docs/mpeg2.md`](docs/mpeg2.md) — the in-house MPEG-2 decoder: scope, the
   row-parallel two-core design, the PIE IDCT, and bit-exact checks against
   `ffmpeg -idct simple`.
+- [`docs/images.md`](docs/images.md) — the image viewer: why it is a plain
+  LVGL screen, the two decode paths and their memory, and the test pictures.
 - [`docs/metadata.md`](docs/metadata.md) — the background tags/cover-art/
   thumbnail cache: the probe arena, image dedup, the budgets, and what stops
   while the video player is open.

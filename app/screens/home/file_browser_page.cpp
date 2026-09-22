@@ -10,7 +10,8 @@
 #include "media_player.hpp"
 #include "screen_manager.hpp"
 #include "screens/audio_player_screen.hpp"
-#include "screens/cover_art.hpp"
+#include "screens/image_object.hpp"
+#include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
 
 #include <algorithm>
@@ -24,6 +25,10 @@ static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
 
 static FileBrowserPage *s_visible;
+
+static bool has_metadata(MediaKind kind) {
+    return kind == MediaKind::Audio || kind == MediaKind::Video;
+}
 
 FileBrowserPage::FileBrowserPage(std::string path, std::string title)
     : path_(std::move(path)), title_(std::move(title)) {}
@@ -61,11 +66,11 @@ void FileBrowserPage::request_visible() {
        with text while the pictures are still coming. */
     media_cache_cancel(token_);
     for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || entries_[i].kind == MediaKind::None) continue;
+        if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
         media_cache_request(entry_path(i), MetaWantInfo, 0, MetaPriority::Visible, token_);
     }
     for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || entries_[i].kind == MediaKind::None) continue;
+        if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
         media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbSide,
                             MetaPriority::Visible, token_);
     }
@@ -216,6 +221,7 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     const char *icon = entry.directory                ? LV_SYMBOL_DIRECTORY
                      : entry.kind == MediaKind::Video ? LV_SYMBOL_VIDEO
                      : entry.kind == MediaKind::Audio ? LV_SYMBOL_AUDIO
+                     : entry.kind == MediaKind::Image ? LV_SYMBOL_IMAGE
                                                       : LV_SYMBOL_FILE;
     lv_obj_t *first = lv_obj_get_child(row, 0);
     if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
@@ -226,14 +232,14 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE,
                     entry.directory || entry.kind != MediaKind::None);
 
-    std::shared_ptr<const CoverPixels> pixels;
-    if (!entry.directory && entry.kind != MediaKind::None) {
+    std::shared_ptr<const ImagePixels> pixels;
+    if (!entry.directory && has_metadata(entry.kind)) {
         pixels = media_cache_image(entry_path(index), kThumbSide);
     }
     lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);
     /* Inserted first so flex puts it where the icon was; everything indexed
        above is therefore read before this point. */
-    if (lv_obj_t *image = pixels ? cover_art_create(row, std::move(pixels)) : nullptr) {
+    if (lv_obj_t *image = pixels ? image_object_create(row, std::move(pixels)) : nullptr) {
         lv_obj_set_size(image, kThumbSide, kThumbSide);
         lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
         lv_obj_set_style_radius(image, 6, 0);
@@ -264,5 +270,7 @@ void FileBrowserPage::didSelectRow(std::size_t index) {
         screen_manager.push(std::make_shared<AudioPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Video) {
         screen_manager.push(std::make_shared<VideoPlayerScreen>(make_playlist(index)));
+    } else if (entry.kind == MediaKind::Image) {
+        screen_manager.push(std::make_shared<ImageViewerScreen>(make_playlist(index)));
     }
 }

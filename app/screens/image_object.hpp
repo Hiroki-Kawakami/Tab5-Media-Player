@@ -9,4 +9,4 @@
 
 #include <memory>
 
-lv_obj_t *cover_art_create(lv_obj_t *parent, std::shared_ptr<const CoverPixels> pixels);
+lv_obj_t *image_object_create(lv_obj_t *parent, std::shared_ptr<const ImagePixels> pixels);

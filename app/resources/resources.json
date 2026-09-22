@@ -17,7 +17,9 @@
       "size": 48,
       "icon": {
         "TABLER_PLAYER_TRACK_PREV": "tabler/player-track-prev.svg",
-        "TABLER_PLAYER_TRACK_NEXT": "tabler/player-track-next.svg"
+        "TABLER_PLAYER_TRACK_NEXT": "tabler/player-track-next.svg",
+        "TABLER_CIRCLE_ARROW_LEFT": "tabler/circle-arrow-left.svg",
+        "TABLER_CIRCLE_ARROW_RIGHT": "tabler/circle-arrow-right.svg"
       }
     },
     "icon_36": {

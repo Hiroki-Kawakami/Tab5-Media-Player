@@ -15,6 +15,7 @@
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
 #include "screens/audio_player_screen.hpp"
+#include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
 #include "settings.hpp"
 #include "ui_orientation.hpp"
@@ -128,6 +129,7 @@ void app_entry() {
             media_cache_forget(kUsbMountPoint);
             AudioPlayerScreen::eject(kUsbMountPoint);
             VideoPlayerScreen::eject(kUsbMountPoint);
+            ImageViewerScreen::eject(kUsbMountPoint);
             if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
         });
         lv_unlock();

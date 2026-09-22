@@ -50,6 +50,57 @@ lv_obj_t *media_slider(lv_obj_t *parent, int32_t max, lv_color_t foreground, lv_
     return slider;
 }
 
+static constexpr int32_t kTopBarPadding = 8;
+static constexpr int32_t kTopBarIconButton = 72;
+
+MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<void()> on_back,
+                                std::function<void()> on_info) {
+    lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_hor(bar, kTopBarPadding, 0);
+    lv_obj_set_style_pad_column(bar, kTopBarPadding, 0);
+
+    lv_obj_t *back = lv_button_create(bar, LV_BUTTON_STYLE_PLAIN);
+    lv_obj_set_size(back, LV_SIZE_CONTENT, kTopBarIconButton);
+    lv_obj_set_style_pad_all(back, 8, 0);
+    lv_obj_set_style_pad_column(back, 16, 0);
+    lv_obj_set_style_radius(back, 16, 0);
+    lv_obj_set_style_bg_color(back, lv_color_white(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(back, LV_OPA_20, LV_STATE_PRESSED);
+    lv_obj_set_flex_flow(back, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(back, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_event_fn(back, LV_EVENT_CLICKED, [on_back](lv_event_t *) { on_back(); });
+
+    lv_obj_t *chevron = lv_label_create(back);
+    lv_obj_set_style_pad_all(chevron, 8, 0);
+    lv_obj_set_style_text_font(chevron, &icon_36, 0);
+    lv_label_set_text(chevron, TABLER_CHEVRON_LEFT);
+
+    MediaTopBar result = {};
+    result.title = lv_label_create(back);
+    lv_obj_set_height(result.title, lv_font_get_line_height(lv_widgets_body_font()) + 16);
+    lv_obj_set_style_pad_right(result.title, 24, 0);
+    lv_obj_set_style_pad_ver(result.title, 8, 0);
+    lv_obj_set_style_text_font(result.title, lv_widgets_body_font(), 0);
+    lv_label_set_text(result.title, title);
+
+    lv_spacer_create(bar, 1, 1, 1);
+
+    result.info_button = media_icon_button(bar, kTopBarIconButton, &icon_36, TABLER_INFO_CIRCLE,
+                                           lv_color_white());
+    lv_obj_add_event_fn(result.info_button, LV_EVENT_CLICKED,
+                        [on_info](lv_event_t *) { on_info(); });
+
+    lv_obj_update_layout(bar);
+    const int32_t room = lv_obj_get_width(bar) - 2 * kTopBarPadding - kTopBarPadding -
+                         kTopBarIconButton - (lv_obj_get_width(back) - lv_obj_get_width(result.title));
+    if (lv_obj_get_width(result.title) > room) {
+        lv_obj_set_width(result.title, room);
+        lv_label_set_long_mode(result.title, LV_LABEL_LONG_MODE_DOTS);
+    }
+    return result;
+}
+
 const char *media_volume_icon(int32_t volume) {
     return bsp_audio_get_mute() ? TABLER_VOLUME_3
          : volume <= 0          ? TABLER_VOLUME_4

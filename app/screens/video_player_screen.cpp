@@ -36,7 +36,6 @@ static constexpr int32_t kTimeWidth = 100;
 static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kVolumeSlider = 240;
 static constexpr int32_t kSeekGap = 16;
-static constexpr int32_t kTopBarPadding = 8;
 static constexpr int32_t kOverlayBufferLines = 32;
 
 static constexpr uint32_t kBarColor = 0x101010;
@@ -361,51 +360,12 @@ void VideoPlayerScreen::populateInfo() {
 }
 
 void VideoPlayerScreen::buildTopBar(lv_obj_t *parent) {
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(parent, kTopBarPadding, 0);
-    lv_obj_set_style_pad_column(parent, kTopBarPadding, 0);
-
-    lv_obj_t *back = lv_button_create(parent, LV_BUTTON_STYLE_PLAIN);
-    lv_obj_set_size(back, LV_SIZE_CONTENT, kIconButton);
-    lv_obj_set_style_pad_all(back, 8, 0);
-    lv_obj_set_style_pad_column(back, 16, 0);
-    lv_obj_set_style_radius(back, 16, 0);
-    lv_obj_set_style_bg_color(back, lv_color_white(), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(back, LV_OPA_20, LV_STATE_PRESSED);
-    lv_obj_set_flex_flow(back, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(back, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_event_fn(back, LV_EVENT_CLICKED, [this](lv_event_t *) { this->back(); });
-
-    lv_obj_t *chevron = lv_label_create(back);
-    lv_obj_set_style_pad_all(chevron, 8, 0);
-    lv_obj_set_style_text_font(chevron, &icon_36, 0);
-    lv_label_set_text(chevron, TABLER_CHEVRON_LEFT);
-
-    title_label_ = lv_label_create(back);
-    lv_obj_set_height(title_label_, lv_font_get_line_height(lv_widgets_body_font()) + 16);
-    lv_obj_set_style_pad_right(title_label_, 24, 0);
-    lv_obj_set_style_pad_ver(title_label_, 8, 0);
-    lv_obj_set_style_text_font(title_label_, lv_widgets_body_font(), 0);
-    lv_label_set_text(title_label_, name().c_str());
-
-    lv_spacer_create(parent, 1, 1, 1);
-
-    info_button_ = media_icon_button(parent, kIconButton, &icon_36, TABLER_INFO_CIRCLE,
-                                          lv_color_white());
-    const MediaSummary summary = player_media_summary();
-    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !summary.valid);
-    lv_obj_add_event_fn(info_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        requestMode(UiMode::Info);
-    });
-
-    lv_obj_update_layout(parent);
-    const int32_t room = lv_obj_get_width(parent) - 2 * kTopBarPadding - kTopBarPadding -
-                         kIconButton - (lv_obj_get_width(back) - lv_obj_get_width(title_label_));
-    if (lv_obj_get_width(title_label_) > room) {
-        lv_obj_set_width(title_label_, room);
-        lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
-    }
+    const MediaTopBar bar = media_top_bar_build(parent, name().c_str(),
+                                                [this] { this->back(); },
+                                                [this] { requestMode(UiMode::Info); });
+    title_label_ = bar.title;
+    info_button_ = bar.info_button;
+    lv_obj_set_state(info_button_, LV_STATE_DISABLED, !player_media_summary().valid);
 }
 
 void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {

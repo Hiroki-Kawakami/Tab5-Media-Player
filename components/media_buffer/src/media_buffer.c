@@ -251,10 +251,10 @@ void mb_close(media_buffer_t *buffer) {
 
     if (buffer->running) {
         buffer->stop = true;
-        xSemaphoreGive(buffer->wake);
-        if (xSemaphoreTake(buffer->done, pdMS_TO_TICKS(MB_STOP_TIMEOUT_MS)) != pdTRUE) {
-            ESP_LOGE(TAG, "read-ahead did not stop; leaking the buffer");
-            return;
+        for (;;) {
+            xSemaphoreGive(buffer->wake);
+            if (xSemaphoreTake(buffer->done, pdMS_TO_TICKS(MB_STOP_TIMEOUT_MS)) == pdTRUE) break;
+            ESP_LOGE(TAG, "read-ahead did not stop");
         }
         buffer->running = false;
     }

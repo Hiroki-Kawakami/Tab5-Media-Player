@@ -594,10 +594,11 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
 void video_presenter_end() {
     if (!s_running.exchange(false)) return;
     if (s_wake) xSemaphoreGive(s_wake);
-    if (xSemaphoreTake(s_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+    while (xSemaphoreTake(s_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "presenter did not stop");
+        xSemaphoreGive(s_wake);
     }
-    if (xSemaphoreTake(s_decode_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+    while (xSemaphoreTake(s_decode_done, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "decoder did not stop");
     }
     video_presenter_flush();
@@ -678,18 +679,16 @@ void video_presenter_drain() {
 }
 
 void video_presenter_flush() {
-    if (!s_queue) return;
+    if (!s_queue || !s_idle || !s_decode_idle) return;
     s_flushing.store(true);
     drain_jobs(s_decode_queue);
     drain_jobs(s_queue);
     drain_ready();
-    const bool decoder_idle = xSemaphoreTake(s_decode_idle, pdMS_TO_TICKS(kStopTimeoutMs)) == pdTRUE;
-    if (!decoder_idle) ESP_LOGE(TAG, "flush: decode in flight did not finish");
-    if (!s_idle || xSemaphoreTake(s_idle, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+    while (xSemaphoreTake(s_decode_idle, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+        ESP_LOGE(TAG, "flush: decode in flight did not finish");
+    }
+    while (xSemaphoreTake(s_idle, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
         ESP_LOGE(TAG, "flush: frame in flight did not finish");
-        if (decoder_idle) xSemaphoreGive(s_decode_idle);
-        s_flushing.store(false);
-        return;
     }
     drain_jobs(s_decode_queue);
     drain_jobs(s_queue);
@@ -700,7 +699,7 @@ void video_presenter_flush() {
         s_renderer->restart();
     }
     xSemaphoreGive(s_idle);
-    if (decoder_idle) xSemaphoreGive(s_decode_idle);
+    xSemaphoreGive(s_decode_idle);
     s_flushing.store(false);
 }
 

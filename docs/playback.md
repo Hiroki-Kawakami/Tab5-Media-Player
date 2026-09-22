@@ -685,6 +685,7 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
 | `mpeg2_rows` | 2 | the other half of the MPEG-2 rows, core 1 |
 | `media_audio` | 6 | audio ring → `audio_out_write` |
+| `player_notify` | 2 | posts the state callback to the LVGL thread, stack in PSRAM |
 | `media_meta` | 2 | tags, cover art and thumbnails, core 0, stack in PSRAM (see [`metadata.md`](metadata.md)); stopped while the video player is open |
 
 Audio has the highest priority because a late audio write is audible and a
@@ -726,6 +727,26 @@ to reuse ring slots:
 - **Ring slots hold no memory**, only a view and its pin. The bytes live in the
   arena, which outlives every session, so `close()` is safe while the presenter
   may still be reading a slot.
+
+- **A stop that times out must not continue.** Every wait above (and the ones
+  in `media_cache_stop()`, `video_presenter_flush()`, `video_presenter_end()`
+  and `mb_close()`) loops until the task really parked, logging each round.
+  They used to give up after a second or two and free the buffer, the demuxer
+  or the renderer anyway, which is a use-after-free whenever the task was only
+  slow — and on USB a single read stalls for seconds when playback is reading
+  the same device. A stall is now a stalled UI and a log line instead of a
+  corrupted heap that panics minutes later somewhere else.
+
+Ending a session is the same stop plus a wait: `player_close()` does not return
+until the player task has run `handle_close()`. The caller frees what the
+pipeline is still holding — `VideoPlayerScreen::onExit()` destroys the
+presenter and its renderer and hands the shared SRAM back to LVGL — so a
+queued-and-forgotten close leaves those tasks running against freed memory.
+Closing the screen right in the moment a file switch had just opened the next
+one was enough to see it: the LVGL thread's own `video_presenter_flush()`
+released jobs, and `Demuxer::release()` reached a demuxer the player task was
+destroying, which left `mb_release()` decrementing pins through a dangling
+pointer somewhere in PSRAM.
 
 ## Looping
 
@@ -794,16 +815,23 @@ ends, instead of at the next refresh tick. The screens still poll on their
 notification costs latency and nothing else.
 
 - **The callback carries no state.** The handler reads `player_status()` again.
-  The notification is delivered through `lv_async_call`, so by the time it runs
-  the player may have moved on — most importantly past a `Finished` the screen
-  already reacted to. A handler that trusted a state it was handed would
-  advance twice.
-- **`player_set_state()` must not hold `player_core.lock` when it takes the
-  LVGL one.** The LVGL thread takes them in the opposite order every time it
-  calls `player_status()`, and the player task would deadlock against it.
-- **The player task hops to the LVGL thread itself**, as `settings.cpp` does
-  for the headphone callback: every consumer wants to touch widgets, and one
-  `lv_lock`/`lv_async_call` pair in the producer beats one in each of them.
+  The notification is delivered late and several changes in a row collapse into
+  one, so by the time it runs the player may have moved on — most importantly
+  past a `Finished` the screen already reacted to. A handler that trusted a
+  state it was handed would advance twice.
+- **A task of its own posts it.** `player_set_state()` only gives a semaphore;
+  `player_notify` is what takes the LVGL lock and hands the handler to
+  `lv_async_call`. None of the tasks a teardown waits for may reach for that
+  lock: `player_close()` blocks the LVGL thread while it holds it (see [Tasks
+  and teardown](#tasks-and-teardown)), so the player task calling `lv_lock()`
+  there deadlocks the two. Keeping the hop in one task also settles the older
+  hazard of taking the LVGL lock and `player_core.lock` in opposite orders.
+- **Not a periodic LVGL timer.** Polling a change counter from a short-period
+  timer needs no extra task, but it wakes the LVGL task tens of times a second
+  for nothing, and that was enough to lose the video a repaint: after a
+  rotation the overlay's black pass and the next frame race for framebuffer 0,
+  and with the timer running the video area stayed black until the following
+  frame.
 
 ## The overlay
 

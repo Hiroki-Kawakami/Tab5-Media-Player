@@ -573,13 +573,15 @@ void media_cache_start() {
 void media_cache_stop() {
     if (!s_running) return;
     s_quit = true;
-    xSemaphoreGive(s_wake);
-    xSemaphoreGive(s_decode_wake);
     xSemaphoreGive(s_decode_room);
-    if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+    for (;;) {
+        xSemaphoreGive(s_wake);
+        if (xSemaphoreTake(s_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) == pdTRUE) break;
         ESP_LOGE(TAG, "worker did not stop");
     }
-    if (xSemaphoreTake(s_decoder_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) != pdTRUE) {
+    for (;;) {
+        xSemaphoreGive(s_decode_wake);
+        if (xSemaphoreTake(s_decoder_stopped, pdMS_TO_TICKS(kStopTimeoutMs)) == pdTRUE) break;
         ESP_LOGE(TAG, "decoder did not stop");
     }
     s_running = false;

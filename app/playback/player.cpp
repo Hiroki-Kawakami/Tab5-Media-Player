@@ -26,6 +26,8 @@ static constexpr int64_t kAudioResyncUs = 250000;
 static constexpr uint32_t kAudioStackBytes = 4 * 1024;
 static constexpr uint32_t kOpusStackBytes = 20 * 1024;
 static constexpr uint32_t kAudioStepMs = 20;
+static constexpr uint32_t kCommandSendMs = 1000;
+static constexpr uint32_t kCloseTimeoutMs = 8000;
 
 enum class Command {
     Open,
@@ -60,6 +62,9 @@ static SemaphoreHandle_t s_reader_wake;
 static SemaphoreHandle_t s_reader_idle;
 static SemaphoreHandle_t s_audio_wake;
 static SemaphoreHandle_t s_audio_idle;
+static SemaphoreHandle_t s_closed;
+static SemaphoreHandle_t s_audio_stopped;
+static SemaphoreHandle_t s_notify;
 static TaskHandle_t s_audio_task;
 static bool s_audio_quit;
 
@@ -86,13 +91,7 @@ void player_set_state(PlayerState state, const std::string &error) {
     xSemaphoreGive(player_core.lock);
     if (!changed) return;
 
-    void (*observer)() = s_state_observer.load();
-    if (!observer) return;
-    /* Never with player_core.lock held: the LVGL thread takes that lock inside
-     * player_status() while it holds the LVGL one. */
-    lv_lock();
-    lv_async_call([observer] { observer(); });
-    lv_unlock();
+    xSemaphoreGive(s_notify);
 }
 
 bool player_take_slot(QueueHandle_t queue, int *slot) {
@@ -163,7 +162,7 @@ static void audio_task(void *) {
     while (!s_audio_quit) {
         xSemaphoreTake(s_audio_wake, portMAX_DELAY);
 
-        while (s_audio_active) {
+        while (s_audio_active && !s_audio_quit) {
             int slot = -1;
             if (xQueueReceive(s_audio_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) continue;
             if (s_audio_active) audio_out_write(s_audio[slot].data, s_audio[slot].len);
@@ -173,6 +172,7 @@ static void audio_task(void *) {
 
         xSemaphoreGive(s_audio_idle);
     }
+    xSemaphoreGive(s_audio_stopped);
 #ifdef ESP_PLATFORM
     vTaskDeleteWithCaps(nullptr);
 #else
@@ -188,6 +188,12 @@ static BaseType_t audio_task_create(uint32_t stack_bytes, uint32_t caps) {
 #endif
 
 static bool audio_task_start(uint32_t stack_bytes) {
+    if (s_audio_task && xSemaphoreTake(s_audio_stopped, 0) == pdTRUE) s_audio_task = nullptr;
+    if (s_audio_task) {
+        ESP_LOGE(TAG, "the audio task of the last file is still running");
+        return false;
+    }
+    xSemaphoreTake(s_audio_stopped, 0);
     s_audio_quit = false;
 #ifdef ESP_PLATFORM
     BaseType_t created = pdFAIL;
@@ -210,12 +216,11 @@ static bool audio_task_start(uint32_t stack_bytes) {
 static void audio_task_stop() {
     if (!s_audio_task) return;
     s_audio_quit = true;
-    xSemaphoreTake(s_audio_idle, 0);
     xSemaphoreGive(s_audio_wake);
-    if (xSemaphoreTake(s_audio_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) != pdTRUE) {
+    while (xSemaphoreTake(s_audio_stopped, pdMS_TO_TICKS(kIdleTimeoutMs)) != pdTRUE) {
         ESP_LOGW(TAG, "audio task did not exit");
+        xSemaphoreGive(s_audio_wake);
     }
-    xSemaphoreGive(s_audio_idle);
     s_audio_task = nullptr;
 }
 
@@ -226,26 +231,25 @@ static void audio_start() {
     xSemaphoreGive(s_audio_wake);
 }
 
+static void wait_parked(SemaphoreHandle_t idle, const char *what) {
+    while (xSemaphoreTake(idle, pdMS_TO_TICKS(kIdleTimeoutMs)) != pdTRUE) {
+        ESP_LOGW(TAG, "%s did not settle", what);
+    }
+    xSemaphoreGive(idle);
+}
+
 void player_audio_stop() {
     if (!s_audio_active) return;
     s_audio_active = false;
-    if (xSemaphoreTake(s_audio_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) == pdTRUE) {
-        xSemaphoreGive(s_audio_idle);
-    } else {
-        ESP_LOGW(TAG, "audio did not settle");
-    }
+    wait_parked(s_audio_idle, "audio");
 }
 
 static void reader_stop() {
     player_audio_stop();
     player_core.reader_active = false;
     if (player_core.demuxer) player_core.demuxer->interrupt(true);
-    if (xSemaphoreTake(s_reader_idle, pdMS_TO_TICKS(kIdleTimeoutMs)) == pdTRUE) {
-        xSemaphoreGive(s_reader_idle);
-        if (player_core.demuxer) player_core.demuxer->interrupt(false);
-    } else {
-        ESP_LOGW(TAG, "reader did not settle");
-    }
+    wait_parked(s_reader_idle, "reader");
+    if (player_core.demuxer) player_core.demuxer->interrupt(false);
 
     if (!s_audio_only) video_pacing_stop();
     refill_free_queues();
@@ -508,6 +512,19 @@ static void handle_command(const CommandItem &item) {
     delete item.path;
 }
 
+static void notify_task(void *) {
+    for (;;) {
+        xSemaphoreTake(s_notify, portMAX_DELAY);
+        if (!s_state_observer.load()) continue;
+        lv_lock();
+        lv_async_call([] {
+            void (*observer)() = s_state_observer.load();
+            if (observer) observer();
+        });
+        lv_unlock();
+    }
+}
+
 static void player_task(void *) {
     for (;;) {
         const bool poster = !s_audio_only && video_pacing_wants_poster();
@@ -516,6 +533,7 @@ static void player_task(void *) {
         CommandItem item = {};
         if (xQueueReceive(s_commands, &item, busy ? 0 : portMAX_DELAY) == pdTRUE) {
             handle_command(item);
+            if (item.command == Command::Close) xSemaphoreGive(s_closed);
             continue;
         }
         if (player_core.state == PlayerState::Playing) {
@@ -530,10 +548,13 @@ static void player_task(void *) {
     }
 }
 
-static void send_command(Command command, const std::string *path = nullptr, int64_t value = 0) {
-    if (!s_commands) return;
+static bool send_command(Command command, const std::string *path = nullptr, int64_t value = 0,
+                         uint32_t wait_ms = 100) {
+    if (!s_commands) return false;
     CommandItem item = { command, path ? new std::string(*path) : nullptr, value };
-    if (xQueueSend(s_commands, &item, pdMS_TO_TICKS(100)) != pdTRUE) delete item.path;
+    if (xQueueSend(s_commands, &item, pdMS_TO_TICKS(wait_ms)) == pdTRUE) return true;
+    delete item.path;
+    return false;
 }
 
 void player_start(const media_arena_t &arena) {
@@ -547,10 +568,19 @@ void player_start(const media_arena_t &arena) {
     s_reader_idle = xSemaphoreCreateBinary();
     s_audio_wake = xSemaphoreCreateBinary();
     s_audio_idle = xSemaphoreCreateBinary();
+    s_closed = xSemaphoreCreateBinary();
+    s_audio_stopped = xSemaphoreCreateBinary();
+    s_notify = xSemaphoreCreateBinary();
     xSemaphoreGive(s_reader_idle);
     xSemaphoreGive(s_audio_idle);
     video_pacing_start();
     audio_out_start();
+#ifdef ESP_PLATFORM
+    xTaskCreatePinnedToCoreWithCaps(notify_task, "player_notify", 3072, nullptr, 2, nullptr,
+                                    tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    xTaskCreate(notify_task, "player_notify", 3072, nullptr, 2, nullptr);
+#endif
     xTaskCreate(reader_task, "media_reader", 4096, nullptr, 4, nullptr);
     xTaskCreate(player_task, "player", 6144, nullptr, 5, nullptr);
 }
@@ -558,7 +588,16 @@ void player_start(const media_arena_t &arena) {
 void player_observe_state(void (*on_change)()) { s_state_observer.store(on_change); }
 
 void player_open(const std::string &path) { send_command(Command::Open, &path); }
-void player_close() { send_command(Command::Close); }
+void player_close() {
+    if (!s_commands) return;
+    xSemaphoreTake(s_closed, 0);
+    while (!send_command(Command::Close, nullptr, 0, kCommandSendMs)) {
+        ESP_LOGE(TAG, "close was not queued");
+    }
+    while (xSemaphoreTake(s_closed, pdMS_TO_TICKS(kCloseTimeoutMs)) != pdTRUE) {
+        ESP_LOGE(TAG, "close did not finish");
+    }
+}
 void player_play() { send_command(Command::Play); }
 void player_pause() { send_command(Command::Pause); }
 void player_restart() { send_command(Command::Restart); }

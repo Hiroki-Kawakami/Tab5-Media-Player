@@ -107,6 +107,11 @@ priorities and when to give up on a request:
   often the one the idle queue is decoding right then.
 - **The decoded pixels are held by the screen for as long as they are shown**,
   and the cache never evicts an entry someone still holds.
+- **The picture may be slightly smaller than the box.** PPA's scale is
+  quantized, and a decode that can land close enough writes straight into its
+  final buffer rather than through an intermediate the CPU then walks (see
+  [`metadata.md`](metadata.md#decoding-a-cover)). Media Info's "Shown At" is
+  the size that came out, not the size the box would have allowed.
 - **A rotation shows the picture it already has, rescaled by PPA**, while the
   size the screen now wants is decoded. Reading the card and decoding again is
   hundreds of milliseconds; a PPA blit of pixels that are already in PSRAM is

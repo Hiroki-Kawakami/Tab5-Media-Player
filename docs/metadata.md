@@ -302,11 +302,34 @@ RV32 does not have. PPA reads the same pixels as DMA instead, and a 700x700
 cover now costs 36 ms of pipeline plus 8 ms of box.
 
 PPA cannot land on the wanted size by itself: its scale factors are quantized
-to sixteenths and bottom out at 1/16, so 700 -> 56 is not expressible. The
-pipeline therefore runs the smallest sixteenth that still overshoots the
-target (2/16 -> 87x87 for a 700px cover) and the existing box resizer covers
-the rest. That last step also does the pixel-format conversion, which is why
-the strips and the PPA output stay RGB888 whatever the panel wants.
+to sixteenths and bottom out at 1/16, so 700 -> 56 is not expressible. Which
+of the two ways out is taken depends on how far the sixteenth below the fitted
+size lands from it:
+
+- **Close enough, and PPA writes the picture into its final buffer.** The
+  output is the panel's own format, so there is no intermediate and no pass of
+  the CPU over every pixel; the picture is simply up to that shortfall smaller
+  than it could have been, which a viewer that centres it shows as a slightly
+  wider border. The allowance is five per cent of the box capped at 20 px — a
+  thumbnail may lose a pixel, a screen-sized picture may not lose a visible
+  frame. A 1000x715 picture on a 1280x720 screen fits at 16/16 and costs
+  nothing at all this way; it used to allocate 2.1 MB for the intermediate and
+  then walk 715,000 pixels to convert them.
+- **Otherwise the smallest overshooting sixteenth goes through an
+  intermediate** (2/16 -> 87x87 for a 700px cover) and the box resizer covers
+  the rest. That last step also does the pixel-format conversion, which is why
+  the strips and the intermediate stay RGB888 whatever the panel wants.
+
+The shortfall is at most a sixteenth of the *source*, so it is the large
+pictures that miss: 1600x1200 into a 720 px screen lands 20 px short and goes
+direct, 3000x2000 lands 158 px short and does not. Thumbnails almost always
+take the second path, because anything more than sixteen times the box cannot
+be reached at all.
+
+The strips are decoded in R,G,B order and PPA reads them as B,G,R, which
+cancels out along the second path (in and out are the same mode) and is why the
+first one asks PPA for the swap: its output is read by LVGL, not by the
+resizer.
 
 PPA scales by interpolating, not by averaging, so a 1/8 step samples 2x2 out
 of every 8x8 block. Thumbnails come out slightly crisper and noisier than the

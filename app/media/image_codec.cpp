@@ -36,6 +36,7 @@ static constexpr uint32_t kScaleDenominator = 16;
 static constexpr uint32_t kStripRows = 16;
 static constexpr uint32_t kMaxHardwareWidth = 4096;
 static constexpr std::size_t kStripStepBytes = 64 * 1024;
+static constexpr int32_t kDirectShortfallMax = 20;
 /* jpeg_new_*_engine() dereferences its half-built handle when it runs out of
    DMA-capable internal RAM (IDF v6.1), so the engines are only asked for when
    there is clearly room: the software path covers the rest. */
@@ -238,6 +239,30 @@ static jpeg_ppa_pipeline_handle_t pipeline(std::size_t strip_bytes) {
     return s_pipeline;
 }
 
+static ppa_srm_color_mode_t panel_color_mode(bool rgb888) {
+    return rgb888 ? PPA_SRM_COLOR_MODE_RGB888 : PPA_SRM_COLOR_MODE_RGB565;
+}
+
+/* How far short of the fitted size a picture may land before it is worth an
+   intermediate and a pass of the box resizer to correct: five per cent of the
+   box, capped so that a screen-sized picture cannot lose a visible border. */
+static int32_t direct_shortfall_max(ImageBox box) {
+    return std::min<int32_t>(box.longest() * 5 / 100, kDirectShortfallMax);
+}
+
+/* The largest sixteenth that does not overshoot the fitted size. Zero when the
+   picture would still be too big at PPA's smallest step, which is every
+   thumbnail of anything larger than sixteen times the box. */
+static uint32_t ppa_fit_scale(uint32_t width, uint32_t height, uint16_t dst_w, uint16_t dst_h,
+                              uint16_t *out_w, uint16_t *out_h) {
+    const uint32_t scale = std::min((uint32_t)dst_w * kScaleDenominator / width,
+                                    (uint32_t)dst_h * kScaleDenominator / height);
+    if (scale < 1 || scale > kScaleDenominator) return 0;
+    *out_w = (uint16_t)(width * scale / kScaleDenominator);
+    *out_h = (uint16_t)(height * scale / kScaleDenominator);
+    return (*out_w && *out_h) ? scale : 0;
+}
+
 static uint32_t ppa_scale(uint32_t width, uint32_t height, uint16_t dst_w, uint16_t dst_h) {
     for (uint32_t scale = 1; scale < kScaleDenominator; scale++) {
         if (width * scale / kScaleDenominator >= dst_w &&
@@ -263,6 +288,43 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
     uint16_t dst_w = 0;
     uint16_t dst_h = 0;
     if (!fit_inside(header.width, header.height, box, &dst_w, &dst_h)) return nullptr;
+
+    /* PPA scales in sixteenths, so it rarely lands on the fitted size, and the
+       intermediate below exists to let the box resizer correct the rest. When
+       the sixteenth under the fitted size is close enough, none of that is
+       worth it: PPA writes the picture straight into its final buffer, in the
+       panel's own format, and neither the intermediate nor a pass of the CPU
+       over every pixel happens at all. The strips stay RGB888 in the decoder's
+       R,G,B order, so the swap PPA does on the way in is what makes the output
+       match what LVGL reads. */
+    uint16_t fit_w = 0;
+    uint16_t fit_h = 0;
+    if (const uint32_t direct = ppa_fit_scale(header.width, header.height, dst_w, dst_h, &fit_w,
+                                              &fit_h)) {
+        const int32_t slack = direct_shortfall_max(box);
+        if (dst_w - fit_w <= slack && dst_h - fit_h <= slack) {
+            auto pixels = alloc_pixels(fit_w, fit_h, rgb888);
+            if (!pixels) return nullptr;
+
+            jpeg_ppa_output_t out = {};
+            out.buffer = pixels->data;
+            out.buffer_size = align_up(pixels->bytes);
+            out.pic_w = fit_w;
+            out.pic_h = fit_h;
+            out.color_mode = panel_color_mode(rgb888);
+
+            jpeg_ppa_transform_t transform = {};
+            transform.scale_x = (float)direct / kScaleDenominator;
+            transform.scale_y = transform.scale_x;
+            transform.rgb_swap = true;
+
+            const esp_err_t err =
+                jpeg_ppa_pipeline_process(handle, data, size, &out, &transform, nullptr);
+            if (err == ESP_OK) return pixels;
+            ESP_LOGW(TAG, "jpeg decode: %s", esp_err_to_name(err));
+            return nullptr;
+        }
+    }
 
     const uint32_t scale = ppa_scale(header.width, header.height, dst_w, dst_h);
     const uint32_t mid_w = header.width * scale / kScaleDenominator;

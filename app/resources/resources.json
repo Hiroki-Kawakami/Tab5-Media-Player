@@ -38,6 +38,26 @@
         "TABLER_SUN": "tabler/sun.svg",
         "TABLER_X": "tabler/x.svg"
       }
+    },
+    "noto_sans_jp_24": {
+      "size": 24,
+      "bpp": 2,
+      "pack": true,
+      "font": "fonts/NotoSansJP-subset.ttf",
+      "variation": {
+        "wght": 500
+      },
+      "glyph_file": "fonts/jp_glyphs.txt"
+    },
+    "noto_sans_jp_38": {
+      "size": 38,
+      "bpp": 2,
+      "pack": true,
+      "font": "fonts/NotoSansJP-subset.ttf",
+      "variation": {
+        "wght": 500
+      },
+      "glyph_file": "fonts/jp_glyphs.txt"
     }
   }
 }

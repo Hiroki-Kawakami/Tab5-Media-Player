@@ -18,6 +18,7 @@
 #include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
 #include "settings.hpp"
+#include "ui_font.hpp"
 #include "ui_orientation.hpp"
 #include "usb_msc.h"
 
@@ -93,6 +94,7 @@ void app_entry() {
         ESP_LOGE(TAG, "display init: %s", esp_err_to_name(err));
         return;
     }
+    ui_font_init();
 #ifdef ESP_PLATFORM
     ESP_LOGI(TAG, "internal heap free after display init: %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

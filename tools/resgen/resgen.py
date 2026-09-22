@@ -76,15 +76,18 @@ class Definition:
         self.icon_codepoints = self._assign_icon_codepoints()
 
     def _validate_font(self, where, font):
-        check_keys(where, font, ("size", "bpp", "icon", "font", "glyph", "variation", "fallback"))
+        check_keys(where, font,
+                   ("size", "bpp", "icon", "font", "glyph", "glyph_file", "variation", "fallback",
+                    "pack", "compress"))
         check_int(f"{where}.size", font.get("size"))
         if font.get("bpp", 4) not in (1, 2, 4, 8):
             fail(f"{where}.bpp", "must be 1, 2, 4 or 8")
         if ("icon" in font) == ("font" in font):
             fail(where, "needs exactly one of 'icon' or 'font'")
         if "icon" in font:
-            if "glyph" in font or "variation" in font:
-                fail(where, "'glyph' and 'variation' only apply to 'font'")
+            if ("glyph" in font or "glyph_file" in font or "variation" in font or "pack" in font
+                    or "compress" in font):
+                fail(where, "'glyph', 'glyph_file', 'variation', 'pack' and 'compress' only apply to 'font'")
             icons = font["icon"]
             if not isinstance(icons, dict) or not icons:
                 fail(f"{where}.icon", "must be a non-empty object")
@@ -99,6 +102,20 @@ class Definition:
             if glyph is not None and (not isinstance(glyph, list)
                                       or not all(isinstance(s, str) for s in glyph)):
                 fail(f"{where}.glyph", "must be an array of strings")
+            if "glyph_file" in font and not isinstance(font["glyph_file"], str):
+                fail(f"{where}.glyph_file", "must be a file name")
+            if "pack" in font:
+                if font["pack"] is not True:
+                    fail(f"{where}.pack", "must be true")
+                if "fallback" in font:
+                    fail(f"{where}.fallback", "a pack is chained at runtime, not by resgen")
+                if font.get("bpp", 4) == 8:
+                    fail(f"{where}.bpp", "a pack stores 1, 2 or 4 bpp")
+            if "compress" in font:
+                if not isinstance(font["compress"], bool):
+                    fail(f"{where}.compress", "must be true or false")
+                if not font.get("pack"):
+                    fail(f"{where}.compress", "only applies to a pack")
             variation = font.get("variation", {})
             if not isinstance(variation, dict) or not all(
                     isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -139,7 +156,10 @@ class Definition:
             font = self.fonts[name]
             if "icon" in font:
                 return sorted({self.file(f) for f in font["icon"].values()})
-            return [self.file(font["font"])]
+            files = [self.file(font["font"])]
+            if "glyph_file" in font:
+                files.append(self.file(font["glyph_file"]))
+            return files
         return [self.file(self.images[name]["file"])]
 
 
@@ -161,6 +181,170 @@ def hex_rows(data, per_row=16):
         for i in range(0, len(data), per_row))
 
 
+PACK_TYPES = """typedef struct {
+    uint32_t bitmap;
+    uint16_t adv_w;
+    uint8_t box_w;
+    uint8_t box_h;
+    int8_t ofs_x;
+    int8_t ofs_y;
+} resgen_glyph_t;
+
+typedef struct {
+    const uint16_t *codepoints;
+    const resgen_glyph_t *glyphs;
+    const uint8_t *data;
+    uint32_t glyph_count;
+    uint8_t px;
+    uint8_t bpp;
+    uint8_t prefilter;
+    int16_t line_height;
+    int16_t base_line;
+    int16_t max_ascent;
+    int16_t max_descent;
+    int8_t underline_position;
+    int8_t underline_thickness;
+} resgen_font_pack_t;
+"""
+
+
+class BitWriter:
+    def __init__(self):
+        self.out = bytearray()
+        self.acc = 0
+        self.bits = 0
+
+    def write(self, value, count):
+        self.acc = (self.acc << count) | value
+        self.bits += count
+        while self.bits >= 8:
+            self.bits -= 8
+            self.out.append((self.acc >> self.bits) & 0xFF)
+        self.acc &= (1 << self.bits) - 1
+
+    def bytes(self):
+        if self.bits == 0:
+            return bytes(self.out)
+        return bytes(self.out) + bytes(((self.acc << (8 - self.bits)) & 0xFF,))
+
+
+# A value costs bpp bits. A value equal to the previous one switches to repeat
+# mode, where every further repeat is a single 1 bit, a 0 bit ends the run and
+# is followed by the next value, and the 11th repeat is followed by a 6 bit
+# count. The count runs out on a value, not on a repeat, and the decoder does
+# not re-enter repeat mode on that value.
+def rle_encode(levels, bpp):
+    writer = BitWriter()
+    total = len(levels)
+    index = 0
+    previous = None
+    repeats = 0
+    repeating = False
+    while index < total:
+        if not repeating:
+            value = levels[index]
+            writer.write(value, bpp)
+            index += 1
+            repeating = previous is not None and value == previous
+            repeats = 0
+            previous = value
+        elif index < total and levels[index] == previous:
+            writer.write(1, 1)
+            repeats += 1
+            index += 1
+            if repeats == 11:
+                run = 0
+                while index + run < total and levels[index + run] == previous:
+                    run += 1
+                length = min(run + 1, 63)
+                writer.write(length, 6)
+                index += length - 1
+                if index < total:
+                    writer.write(levels[index], bpp)
+                    previous = levels[index]
+                    index += 1
+                repeating = False
+        else:
+            writer.write(0, 1)
+            repeating = False
+    return writer.bytes()
+
+
+def rle_decode(data, count, bpp):
+    bits = len(data) * 8
+    position = 0
+
+    def read(length):
+        nonlocal position
+        value = 0
+        for i in range(length):
+            bit = 0
+            if position + i < bits:
+                byte = data[(position + i) >> 3]
+                bit = (byte >> (7 - ((position + i) & 7))) & 1
+            value = (value << 1) | bit
+        position += length
+        return value
+
+    out = []
+    state = "single"
+    previous = 0
+    repeats = 0
+    for _ in range(count):
+        if state == "single":
+            first = position == 0
+            value = read(bpp)
+            if not first and value == previous:
+                state = "repeat"
+                repeats = 0
+            previous = value
+        elif state == "repeat":
+            repeats += 1
+            if read(1) == 1:
+                value = previous
+                if repeats == 11:
+                    repeats = read(6)
+                    if repeats:
+                        state = "count"
+                    else:
+                        value = read(bpp)
+                        previous = value
+                        state = "single"
+            else:
+                value = read(bpp)
+                previous = value
+                state = "single"
+        else:
+            value = previous
+            repeats -= 1
+            if repeats == 0:
+                value = read(bpp)
+                previous = value
+                state = "single"
+        out.append(value)
+    return out
+
+
+def unprefilter_rows(levels, width, height):
+    out = []
+    previous = [0] * width
+    for y in range(height):
+        row = [a ^ b for a, b in zip(levels[y * width:(y + 1) * width], previous)]
+        out += row
+        previous = row
+    return out
+
+
+def prefilter_rows(levels, width, height):
+    out = []
+    previous = [0] * width
+    for y in range(height):
+        row = levels[y * width:(y + 1) * width]
+        out += [a ^ b for a, b in zip(row, previous)]
+        previous = row
+    return out
+
+
 def generate_header(definition):
     lines = [
         "#pragma once",
@@ -172,7 +356,11 @@ def generate_header(definition):
         "#endif",
         "",
     ]
-    lines += [f"LV_FONT_DECLARE({name})" for name in definition.fonts]
+    packs = [name for name, font in definition.fonts.items() if font.get("pack")]
+    lines += [f"LV_FONT_DECLARE({name})" for name in definition.fonts if name not in packs]
+    if packs:
+        lines += ["", PACK_TYPES]
+        lines += [f"extern const resgen_font_pack_t {name};" for name in packs]
     lines += [f"LV_IMAGE_DECLARE({name});" for name in definition.images]
     if definition.icon_codepoints:
         lines.append("")
@@ -381,9 +569,17 @@ def generate_icon_font(definition, name):
     return generate_font_c(name, font, glyphs, line_height=size, base_line=0)
 
 
-def glyph_codepoints(face, font):
-    if "glyph" in font:
-        return sorted({ord(c) for s in font["glyph"] for c in s if c not in "\r\n"})
+def glyph_codepoints(definition, where, face, font):
+    chars = {c for s in font.get("glyph", []) for c in s}
+    if "glyph_file" in font:
+        path = definition.file(font["glyph_file"])
+        if not path.exists():
+            raise DefinitionError(f"{where}.glyph_file: {path} not found")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.startswith("#"):
+                chars |= set(line)
+    if chars:
+        return sorted({ord(c) for c in chars if c not in "\r\n\t"})
     return sorted(cp for cp, _ in face.get_chars()
                   if cp >= 0x20 and not 0x7F <= cp <= 0x9F)
 
@@ -398,10 +594,12 @@ def set_variation(face, where, variation):
     unknown = set(variation) - set(tags)
     if unknown:
         raise DefinitionError(f"{where}.variation: unknown axes {sorted(unknown)}, font has {tags}")
-    face.set_var_design_coords([variation.get(a.tag, a.default) for a in axes])
+    # freetype-py reports the axis limits in 16.16 but takes design coordinates
+    # as plain numbers.
+    face.set_var_design_coords([variation.get(a.tag, a.default / 65536.0) for a in axes])
 
 
-def generate_ttf_font(definition, name):
+def render_ttf_glyphs(definition, name):
     import freetype
 
     where = f"font.{name}"
@@ -418,7 +616,7 @@ def generate_ttf_font(definition, name):
     flags = freetype.FT_LOAD_RENDER | freetype.FT_LOAD_TARGET_LIGHT
     glyphs = []
     missing = []
-    for cp in glyph_codepoints(face, font):
+    for cp in glyph_codepoints(definition, where, face, font):
         if face.get_char_index(cp) == 0:
             missing.append(cp)
             continue
@@ -441,12 +639,101 @@ def generate_ttf_font(definition, name):
     ascender = math.ceil(metrics.ascender / 64)
     descender = math.floor(metrics.descender / 64)
     scale = size / face.units_per_EM
-    return generate_font_c(
-        name, font, glyphs,
-        line_height=ascender - descender,
-        base_line=-descender,
-        underline_position=round(face.underline_position * scale),
-        underline_thickness=max(1, round(face.underline_thickness * scale)))
+    return glyphs, {
+        "line_height": ascender - descender,
+        "base_line": -descender,
+        "underline_position": round(face.underline_position * scale),
+        "underline_thickness": max(1, round(face.underline_thickness * scale)),
+    }
+
+
+def generate_ttf_font(definition, name):
+    glyphs, metrics = render_ttf_glyphs(definition, name)
+    return generate_font_c(name, definition.fonts[name], glyphs, **metrics)
+
+
+def encode_pack_glyph(glyph, bpp, compress, prefilter):
+    raw = pack_levels(glyph.levels, bpp)
+    if not compress:
+        return raw, False
+    source = prefilter_rows(glyph.levels, glyph.width, glyph.height) if prefilter else glyph.levels
+    rle = rle_encode(source, bpp)
+    if len(rle) < len(raw):
+        return rle, True
+    return raw, False
+
+
+def generate_pack_c(name, font, glyphs, metrics, check=False):
+    bpp = font.get("bpp", 4)
+    prefilter = font.get("compress", True)
+    glyphs = sorted(glyphs, key=lambda g: g.codepoint)
+    if glyphs and glyphs[-1].codepoint > 0xFFFF:
+        raise DefinitionError(f"font.{name}: a pack stores codepoints up to U+FFFF")
+
+    data = bytearray()
+    rows = []
+    for g in glyphs:
+        if not g.levels:
+            rows.append((0, g))
+            continue
+        encoded, compressed = encode_pack_glyph(g, bpp, font.get("compress", True), prefilter)
+        if check:
+            levels = rle_decode(encoded, len(g.levels), bpp) if compressed else None
+            if compressed:
+                if prefilter:
+                    levels = unprefilter_rows(levels, g.width, g.height)
+                if levels != g.levels:
+                    raise DefinitionError(f"font.{name}: U+{g.codepoint:04X} does not decode back")
+        if g.width > 255 or g.height > 255:
+            raise DefinitionError(f"font.{name}: U+{g.codepoint:04X} is larger than 255 px")
+        rows.append((len(data) | (0x80000000 if compressed else 0), g))
+        data += encoded
+
+    # the decoder reads a 24 bit window, so the last glyph must have slack
+    data += b"\x00\x00"
+
+    glyph_rows = [
+        f"    {{.bitmap = 0x{bitmap:08x}, .adv_w = {g.adv_w}, .box_w = {g.width}, "
+        f".box_h = {g.height}, .ofs_x = {g.ofs_x}, .ofs_y = {g.ofs_y}}}, /* U+{g.codepoint:04X} */"
+        for bitmap, g in rows]
+    codepoints = [f"0x{g.codepoint:04x}," for g in glyphs]
+    return "\n".join([
+        '#include "resources.h"',
+        "",
+        "static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_data[] = {",
+        hex_rows(data) if data else "    0x00,",
+        "};",
+        "",
+        "static const uint16_t codepoints[] = {",
+        *["    " + " ".join(codepoints[i:i + 12]) for i in range(0, len(codepoints), 12)],
+        "};",
+        "",
+        "static const resgen_glyph_t glyphs[] = {",
+        *glyph_rows,
+        "};",
+        "",
+        f"const resgen_font_pack_t {name} = {{",
+        "    .codepoints = codepoints,",
+        "    .glyphs = glyphs,",
+        "    .data = glyph_data,",
+        f"    .glyph_count = {len(glyphs)},",
+        f"    .px = {font['size']},",
+        f"    .bpp = {bpp},",
+        f"    .prefilter = {1 if prefilter else 0},",
+        f"    .line_height = {metrics['line_height']},",
+        f"    .base_line = {metrics['base_line']},",
+        f"    .max_ascent = {max((g.height + g.ofs_y for g in glyphs), default=0)},",
+        f"    .max_descent = {max((-g.ofs_y for g in glyphs), default=0)},",
+        f"    .underline_position = {metrics['underline_position']},",
+        f"    .underline_thickness = {metrics['underline_thickness']},",
+        "};",
+        "",
+    ])
+
+
+def generate_pack_font(definition, name, check=False):
+    glyphs, metrics = render_ttf_glyphs(definition, name)
+    return generate_pack_c(name, definition.fonts[name], glyphs, metrics, check)
 
 
 def encode_image(image, fmt):
@@ -560,12 +847,20 @@ def main():
     p = sub.add_parser("all", help="write the header and every entry")
     p.add_argument("definition")
     p.add_argument("outdir")
+    p = sub.add_parser("check", help="verify that every packed glyph decodes back")
+    p.add_argument("definition")
     args = parser.parse_args()
 
     try:
         definition = Definition(args.definition)
         if args.command == "cmake":
             write_if_changed(args.output, generate_cmake(definition))
+            return
+        if args.command == "check":
+            for name, font in definition.fonts.items():
+                if font.get("pack"):
+                    generate_pack_font(definition, name, check=True)
+                    print(f"resgen: {name}: every glyph decodes back")
             return
         outdir = Path(args.outdir)
         if args.command in ("header", "all"):
@@ -580,6 +875,8 @@ def main():
             if name in definition.fonts:
                 if "icon" in definition.fonts[name]:
                     text = generate_icon_font(definition, name)
+                elif definition.fonts[name].get("pack"):
+                    text = generate_pack_font(definition, name)
                 else:
                     text = generate_ttf_font(definition, name)
             elif name in definition.images:

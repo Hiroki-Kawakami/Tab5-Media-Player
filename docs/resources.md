@@ -21,7 +21,8 @@ lv_label_set_text(label, ICON_SETTINGS);
 lv_image_set_src(img, &picture);
 ```
 
-Python runs from `$RESGEN_PYTHON` (freetype-py, pillow, resvg-py), set by the
+Python runs from `$RESGEN_PYTHON` (freetype-py, pillow, resvg-py, fonttools),
+set by the
 project `flake.nix`. It is a separate interpreter from ESP-IDF's
 `IDF_PYTHON_ENV_PATH` so the two environments never collide on `python3`.
 
@@ -72,8 +73,11 @@ Font keys:
 | `icon` | `{ NAME: file.svg }` — makes an icon font (exclusive with `font`) |
 | `font` | TTF/OTF file — makes a text font (exclusive with `icon`) |
 | `glyph` | array of strings; the union of their characters is included. Omitted: every mapped glyph in the font |
+| `glyph_file` | a file listing the characters to include, `#` lines ignored; unioned with `glyph` |
 | `variation` | variable-font axis values, e.g. `{"wght": 700}`; omitted axes use the font default |
 | `fallback` | a generated font name or any `lv_font_t` symbol (e.g. `lv_font_montserrat_24`) |
+| `pack` | `true` emits a `resgen_font_pack_t` instead of an `lv_font_t` (exclusive with `fallback`); see [`fonts.md`](fonts.md) |
+| `compress` | pack only; `false` stores every glyph raw. Default `true` (RLE per glyph, raw when that is smaller) |
 
 Image keys: `file` and `format` are required. `format` is one of `RGB565`,
 `RGB565A8`, `RGB888`, `XRGB8888`, `ARGB8888`, `L8`, `A8` (`A8` needs a source
@@ -102,8 +106,11 @@ scales the other by aspect ratio, both stretch.
 - `line_height`/`base_line` come from the face's ascender/descender, not from
   the included glyphs, so changing the `glyph` subset never moves layout.
   lv_font_conv does the opposite, so its fonts may be a few px tighter.
-- Characters in `glyph` that the font lacks are skipped with a build warning.
-- No kerning and no RLE compression yet.
+- Characters in `glyph`/`glyph_file` that the font lacks are skipped with a
+  build warning.
+- No kerning. An `lv_font_t` is stored uncompressed; a `pack` is RLE compressed
+  per glyph, and `resgen.py check <definition>` verifies that every packed glyph
+  decodes back.
 - With `CONFIG_LV_FONT_FMT_TXT_LARGE` off, a font is limited to 1 MB of bitmap
   and 255 px glyph boxes; a generated font that exceeds this carries an
   `#error` asking for the option.

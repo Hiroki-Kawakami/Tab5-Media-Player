@@ -1,0 +1,9 @@
+settle
+tap 360 226
+settle
+tap 360 799
+settle
+capture japanese_list.jpg
+tap 360 480
+settle
+capture japanese_audio.jpg

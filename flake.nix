@@ -15,7 +15,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ]);
+        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
       in {
         devShells.default = pkgs.mkShell {
           inputsFrom = [ esp-devkit.devShells.${system}.default ];

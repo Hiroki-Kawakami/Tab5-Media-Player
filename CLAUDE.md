@@ -29,6 +29,8 @@ submodule.
 - [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
   LVGL fonts, icon fonts and images from `app/resources/resources.json` at
   build time.
+- [`docs/fonts.md`](docs/fonts.md) — Japanese text: the Montserrat/NotoSansJP
+  chain, which sizes are covered, and the compressed glyph pack behind them.
 - [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI,
   desktop app and browser version that convert videos for the player.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,

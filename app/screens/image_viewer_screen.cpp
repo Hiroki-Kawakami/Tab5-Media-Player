@@ -274,7 +274,7 @@ void ImageViewerScreen::load() {
         showPixels(std::move(placeholder));
     } else {
         showPixels(nullptr);
-        setMessage("Loading\n" + name(), false);
+        setMessage("Loading...\n" + name(), false);
     }
     refreshInfo();
     media_cache_request(path(), MetaWantInfo | MetaWantImage, box_, MetaPriority::Blocking, token_);

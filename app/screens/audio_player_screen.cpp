@@ -20,6 +20,9 @@ static constexpr int32_t kSeekRange = 1000;
 static constexpr int32_t kPad = 24;
 static constexpr int32_t kGap = 24;
 static constexpr int32_t kTimeWidth = 100;
+static constexpr int32_t kTitleBottomPad = 40;
+static constexpr int32_t kArtworkGap = 64;
+static constexpr int32_t kSeekRowHeight = 56;
 static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kArtworkSide = 552;
 static constexpr ImageBox kArtworkBox = { kArtworkSide, kArtworkSide };
@@ -124,7 +127,7 @@ void AudioPlayerScreen::buildContents() {
 
     landscape_ = isLandscape();
     lv_obj_set_style_pad_all(contents_, kPad, 0);
-    lv_obj_set_style_pad_row(contents_, kGap, 0);
+    lv_obj_set_style_pad_row(contents_, kArtworkGap, 0);
     lv_obj_set_style_pad_column(contents_, kGap, 0);
     lv_obj_set_style_text_color(contents_, lv_color_hex(kForegroundColor), 0);
     lv_obj_set_flex_flow(contents_, landscape_ ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
@@ -240,6 +243,7 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(box, 8, 0);
+    lv_obj_set_style_pad_bottom(box, kTitleBottomPad, 0);
 
     title_label_ = lv_label_create(box);
     lv_obj_set_width(title_label_, lv_pct(100));
@@ -262,6 +266,7 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
 void AudioPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     lv_obj_t *row = create_row(parent, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_column(row, 16, 0);
+    lv_obj_set_style_min_height(row, kSeekRowHeight, 0);
 
     elapsed_label_ = lv_label_create(row);
     lv_obj_set_width(elapsed_label_, kTimeWidth);

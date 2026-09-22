@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cstring>
 
+static constexpr int32_t kSliderTouchPad = 24;
+
 void media_format_time(char *text, std::size_t size, int64_t seconds) {
     if (seconds < 0) {
         snprintf(text, size, "--:--");
@@ -47,6 +49,7 @@ lv_obj_t *media_slider(lv_obj_t *parent, int32_t max, lv_color_t foreground, lv_
     lv_obj_set_style_bg_color(slider, foreground, LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(slider, foreground, LV_PART_KNOB);
     lv_obj_set_style_pad_all(slider, 8, LV_PART_KNOB);
+    lv_obj_set_ext_click_area(slider, kSliderTouchPad);
     return slider;
 }
 

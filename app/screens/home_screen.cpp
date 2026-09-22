@@ -121,7 +121,7 @@ void HomeScreen::layout() {
 void HomeScreen::build_menu(lv_obj_t *pane) {
     lv_obj_set_style_bg_color(pane, lv_color_hex(0xeeeeee), 0);
     auto navigation = lv_navigation_create(pane);
-    lv_navigation_title_create(navigation, "Tab5MediaPlayer");
+    lv_navigation_title_create(navigation, "Media Player");
 
     auto contents = lv_spacer_create(pane, LV_PCT(100), LV_SIZE_CONTENT, 1);
     lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);

@@ -7,16 +7,16 @@ capture audio_music_list.jpg
 tap 360 160
 wait 1500
 capture audio_aac_playing.jpg
-tap 360 1072
+tap 360 1078
 wait 600
 capture audio_aac_paused.jpg
-tap 360 1072
+tap 360 1078
 wait 600
-down 240 974
+down 240 952
 wait 200
-move 400 974
+move 400 952
 wait 200
-move 480 974
+move 480 952
 wait 300
 up
 wait 1000
@@ -31,21 +31,21 @@ imu rot90
 wait 800
 settle
 capture audio_opus_landscape.jpg
-tap 445 925
+tap 486 925
 wait 600
 capture audio_opus_paused.jpg
-tap 445 925
+tap 486 925
 wait 600
-tap 445 650
+tap 486 650
 wait 300
-tap 445 650
+tap 486 650
 wait 400
 capture audio_opus_repeat.jpg
-down 347 1100
+down 360 1100
 wait 200
-move 347 900
+move 360 900
 wait 200
-move 347 820
+move 360 820
 wait 300
 up
 wait 1000
@@ -75,11 +75,11 @@ tap 60 60
 settle
 tap 360 560
 wait 1500
-down 240 974
+down 240 952
 wait 200
-move 400 974
+move 400 952
 wait 200
-move 480 974
+move 480 952
 wait 300
 up
 wait 1200

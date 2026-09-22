@@ -34,7 +34,7 @@ static constexpr int32_t kPortraitSide = 116;
 static constexpr int32_t kPortraitSlider = 440;
 static constexpr int32_t kTimeWidth = 100;
 static constexpr int32_t kIconButton = 72;
-static constexpr int32_t kVolumeSlider = 240;
+static constexpr int32_t kVolumeSlider = 280;
 static constexpr int32_t kSeekGap = 16;
 static constexpr int32_t kOverlayBufferLines = 32;
 

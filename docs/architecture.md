@@ -68,6 +68,11 @@ matching memory by the time the player opens (details in
 [`h264.md`](h264.md#pie)). If `video_presenter_begin()` fails anyway,
 `VideoPlayerScreen` gives the SRAM back and says so in a modal.
 
+The video decoders are no longer the only PIE code: image_framework decodes
+JPEG and resizes with it too, which puts the same rule on the metadata worker's
+decoder task and on the buffers it hands the decoder
+([`metadata.md`](metadata.md#nothing-of-this-lives-in-internal-ram)).
+
 ## Media arena
 
 `app_entry()` also allocates the 4 MB PSRAM arena that playback reads into

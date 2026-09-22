@@ -131,6 +131,18 @@ buffer in one frame steps straight over it. The decoder task gets 16 KiB
 instead, because it runs the image decoders rather than a header walk;
 `meta stats` prints what is left of both.
 
+PSRAM is also what the decoder task needs to be a PIE task, which it now is:
+image_framework's JPEG and resize kernels use the vector unit, FreeRTOS saves
+128-bit registers on the stack of whatever task touched them, and RTC RAM — a
+heap region in this build — cannot take those stores. `MALLOC_CAP_SPIRAM`
+satisfies the same rule `MALLOC_CAP_SIMD` asks for; `MALLOC_CAP_INTERNAL` would
+not, because it reaches RTC RAM once the other internal pools are used up
+([`h264.md`](h264.md#pie) has the heap's matching rules). The same holds for
+what the worker hands image_framework, since PIE stores write the destination
+row of `imgf_decoder_next_row()` and the resizer's output picture as well: the
+row buffer, the decoded picture and the `alloc_caps` the decoder and resizer
+are opened with are all `MALLOC_CAP_SPIRAM` in `image_codec.cpp`.
+
 ## Prefetching gives way to playback
 
 Internal SRAM, not PSRAM, is what runs out: after boot about 74 KiB is free and
@@ -309,7 +321,10 @@ scales each strip down as it lands. Both targets take this path — the host
 build is backed by image_framework, so the simulator exercises what the board
 runs. For PNG, a progressive JPEG or a picture wider than the strip buffers can
 take, the fallback streams rows out of image_framework's decoder through the
-resizer, which never materialises the full picture.
+resizer, which never materialises the full picture. On the board that path runs
+PIE kernels (colour conversion, the IDCT and the resizer's row packing) and on
+the host their C counterparts, which write the same bytes — so the simulator
+still shows the same pixels, but not the same timings.
 
 The reason for PPA is that the decode was never the cost. On a 700x700 cover
 the hardware decode is 11 ms and the software box-downscale to 56x56 was

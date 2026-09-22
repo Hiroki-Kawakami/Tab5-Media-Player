@@ -1091,6 +1091,16 @@ static bool harness_command(int argc, const char *const *argv, void *) {
         harness_reply("OK meta drain");
         return true;
     }
+    if (argc >= 2 && strcmp(argv[1], "drop") == 0) {
+        Lock lock;
+        for (ImageStore *store : { &s_state->raw, &s_state->jpeg, &s_state->decoded,
+                                   &s_state->view }) {
+            store->map.clear();
+            store->bytes = 0;
+        }
+        harness_reply("OK meta drop");
+        return true;
+    }
     if (argc >= 2 && strcmp(argv[1], "stats") == 0) {
         Lock lock;
         ESP_LOGI(TAG,

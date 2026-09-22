@@ -80,6 +80,22 @@ with 512 KiB reads. `mb_read_alloc()` over-allocates and starts the data at
 the matching phase, and the windowed reader aligns its refills down for the
 same reason.
 
+"Hands the rest to DMA" is literal, and on USB it comes with a contract.
+`msc_bot.c` lends the caller's buffer to the transfer rather than copying
+through its bounce area whenever the address and length are aligned, which is
+what the phase trick buys: the sector-aligned middle of the read lands on a
+cache line, so the big transfer is borrowed. A borrowed PSRAM buffer is then
+written by DMA behind the cache, and `data_stage()` has to maintain it by hand
+-- write the caller's lines back before the transfer so a later write-back
+cannot land on top of what arrived, and drop them after a read so the CPU stops
+seeing what it cached before. Getting that wrong does not fail: the buffer
+comes back correct except for the lines the cache happened to hold, which reads
+as a file whose bytes are subtly different every time it is read, and turns up
+much later as a picture that decodes into garbage below the point where the
+JPEG bitstream first disagreed with itself. Internal RAM needs none of this,
+so the alignment a borrow demands is the PSRAM cache line for a PSRAM
+destination and the smaller internal one otherwise.
+
 That window starts at 8 KB and doubles while refills stay sequential. It used
 to be a flat 64 KB, which made the 10-byte ID3 header peek cost a 64 KB read —
 about 10 ms before anything had been parsed — while the frame scan that

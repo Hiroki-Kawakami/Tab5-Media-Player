@@ -11,6 +11,7 @@
 #include "esp_private/esp_cache_private.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -76,6 +77,7 @@ struct msc_bot_device {
     uint32_t block_size;
     uint32_t block_count;
     size_t dma_alignment;
+    size_t psram_alignment;
     uint8_t interface;
     uint8_t bulk_in;
     uint8_t bulk_out;
@@ -175,17 +177,36 @@ static esp_err_t mass_storage_reset(msc_bot_device_t *device) {
     return err;
 }
 
+/* Lending the caller's buffer to the transfer lets the USB DMA write it
+   directly, which is what keeps a large read off the bounce buffer. A PSRAM
+   destination then has to be kept coherent by hand (see data_stage), and that
+   is only possible when the buffer starts and ends on a cache line, so the
+   requirement is stricter there than for internal RAM. */
 static bool borrowable(const msc_bot_device_t *device, const void *buffer, size_t bytes) {
-    const size_t alignment = device->dma_alignment;
-    return buffer && bytes && (uintptr_t)buffer % alignment == 0 && bytes % alignment == 0 &&
+    if (!buffer || !bytes) return false;
+    const size_t alignment =
+        esp_ptr_external_ram(buffer) ? device->psram_alignment : device->dma_alignment;
+    return (uintptr_t)buffer % alignment == 0 && bytes % alignment == 0 &&
            bytes % device->bulk_in_mps == 0;
 }
 
 static esp_err_t data_stage(msc_bot_device_t *device, void *data, size_t bytes, bool in) {
     const uint8_t endpoint = in ? device->bulk_in : device->bulk_out;
     const bool borrowed = borrowable(device, data, bytes);
+    /* The DMA reaches PSRAM behind the cache, so the caller's lines have to go
+       out before the transfer -- otherwise a later write-back lands on top of
+       what arrived -- and be dropped after a read, or the CPU keeps seeing what
+       it cached before. Internal RAM needs neither. Getting this wrong does not
+       fail: it returns a buffer that is right except for the lines the cache
+       happened to hold, which reads as a file that is subtly different every
+       time it is read. */
+    const bool coherent = borrowed && esp_ptr_external_ram(data);
     if (borrowed) {
         transfer_set_buffer(device->data, data, bytes);
+        if (coherent) {
+            const esp_err_t sync = esp_cache_msync(data, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+            if (sync != ESP_OK) ESP_LOGE(TAG, "cache writeback: %s", esp_err_to_name(sync));
+        }
     } else {
         transfer_set_buffer(device->data, device->bounce, device->bounce_bytes);
         if (!in) memcpy(device->bounce, data, bytes);
@@ -193,6 +214,10 @@ static esp_err_t data_stage(msc_bot_device_t *device, void *data, size_t bytes, 
     const size_t submit_bytes =
         in ? (size_t)usb_round_up_to_mps((int)bytes, device->bulk_in_mps) : bytes;
     const esp_err_t err = bulk_transfer(device, device->data, endpoint, submit_bytes);
+    if (coherent && in) {
+        const esp_err_t sync = esp_cache_msync(data, bytes, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        if (sync != ESP_OK) ESP_LOGE(TAG, "cache invalidate: %s", esp_err_to_name(sync));
+    }
     if (err == ESP_OK && in && !borrowed) {
         memcpy(data, device->bounce, bytes);
     }
@@ -369,11 +394,9 @@ static esp_err_t find_endpoints(msc_bot_device_t *device, const usb_config_desc_
     return device->bulk_in && device->bulk_out ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
 }
 
-static size_t dma_alignment(void) {
-    size_t internal = 4, external = 4;
-    esp_cache_get_alignment(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL, &internal);
-    esp_cache_get_alignment(MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM, &external);
-    const size_t alignment = internal > external ? internal : external;
+static size_t cache_alignment(uint32_t caps) {
+    size_t alignment = 0;
+    esp_cache_get_alignment(caps, &alignment);
     return alignment ? alignment : 4;
 }
 
@@ -384,7 +407,8 @@ esp_err_t msc_bot_open(usb_host_client_handle_t client, uint8_t address,
     msc_bot_device_t *device = heap_caps_calloc(1, sizeof(*device), MALLOC_CAP_DEFAULT);
     if (!device) return ESP_ERR_NO_MEM;
     device->client = client;
-    device->dma_alignment = dma_alignment();
+    device->dma_alignment = cache_alignment(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    device->psram_alignment = cache_alignment(MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM);
     device->bounce_bytes = kBounceBytes;
     device->lock = xSemaphoreCreateMutex();
     device->done = xSemaphoreCreateBinary();

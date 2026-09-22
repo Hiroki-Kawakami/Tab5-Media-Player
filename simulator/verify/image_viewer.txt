@@ -1,8 +1,8 @@
 # Image viewer: Pictures/ holds JPEG and PNG samples of both aspects, one
 # picture smaller than the screen, a progressive JPEG the hardware path cannot
 # take, a file that is not an image, a JPEG whose frame header sits past the
-# window the probe reads, and a progressive JPEG big enough to need megabytes of
-# coefficients.
+# window the probe reads, a progressive JPEG big enough to need megabytes of
+# coefficients, and two pictures with EXIF (a JPEG APP1 and a PNG eXIf chunk).
 settle
 tap 360 226
 settle
@@ -86,6 +86,43 @@ tap 124 1240
 meta drain
 settle
 capture image_progressive_big.jpg
+tap 124 1240
+meta drain
+settle
+tap 676 40
+settle
+capture image_info_exif.jpg
+down 360 1220
+wait 60
+move 360 1060
+wait 60
+move 360 700
+wait 250
+up
+wait 120
+down 360 1220
+wait 60
+move 360 1060
+wait 60
+move 360 700
+wait 250
+up
+settle
+capture image_info_exif_scrolled.jpg
+tap 360 300
+settle
+tap 360 640
+settle
+tap 124 1240
+meta drain
+settle
+tap 676 40
+settle
+capture image_info_exif_png.jpg
+tap 360 300
+settle
+tap 360 640
+settle
 tap 44 1240
 meta drain
 settle

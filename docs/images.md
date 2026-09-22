@@ -47,8 +47,40 @@ button or a tap on the picture beside them.
   `MediaSummary` describes: the rows are the file, its format and size, the
   resolution the header gave and the size the picture is actually shown at. It
   is rebuilt every time it is shown and whenever the picture behind it changes,
-  since a swipe beside the panel moves to the next file. The scroll-cache the
-  video player's info panel needs is not here — five rows fit.
+  since a swipe beside the panel moves to the next file. With EXIF it is longer
+  than the panel, and it scrolls as an ordinary LVGL container: the video
+  player's info panel renders itself into an off-screen buffer because scrolling
+  live objects over a playing video is what costs, and nothing is playing here.
+
+## What EXIF adds
+
+`app/media/image_exif.*` reads the tags a camera leaves in a picture, and the
+Media Info panel shows them as a Camera and an Exposure section.
+
+- **It is parsed by the probe, out of the window it already read.** The 128 KB
+  the probe pulls in for the format and the id starts at the file's first byte,
+  which is where a JPEG's `APP1` and a PNG's `eXIf` are, so the tags cost a
+  parse and no card access at all. A picture whose tags run past the window is
+  parsed as far as the window goes — every offset is checked against the bytes
+  in hand rather than against the length the segment claims.
+- **The result hangs off `MediaEntry` as a pointer**, allocated only when
+  something was found, so the 512 entries the meta store may hold do not each
+  grow by an `ImageExif`. It survives `media_cache_stop()` with the rest of the
+  meta entries.
+- **Only ASCII is kept from a text tag**, and only the first 256 bytes of one
+  are looked at. The panel's font has no glyphs beyond ASCII, and a camera may
+  write anything into `Model` or `LensModel`, so the bytes that cannot be drawn
+  are dropped at parse time rather than handed to LVGL; the cap is what keeps a
+  file claiming a 64 KB string in every one of its entries from costing the
+  probe a scan per entry.
+- **Orientation is shown, not applied.** Turning the picture would mean the
+  decode, the cache key (an entry is keyed by the box it was fitted into) and
+  the PPA stand-in a rotation shows all agreeing on the rotation, which is a
+  different change from reading a tag.
+
+GPS, the maker notes and everything else are skipped: the parser walks IFD0 and
+follows the Exif SubIFD pointer once, and takes the dozen tags the two sections
+show.
 
 ## Where the picture comes from
 
@@ -124,6 +156,38 @@ ffmpeg -f lavfi -i "mandelbrot=size=2048x1536" -frames:v 1 tmp.ppm
 cjpeg -progressive -quality 88 -outfile i_progressive_2048.jpg tmp.ppm && rm tmp.ppm
 ```
 
+`j_exif_camera.jpg` and `k_exif_600.png` carry the tags the two panel sections
+show, the first in a JPEG `APP1` and the second in a PNG `eXIf` chunk. Pillow
+(`$RESGEN_PYTHON` in the flake has it) writes both, but a plain tuple makes it
+guess `SHORT` for a rational tag and the file comes out malformed —
+`IFDRational` is what gives `ExposureTime` and `FNumber` their proper type:
+
+```python
+from PIL import Image
+from PIL.TiffImagePlugin import IFDRational
+
+image = Image.open("tmp.jpg")
+exif = Image.Exif()
+exif[0x010F] = "ExampleCorp"          # Make
+exif[0x0110] = "ExampleCorp X-1"      # Model
+exif[0x0131] = "Tab5 Media Player"    # Software
+exif[0x0112] = 1                      # Orientation
+sub = exif.get_ifd(0x8769)
+sub[0x9003] = "2026:03:14 09:26:53"   # DateTimeOriginal
+sub[0x829A] = IFDRational(1, 250)     # ExposureTime
+sub[0x829D] = IFDRational(28, 10)     # FNumber
+sub[0x8827] = 400                     # ISO
+sub[0x920A] = IFDRational(35, 1)      # FocalLength
+sub[0xA405] = 52                      # FocalLengthIn35mmFilm
+sub[0x9204] = IFDRational(1, 3)       # ExposureBiasValue
+sub[0x9209] = 16                      # Flash
+sub[0xA434] = "EX 35mm F1.8"          # LensModel
+image.save("j_exif_camera.jpg", exif=exif, quality=90)
+```
+
+The PNG is the same call on a `rgbtestsrc` picture saved as `.png`, with
+`Orientation` 6 so the row that is not `Normal` is on screen somewhere.
+
 `h_exif_3000.jpg` is `a_landscape_3000.jpg` with three maximum-size APP1
 segments inserted after the SOI, which puts its frame header ~190 KB into the
 file, past the window the metadata probe reads:
@@ -137,3 +201,9 @@ open("h_exif_3000.jpg", "wb").write(src[:2] + seg + src[2:])
 ffmpeg's MJPEG encoder cannot write a progressive stream, which is why that one
 goes through `cjpeg`; its PPM input is because the libjpeg-turbo in the flake
 has no PNG reader.
+
+`image_exif_parse()` takes a buffer and nothing else, so it can be fuzzed on
+the host by compiling it with a `main` that mmaps each input so that it ends
+exactly at a `PROT_NONE` page: a read past the bytes it was given is then a
+SIGSEGV. That is how it is checked rather than with AddressSanitizer, whose
+runtime hangs in its own initialiser on the macOS in this flake.

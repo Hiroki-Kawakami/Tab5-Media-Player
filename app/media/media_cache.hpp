@@ -5,6 +5,7 @@
 
 #pragma once
 #include "media/image_codec.hpp"
+#include "media/image_exif.hpp"
 #include "media/media_types.hpp"
 #include "media_buffer.h"
 #include "media_tags.h"
@@ -34,6 +35,9 @@ struct MediaEntry {
     bool image_baseline = false;
     bool image_failed = false;
     bool image_too_large = false;
+    /* Only for an image file that carries tags, so an entry that has none pays
+       a pointer. */
+    std::shared_ptr<const ImageExif> image_exif;
     char title[MEDIA_TAG_TEXT_BYTES] = {};
     char artist[MEDIA_TAG_TEXT_BYTES] = {};
     char album[MEDIA_TAG_TEXT_BYTES] = {};

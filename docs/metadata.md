@@ -189,6 +189,8 @@ An image file is its own picture, so there is no demuxer and no tag walk:
   recognised for the entry to count as a picture, and the decode fills the size
   in afterwards. Gating the entry on the frame header instead is what made
   large JPEGs fail while PNGs, whose IHDR is always at byte 16, kept working.
+  The same window is where the EXIF tags are parsed from, so the Media Info
+  panel costs no further reads; see [`images.md`](images.md#what-exif-adds).
 - **The picture itself is read by the decoder stage, not the reader.** A cover
   is a few hundred KB, so handing the bytes from stage one to stage two costs
   nothing; a photograph is megabytes, and with the reader already fetching the

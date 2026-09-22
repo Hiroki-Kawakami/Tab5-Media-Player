@@ -459,6 +459,11 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path) {
     entry->image_height = (uint16_t)header.height;
     entry->image_baseline = header.hardware;
     entry->image_id = image_id_of(data.data->data(), data.data->size(), (uint64_t)size);
+
+    ImageExif exif;
+    if (image_exif_parse(data.data->data(), data.data->size(), &exif)) {
+        entry->image_exif = psram_make_shared<ImageExif>(exif);
+    }
     return entry;
 }
 

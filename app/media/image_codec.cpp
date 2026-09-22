@@ -448,8 +448,8 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
 static uint8_t *read_file(FILE *fp, std::size_t size, const volatile bool *cancel) {
     uint8_t *buffer = alloc_dma(size);
     if (!buffer) {
-        ESP_LOGE(TAG, "no memory to read %u bytes (psram free %u largest %u)", (unsigned)size,
-                 psram_free(), psram_largest());
+        ESP_LOGW(TAG, "no contiguous %u bytes to read into (psram free %u largest %u)",
+                 (unsigned)size, psram_free(), psram_largest());
         return nullptr;
     }
     for (std::size_t done = 0; done < size;) {
@@ -476,20 +476,6 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageBox
         return nullptr;
     }
 
-    std::shared_ptr<ImagePixels> pixels;
-    if ((std::size_t)size <= kMaxFileBytes) {
-        if (uint8_t *buffer = read_file(fp, (std::size_t)size, cancel)) {
-            pixels = image_decode(buffer, (std::size_t)size, box, rgb888, cancel, notes);
-            heap_caps_free(buffer);
-        } else if (notes) {
-            notes->out_of_memory = !stopped(cancel);
-        }
-        fclose(fp);
-        return pixels;
-    }
-
-    /* Too big to hold: the rows are pulled straight off the card instead, which
-       also gives up the hardware path. */
     ImageHeader header;
     const std::size_t window = std::min((std::size_t)size, kHeaderWindowBytes);
     if (uint8_t *head = read_file(fp, window, cancel)) {
@@ -497,15 +483,39 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageBox
         heap_caps_free(head);
     }
     if (notes) notes->header = header;
-    rewind(fp);
-    if (header.format != ImageFormat::Unknown) {
-        imgf_file_source_t file;
-        CancelSource state;
-        bool oom = false;
-        pixels = decode_streaming(with_cancel(&state, imgf_stream_from_file(&file, fp, 0, 0),
-                                              cancel), header.format, box, rgb888, cancel, &oom);
-        if (notes) notes->out_of_memory = oom;
+    if (header.format == ImageFormat::Unknown || stopped(cancel)) {
+        fclose(fp);
+        return nullptr;
     }
+
+    /* Only the hardware decoder needs the file as one contiguous block, and it
+       only takes baseline JPEG. Everything else is read a row at a time, which
+       asks nothing of the heap and leaves the big blocks to whoever does. */
+    const bool whole = header.format == ImageFormat::Jpeg &&
+                       (std::size_t)size <= kMaxFileBytes &&
+                       (!header.width || header.hardware);
+    std::shared_ptr<ImagePixels> pixels;
+    if (whole) {
+        rewind(fp);
+        if (uint8_t *buffer = read_file(fp, (std::size_t)size, cancel)) {
+            pixels = image_decode(buffer, (std::size_t)size, box, rgb888, cancel, notes);
+            heap_caps_free(buffer);
+            fclose(fp);
+            return pixels;
+        }
+        if (stopped(cancel)) {
+            fclose(fp);
+            return nullptr;
+        }
+    }
+
+    rewind(fp);
+    imgf_file_source_t file;
+    CancelSource state;
+    bool oom = false;
+    pixels = decode_streaming(with_cancel(&state, imgf_stream_from_file(&file, fp, 0, 0), cancel),
+                              header.format, box, rgb888, cancel, &oom);
+    if (notes) notes->out_of_memory = oom;
     fclose(fp);
     return pixels;
 }

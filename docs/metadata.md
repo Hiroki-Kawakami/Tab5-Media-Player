@@ -197,9 +197,13 @@ An image file is its own picture, so there is no demuxer and no tag walk:
   of large JPEGs — the decode failed, on a file that had opened a minute
   earlier. Stage two opens the file itself instead: one encoded picture at a
   time, paid for with the overlap between a read and the decode before it.
-- **Up to 8 MB is read into memory**, because the hardware decoder wants the
-  stream as contiguous bytes; beyond that the rows are streamed off the card
-  through image_framework, which is bounded but software-only.
+- **Only a baseline JPEG is read into memory**, up to 8 MB, because the
+  hardware decoder is the one thing that wants the stream as one contiguous
+  block. PNG and progressive JPEG are pulled off the card a row at a time,
+  which asks nothing of the heap: a 7.5 MB PNG used to fail on a heap with
+  15 MB free but no block bigger than 7.4 MB, for a buffer it never needed.
+  When the block for a baseline JPEG cannot be found either, the decode falls
+  back to the same streaming path instead of failing.
 - **A failed decode is recorded as a flag on the entry**, not by taking the
   picture away from it. Cover art can afford "this file has no picture" because
   there is one size; an image file is asked for at several boxes, and clearing

@@ -406,8 +406,9 @@ Adding `usb_host_msc` made the component manager re-solve
 `CONFIG_HARNESS=y` is set for the device build (the simulator always has it),
 so `./run.sh simulator --verify` / `./run.sh esp32p4 --verify` can inject touches and read the panel
 back as JPEG. The console is USB-Serial-JTAG, which is what keeps full-panel
-captures fast. The harness links the JPEG encoder, which is why the factory
-partition is 4M rather than `singleapp`'s default. Coordinates in scripts are
+captures fast. The harness links the JPEG encoder, which is part of why the factory
+partition is larger than `singleapp`'s default; the Japanese glyph packs
+([`fonts.md`](fonts.md)) are the rest, and took it from 4M to 6M. Coordinates in scripts are
 panel pixels (720x1280 portrait) whatever the UI rotation. Scripts that need
 landscape inject it with `imu rot90`; the headless simulator otherwise stays at
 rotation 0. See `esp-devkit/docs/harness.md`.

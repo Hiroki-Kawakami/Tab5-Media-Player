@@ -1,9 +1,18 @@
+# Japanese file names on the SD card (see docs/fonts.md). Expects a directory
+# "日本語テスト" holding, in this order:
+#   とても長い日本語のファイル名で末尾が省略されることを確認するためのテスト動画.mp4
+#   ひらがなカタカナ漢字ＡＢＣ１２３.mp4
+#   半角ｶﾅﾃｽﾄ♪①.mp4
+#   第一章　序章「始まりの物語」.mp4
+#   綺麗な絆と煌めきの凛.mp4
+#   薔薇と檸檬の儚い夢.mp4
+#   音楽ファイル　日本語タイトル.m4a
 settle
 tap 360 226
 settle
 tap 360 799
 settle
 capture japanese_list.jpg
-tap 360 480
+tap 360 640
 settle
 capture japanese_audio.jpg

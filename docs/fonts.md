@@ -9,18 +9,21 @@ would show placeholder boxes if Japanese ever reached them.
 
 ## Why a resgen pack and not an `lv_font_t`
 
-A 2542 glyph subset costs 276 KB at 24 px and 690 KB at 38 px as plain 2 bpp
-bitmaps, and 230 KB / 438 KB compressed. Neither LVGL's `lv_font_fmt_txt` nor
-its compressed variant (`LV_USE_FONT_COMPRESSED`, which decompresses and
-`lv_malloc`s line buffers on *every* draw) keeps a decoded glyph around, so the
-pack is generated in its own format and decoded by `app/packed_font.cpp`, which
-caches decoded glyphs as A8 masks in PSRAM and hands them to LVGL through the
-static-bitmap path (no per-draw allocation, no copy into a draw buffer).
+The 6761 glyph subset costs 758 KB at 24 px and 1366 KB at 38 px as 2 bpp packs,
+tables included — about 17 per cent under the same bitmaps stored raw, and the
+reason the factory partition went from 4M to 6M. Neither LVGL's
+`lv_font_fmt_txt` nor its compressed variant (`LV_USE_FONT_COMPRESSED`, which
+decompresses and `lv_malloc`s line buffers on *every* draw) keeps a decoded
+glyph around, so the pack is generated in its own format and decoded by
+`app/packed_font.cpp`, which caches decoded glyphs as A8 masks in PSRAM and
+hands them to LVGL through the static-bitmap path (no per-draw allocation, no
+copy into a draw buffer).
 
-Storing the 24 px pack raw (`"compress": false`) was tried and reverted: it costs
-62 KB and buys nothing measurable. Scrolling a directory of Japanese file names
-in the simulator decodes 358 glyphs against 3072 cache hits, 0.7 ms of decoding
-in total — about 2 us per glyph — and never falls back to LVGL's draw buffer.
+Storing the 24 px pack raw (`"compress": false`) was tried and reverted: it
+costs the best part of 150 KB and buys nothing measurable. Scrolling a directory
+of Japanese file names in the simulator decoded 358 glyphs against 3072 cache
+hits, 0.7 ms of decoding in total — about 2 us per glyph — and never fell back
+to LVGL's draw buffer.
 
 Only the native sizes are stored. Rendering another size by scaling a master was
 measured (a 24 px glyph area-averaged from the 38 px master) and looks visibly
@@ -71,11 +74,14 @@ nix develop -c sh -c '$RESGEN_PYTHON -m fontTools.subset NotoSansJP-VariableFont
     --layout-features= --no-hinting --name-IDs="*"'
 ```
 
-`jp_glyphs.txt` is the joyo kanji plus kana (including the halfwidth block),
-fullwidth alphanumerics and the punctuation and symbols that show up in file
-names. ASCII is deliberately absent: those codepoints always resolve in
-Montserrat, which comes first in the chain, so a Noto copy would be dead weight.
-Characters outside the list render as LVGL's placeholder box.
+`jp_glyphs.txt` is every JIS X 0208 kanji (level 1 and level 2, 6355 of them)
+plus kana including the halfwidth block, fullwidth alphanumerics and the
+punctuation and symbols that show up in file names. The joyo kanji alone were
+tried first and were not enough for a music library: 煌, 凛, 絆, 綺, 薔薇,
+檸檬 and friends are all level 2, and titles and artist names use them freely.
+ASCII is deliberately absent: those codepoints always resolve in Montserrat,
+which comes first in the chain, so a Noto copy would be dead weight. Characters
+outside the list render as LVGL's placeholder box.
 
 ## Checking it
 

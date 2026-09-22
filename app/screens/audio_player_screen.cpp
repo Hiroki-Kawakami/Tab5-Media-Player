@@ -318,10 +318,12 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
     lv_obj_t *play =
         media_icon_button(row, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
     lv_obj_add_event_fn(play, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        if (playing_) {
-            player_pause();
-        } else {
-            player_play();
+        if (!awaiting_start_) {
+            if (playing_) {
+                player_pause();
+            } else {
+                player_play();
+            }
         }
         setPlayIcon(!playing_);
     });
@@ -383,6 +385,7 @@ void AudioPlayerScreen::openCurrent() {
         lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
     }
     updateTransport();
+    setPlayIcon(true);
     refresh();
 }
 
@@ -422,11 +425,12 @@ void AudioPlayerScreen::handleState() {
         if (status.state == PlayerState::Paused) {
             awaiting_start_ = false;
             skips_ = 0;
-            player_play();
-            setPlayIcon(true);
-            /* The status still says paused, so refreshing here would flip the
-             * icon back. The Playing transition brings the next one. */
-            return;
+            if (playing_) {
+                player_play();
+                /* The status still says paused, so refreshing here would flip
+                 * the icon back. The Playing transition brings the next one. */
+                return;
+            }
         }
         if (status.state == PlayerState::Failed) {
             awaiting_start_ = false;
@@ -472,7 +476,7 @@ void AudioPlayerScreen::refresh() {
      * summary still describe the previous one. */
     const bool ready = !awaiting_start_;
     const PlayerStatus status = player_status();
-    const bool playing = ready && status.state == PlayerState::Playing;
+    const bool playing = ready ? status.state == PlayerState::Playing : playing_;
     if (playing != playing_) setPlayIcon(playing);
 
     const bool known = ready && status.duration_us > 0 && status.state != PlayerState::Loading;

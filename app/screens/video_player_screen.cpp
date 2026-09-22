@@ -437,10 +437,12 @@ void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
     lv_obj_t *play = media_icon_button(parent, 120, &icon_72, TABLER_PLAYER_PLAY, lv_color_white(),
                                            &play_label_);
     lv_obj_add_event_fn(play, LV_EVENT_CLICKED, [this](lv_event_t *) {
-        if (playing_) {
-            player_pause();
-        } else {
-            player_play();
+        if (!awaiting_start_) {
+            if (playing_) {
+                player_pause();
+            } else {
+                player_play();
+            }
         }
         setPlayIcon(!playing_);
         lv_display_trigger_activity(ui_);
@@ -469,6 +471,7 @@ void VideoPlayerScreen::openCurrent() {
     if (seek_) lv_slider_set_value(seek_, 0, LV_ANIM_OFF);
     updateTransport();
     if (ui_) lv_display_trigger_activity(ui_);
+    setPlayIcon(true);
     refresh();
 }
 
@@ -509,13 +512,14 @@ void VideoPlayerScreen::handleState() {
         if (status.state == PlayerState::Paused) {
             awaiting_start_ = false;
             skips_ = 0;
-            player_play();
-            setPlayIcon(true);
-            lv_display_trigger_activity(ui_);
-            auto_start_tick_ = lv_tick_get();
-            /* The status still says paused, so refreshing here would flip the
-             * icon back. The Playing transition brings the next one. */
-            return;
+            if (playing_) {
+                player_play();
+                lv_display_trigger_activity(ui_);
+                auto_start_tick_ = lv_tick_get();
+                /* The status still says paused, so refreshing here would flip
+                 * the icon back. The Playing transition brings the next one. */
+                return;
+            }
         }
         if (status.state == PlayerState::Failed) {
             awaiting_start_ = false;
@@ -625,7 +629,7 @@ void VideoPlayerScreen::tick() {
     handleState();
 
     if (mode_ != UiMode::Bars) return;
-    if (!playing_ || scrubbing_) return;
+    if (!playing_ || awaiting_start_ || scrubbing_) return;
     if (volume_slider_ && lv_obj_has_state(volume_slider_, LV_STATE_PRESSED)) return;
     const uint32_t inactive_ms = lv_display_get_inactive_time(nullptr);
     const bool untouched = auto_start_tick_ && inactive_ms >= lv_tick_elaps(auto_start_tick_);
@@ -648,7 +652,7 @@ void VideoPlayerScreen::refresh() {
      * summary still describe the previous one. */
     const bool ready = !awaiting_start_;
     const PlayerStatus status = player_status();
-    const bool playing = ready && status.state == PlayerState::Playing;
+    const bool playing = ready ? status.state == PlayerState::Playing : playing_;
     if (playing != playing_) setPlayIcon(playing);
     const MediaSummary summary = ready ? player_media_summary() : MediaSummary{};
     lv_obj_set_state(info_button_, LV_STATE_DISABLED, !summary.valid);

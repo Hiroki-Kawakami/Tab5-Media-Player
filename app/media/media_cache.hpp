@@ -69,6 +69,10 @@ void media_cache_request(const std::string &path, uint8_t want, ImageBox box,
 std::shared_ptr<const MediaEntry> media_cache_resolve(const std::string &path, uint8_t want,
                                                       ImageBox box, uint32_t timeout_ms);
 void media_cache_cancel(uint32_t token);
+/* Keeps only the paths `keep` accepts: the rest of the token's requests are
+   dropped and a running job the token owns is withdrawn. `keep` is called with
+   the cache lock held, so it must not call back into the cache. */
+void media_cache_retain(uint32_t token, bool (*keep)(const char *path, void *ctx), void *ctx);
 void media_cache_idle_cancel();
 void media_cache_forget(const std::string &mount_point);
 void media_cache_invalidate_decoded();

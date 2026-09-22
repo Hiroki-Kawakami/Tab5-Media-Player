@@ -73,6 +73,13 @@ void HomeScreen::onAppear() {
     if (visible_) visible_->on_appear();
 }
 
+/* A screen opening on top of the browser wants the card and the decoder now:
+   whatever the rows behind it were still loading is given up here rather than
+   left in front of the picture or the track the user just tapped. */
+void HomeScreen::onDisappear() {
+    if (visible_) visible_->on_disappear();
+}
+
 bool HomeScreen::is_landscape() const {
     return lv_obj_get_width(root_) > lv_obj_get_height(root_);
 }

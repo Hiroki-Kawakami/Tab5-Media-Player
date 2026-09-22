@@ -15,6 +15,7 @@
 #include "screens/video_player_screen.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <dirent.h>
 #include <strings.h>
 
@@ -27,8 +28,12 @@ static constexpr uint32_t kResolveTimeoutMs = 700;
 
 static FileBrowserPage *s_visible;
 
-static bool has_metadata(MediaKind kind) {
+static bool has_tags(MediaKind kind) {
     return kind == MediaKind::Audio || kind == MediaKind::Video;
+}
+
+static bool has_thumbnail(MediaKind kind) {
+    return has_tags(kind) || kind == MediaKind::Image;
 }
 
 FileBrowserPage::FileBrowserPage(std::string path, std::string title)
@@ -40,10 +45,19 @@ FileBrowserPage::~FileBrowserPage() {
 
 void FileBrowserPage::release_requests() {
     if (s_visible == this) s_visible = nullptr;
+    visible_.clear();
     if (!token_) return;
     media_cache_unobserve(token_);
     media_cache_cancel(token_);
     media_cache_cancel(idle_token_);
+}
+
+bool FileBrowserPage::keep_visible(const char *path, void *ctx) {
+    auto *page = static_cast<FileBrowserPage *>(ctx);
+    for (const PsramString &kept : page->visible_) {
+        if (strcmp(kept.c_str(), path) == 0) return true;
+    }
+    return false;
 }
 
 std::string FileBrowserPage::entry_path(std::size_t index) const {
@@ -62,16 +76,24 @@ void FileBrowserPage::request_visible() {
     const std::size_t start = first > kLookahead ? first - kLookahead : 0;
     const std::size_t end = std::min(entries_.size(), first + rows + kLookahead);
 
+    /* What is left of the range the last scroll asked for is kept rather than
+       cancelled and asked for again: a thumbnail that is still on screen would
+       otherwise restart from the card on every row the finger travels, and one
+       that has scrolled off is withdrawn even if it is already being read. */
+    visible_.clear();
+    for (std::size_t i = start; i < end; i++) visible_.push_back(PsramString(entry_path(i).c_str()));
+    media_cache_retain(token_, keep_visible, this);
+
     /* Titles first for the whole visible range, then the thumbnails: reading a
        tag without its cover art is a fraction of the cost, so the rows fill in
-       with text while the pictures are still coming. */
-    media_cache_cancel(token_);
+       with text while the pictures are still coming. An image file has no
+       title to show, so it only takes part in the second pass. */
     for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
+        if (entries_[i].directory || !has_tags(entries_[i].kind)) continue;
         media_cache_request(entry_path(i), MetaWantInfo, {}, MetaPriority::Visible, token_);
     }
     for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
+        if (entries_[i].directory || !has_thumbnail(entries_[i].kind)) continue;
         media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbBox,
                             MetaPriority::Visible, token_);
     }
@@ -144,6 +166,10 @@ void FileBrowserPage::on_appear() {
     prefetched_ = false;
     media_cache_observe(token_, meta_ready);
     request_visible();
+}
+
+void FileBrowserPage::on_disappear() {
+    release_requests();
 }
 
 void FileBrowserPage::save_state() {
@@ -234,7 +260,7 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
                     entry.directory || entry.kind != MediaKind::None);
 
     std::shared_ptr<const ImagePixels> pixels;
-    if (!entry.directory && has_metadata(entry.kind)) {
+    if (!entry.directory && has_thumbnail(entry.kind)) {
         pixels = media_cache_image(entry_path(index), kThumbBox);
     }
     lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);

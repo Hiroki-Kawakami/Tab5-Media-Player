@@ -124,6 +124,10 @@ struct CacheState {
     PsramDeque<DecodeJob> decodes;
     PsramVector<PsramString> completed;
     PsramVector<Observer> observers;
+    /* The path each stage is on, beside its token: a requester withdrawing all
+       but the rows it still shows names paths, not tokens. */
+    PsramString reader_path;
+    PsramString decoder_path;
     uint64_t clock = 0;
     uint32_t next_token = 1;
 };
@@ -430,10 +434,59 @@ static CoverArt read_image(const std::string &path, std::size_t limit, int64_t *
     return cover;
 }
 
+/* The picture a camera leaves in EXIF, taken out of the window the probe has
+   already read. A few KB, so it is copied rather than kept by reference: the
+   window is freed as soon as the probe is done with it. */
+static CoverArt keep_thumb(const uint8_t *data, std::size_t at, std::size_t bytes) {
+    CoverArt thumb;
+    const std::size_t span = (bytes + kImageAlignment - 1) / kImageAlignment * kImageAlignment;
+    auto *buffer =
+        static_cast<uint8_t *>(heap_caps_aligned_alloc(kImageAlignment, span, MALLOC_CAP_SPIRAM));
+    if (!buffer) return thumb;
+    memcpy(buffer, data + at, bytes);
+    thumb.data = psram_make_shared<CoverBytes>(buffer, buffer, bytes);
+    thumb.format = CoverFormat::Jpeg;
+    return thumb;
+}
+
+/* The same picture for an entry that was probed earlier and whose pixels have
+   since been evicted: a few KB off the card instead of the whole photograph. */
+static CoverArt read_thumb(const std::string &path, uint32_t at, uint32_t bytes) {
+    CoverArt thumb;
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp) return thumb;
+    const std::size_t span = (bytes + kImageAlignment - 1) / kImageAlignment * kImageAlignment;
+    auto *buffer =
+        static_cast<uint8_t *>(heap_caps_aligned_alloc(kImageAlignment, span, MALLOC_CAP_SPIRAM));
+    if (!buffer) {
+        fclose(fp);
+        return thumb;
+    }
+    if (fseek(fp, at, SEEK_SET) != 0 || fread(buffer, 1, bytes, fp) != bytes) {
+        ESP_LOGE(TAG, "cannot read the exif thumbnail of %s", path.c_str());
+        heap_caps_free(buffer);
+        fclose(fp);
+        return thumb;
+    }
+    fclose(fp);
+    thumb.data = psram_make_shared<CoverBytes>(buffer, buffer, bytes);
+    thumb.format = CoverFormat::Jpeg;
+    return thumb;
+}
+
+/* The thumbnail only stands in for the picture when it is at least as big as
+   the box: below that it would be enlarged, and the picture it replaces would
+   have come out sharper. */
+static bool thumb_covers(const std::shared_ptr<MediaEntry> &entry, ImageBox box) {
+    const auto &exif = entry->image_exif;
+    if (!exif || !exif->thumb_bytes) return false;
+    return exif->thumb_width >= box.width && exif->thumb_height >= box.height;
+}
+
 /* An image file is its own picture: the header gives the size to show in Media
    Info, and the same window that is hashed for a cover art id is hashed here,
    so two copies of one photograph share their decoded pixels. */
-static std::shared_ptr<MediaEntry> probe_image(const std::string &path) {
+static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt *thumb) {
     int64_t size = 0;
     CoverArt data = read_image(path, kImageProbeWindow, &size);
     auto entry = psram_make_shared<MediaEntry>();
@@ -463,6 +516,9 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path) {
     ImageExif exif;
     if (image_exif_parse(data.data->data(), data.data->size(), &exif)) {
         entry->image_exif = psram_make_shared<ImageExif>(exif);
+        if (thumb && exif.thumb_bytes) {
+            *thumb = keep_thumb(data.data->data(), exif.thumb_at, exif.thumb_bytes);
+        }
     }
     return entry;
 }
@@ -476,12 +532,13 @@ static bool prepare_image(const Request &request, const std::string &path, Decod
         entry = find_meta(path);
     }
 
+    CoverArt thumb;
     if (!entry) {
-        entry = probe_image(path);
+        entry = probe_image(path, want_image ? &thumb : nullptr);
         if (s_reader_cancel) return false;
         keep_meta(request.path, entry);
     }
-    if (!want_image || !entry->ok || entry->image_too_large) return false;
+    if (!want_image || !entry->ok) return false;
 
     const ImageKey key = { entry->image_id, request.box };
     std::shared_ptr<JpegBytes> jpeg;
@@ -495,8 +552,21 @@ static bool prepare_image(const Request &request, const std::string &path, Decod
         }
     }
 
+    /* A browser-sized box is served from the EXIF thumbnail when there is one:
+       a few KB and a tiny decode instead of megabytes off the card and a full
+       picture through the resizer. It is also the only thing a picture too
+       large to decode can still show. */
+    if (jpeg || !thumb_covers(entry, request.box)) {
+        thumb = {};
+        if (entry->image_too_large) return false;
+    } else if (!thumb) {
+        thumb = read_thumb(path, entry->image_exif->thumb_at, entry->image_exif->thumb_bytes);
+    }
+    if (s_reader_cancel) return false;
+
     job->path = request.path;
     job->entry = entry;
+    job->cover = std::move(thumb);
     job->jpeg = std::move(jpeg);
     job->key = key;
     job->token = request.token;
@@ -600,7 +670,10 @@ static void finish(DecodeJob &job) {
     bool produced = false;
     if (job.cover) {
         produced = produce(job.key, job.cover.data->data(), job.cover.data->size());
-    } else if (job.image) {
+    }
+    /* An EXIF thumbnail that will not decode is not the whole answer: the
+       picture itself is still there, so the full path is the fallback. */
+    if (!produced && !s_decoder_cancel && job.image && !job.entry->image_too_large) {
         const bool rgb888 = panel_rgb888();
         ImageNotes notes;
         auto pixels = image_decode_file(std::string(job.path.c_str()), job.key.box, rgb888,
@@ -641,6 +714,7 @@ static bool take_request(Request *out) {
         queue.pop_front();
         s_reader_cancel = false;
         s_reader_token = out->token;
+        s_state->reader_path = out->path;
         return true;
     }
     return false;
@@ -668,28 +742,38 @@ static void reader_task(void *) {
         s_reading = true;
         DecodeJob job;
         const bool decode = prepare(request, &job);
-        const bool cancelled = s_reader_cancel;
         s_reading = false;
-        {
-            Lock lock;
-            s_reader_token = 0;
-        }
         if (s_quit) break;
 
+        /* The job stays this stage's until it has been handed over, waiting for
+           decoder room included. The decoder is the slow half, so that wait is
+           where the reader spends most of its time and where a cancel almost
+           always lands; handing the job over anyway would put a picture nobody
+           wants any more in front of the one somebody just asked for. */
+        bool room = false;
         if (decode) {
-            while (xSemaphoreTake(s_decode_room, pdMS_TO_TICKS(50)) != pdTRUE) {
-                if (s_quit) break;
+            while (!s_quit && !s_reader_cancel) {
+                if (xSemaphoreTake(s_decode_room, pdMS_TO_TICKS(50)) == pdTRUE) {
+                    room = true;
+                    break;
+                }
             }
-            if (s_quit) break;
-            {
-                Lock lock;
-                s_state->decodes.push_back(std::move(job));
-            }
-            xSemaphoreGive(s_decode_wake);
-        } else if (!cancelled) {
-            Lock lock;
-            s_state->completed.push_back(request.path);
         }
+        bool handed = false;
+        const bool cancelled = s_reader_cancel;
+        {
+            Lock lock;
+            if (room && !cancelled) {
+                s_state->decodes.push_back(std::move(job));
+                handed = true;
+            }
+            s_reader_token = 0;
+            s_state->reader_path.clear();
+            if (!handed && !cancelled) s_state->completed.push_back(request.path);
+        }
+        if (handed) xSemaphoreGive(s_decode_wake);
+        else if (room) xSemaphoreGive(s_decode_room);
+        if (s_quit) break;
         if (player_status().state == PlayerState::Playing) {
             vTaskDelay(pdMS_TO_TICKS(kPlayingGapMs));
         }
@@ -710,6 +794,7 @@ static void decoder_task(void *) {
                 s_state->decodes.pop_front();
                 s_decoder_cancel = false;
                 s_decoder_token = job.token;
+                s_state->decoder_path = job.path;
                 have = true;
             }
         }
@@ -726,6 +811,7 @@ static void decoder_task(void *) {
         {
             Lock lock;
             s_decoder_token = 0;
+            s_state->decoder_path.clear();
         }
         if (s_quit) break;
         if (cancelled) continue;
@@ -924,28 +1010,40 @@ void media_cache_idle_cancel() {
     s_state->queues[(int)MetaPriority::Idle].clear();
 }
 
-void media_cache_cancel(uint32_t token) {
+using KeepFn = bool (*)(const char *path, void *ctx);
+
+static void withdraw(uint32_t token, KeepFn keep, void *ctx) {
     if (!s_lock || !token) return;
+    auto kept = [&](const PsramString &path) { return keep && keep(path.c_str(), ctx); };
     uint32_t dropped = 0;
     {
         Lock lock;
         for (auto &queue : s_state->queues) {
             for (auto it = queue.begin(); it != queue.end();) {
-                it = it->token == token ? queue.erase(it) : it + 1;
+                it = it->token == token && !kept(it->path) ? queue.erase(it) : it + 1;
             }
         }
         for (auto it = s_state->decodes.begin(); it != s_state->decodes.end();) {
-            if (it->token != token) {
+            if (it->token != token || kept(it->path)) {
                 ++it;
                 continue;
             }
             it = s_state->decodes.erase(it);
             dropped++;
         }
-        if (s_reader_token == token) s_reader_cancel = true;
-        if (s_decoder_token == token) s_decoder_cancel = true;
+        if (s_reader_token == token && !kept(s_state->reader_path)) s_reader_cancel = true;
+        if (s_decoder_token == token && !kept(s_state->decoder_path)) s_decoder_cancel = true;
     }
     while (dropped--) xSemaphoreGive(s_decode_room);
+}
+
+void media_cache_cancel(uint32_t token) {
+    withdraw(token, nullptr, nullptr);
+}
+
+void media_cache_retain(uint32_t token, KeepFn keep, void *ctx) {
+    if (!keep) return;
+    withdraw(token, keep, ctx);
 }
 
 void media_cache_forget(const std::string &mount_point) {

@@ -73,14 +73,19 @@ Media Info panel shows them as a Camera and an Exposure section.
   are dropped at parse time rather than handed to LVGL; the cap is what keeps a
   file claiming a 64 KB string in every one of its entries from costing the
   probe a scan per entry.
+- **The thumbnail in `IFD1` is used, the picture in `IFD0` is what is shown.**
+  It is the browser's 56 px row that it serves, never the viewer's box, and the
+  rule is that a thumbnail smaller than the box is no use — see
+  [`metadata.md`](metadata.md#image-files). Parsing it is the one place the
+  parser looks past `IFD0` and the Exif SubIFD.
 - **Orientation is shown, not applied.** Turning the picture would mean the
   decode, the cache key (an entry is keyed by the box it was fitted into) and
   the PPA stand-in a rotation shows all agreeing on the rotation, which is a
   different change from reading a tag.
 
-GPS, the maker notes and everything else are skipped: the parser walks IFD0 and
-follows the Exif SubIFD pointer once, and takes the dozen tags the two sections
-show.
+GPS, the maker notes and everything else are skipped: the parser walks IFD0,
+follows the Exif SubIFD pointer once and takes the dozen tags the two sections
+show, and reads IFD1 for nothing but where the thumbnail is.
 
 ## Where the picture comes from
 

@@ -16,6 +16,7 @@ public:
     virtual void build(lv_obj_t *contents) = 0;
     virtual void save_state() {}
     virtual void on_appear() {}
+    virtual void on_disappear() {}
     virtual bool is_under(const std::string &) const { return false; }
 
 protected:

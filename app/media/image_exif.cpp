@@ -4,6 +4,7 @@
  */
 
 #include "image_exif.hpp"
+#include "image_codec.hpp"
 
 #include <cstring>
 
@@ -113,6 +114,30 @@ void read_ascii(const Tiff &tiff, const Entry &entry, char *out, std::size_t cap
     out[n] = 0;
 }
 
+/* IFD1 describes the thumbnail and nothing else: what it is compressed with,
+   where it starts and how long it is, all relative to the TIFF header. */
+void parse_thumb_ifd(const Tiff &tiff, std::size_t at, std::size_t base, ImageExif *out) {
+    const uint32_t count = tiff.u16(at);
+    uint32_t compression = 0;
+    uint32_t offset = 0;
+    uint32_t bytes = 0;
+    for (uint32_t i = 0; i < count && i < kMaxEntries; i++) {
+        Entry entry;
+        if (!entry_at(tiff, at + 2 + (std::size_t)i * 12, &entry)) continue;
+        switch (entry.tag) {
+        case 0x0103: read_uint(tiff, entry, &compression); break;
+        case 0x0201: read_uint(tiff, entry, &offset); break;
+        case 0x0202: read_uint(tiff, entry, &bytes); break;
+        default: break;
+        }
+    }
+    if (compression != 6 || !offset || !bytes) return;
+    if (!tiff.has(offset, bytes)) return;
+    if (tiff.data[offset] != 0xFF || tiff.data[offset + 1] != 0xD8) return;
+    out->thumb_at = (uint32_t)(base + offset);
+    out->thumb_bytes = bytes;
+}
+
 std::size_t parse_ifd(const Tiff &tiff, std::size_t at, ImageExif *out) {
     const uint32_t count = tiff.u16(at);
     std::size_t sub = 0;
@@ -159,7 +184,7 @@ std::size_t parse_ifd(const Tiff &tiff, std::size_t at, ImageExif *out) {
     return sub;
 }
 
-bool parse_tiff(const uint8_t *data, std::size_t size, ImageExif *out) {
+bool parse_tiff(const uint8_t *data, std::size_t size, std::size_t base, ImageExif *out) {
     Tiff tiff;
     tiff.data = data;
     tiff.size = size;
@@ -177,6 +202,8 @@ bool parse_tiff(const uint8_t *data, std::size_t size, ImageExif *out) {
     if (!tiff.has(ifd0, 2)) return false;
     const std::size_t sub = parse_ifd(tiff, ifd0, out);
     if (sub && sub != ifd0 && tiff.has(sub, 2)) parse_ifd(tiff, sub, out);
+    const std::size_t next = tiff.u32(ifd0 + 2 + (std::size_t)tiff.u16(ifd0) * 12);
+    if (next && next != ifd0 && tiff.has(next, 2)) parse_thumb_ifd(tiff, next, base, out);
     return !out->empty();
 }
 
@@ -236,7 +263,7 @@ bool png_exif(const uint8_t *data, std::size_t size, const uint8_t **out, std::s
 bool ImageExif::empty() const {
     return !make[0] && !model[0] && !lens[0] && !software[0] && !taken[0] && !iso &&
            !shutter_den && aperture == 0 && focal_mm == 0 && !focal35_mm && !orientation &&
-           !has_flash && !has_bias;
+           !has_flash && !has_bias && !thumb_bytes;
 }
 
 bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out) {
@@ -250,5 +277,20 @@ bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out) {
     } else {
         return false;
     }
-    return parse_tiff(tiff, bytes, out);
+    if (!parse_tiff(tiff, bytes, (std::size_t)(tiff - data), out)) return false;
+
+    /* The size decides whether the thumbnail can stand in for the picture at a
+       given box, so a thumbnail whose own header will not parse is dropped. */
+    if (out->thumb_bytes) {
+        ImageHeader header;
+        if (image_header(data + out->thumb_at, out->thumb_bytes, &header) &&
+            header.format == ImageFormat::Jpeg) {
+            out->thumb_width = (uint16_t)header.width;
+            out->thumb_height = (uint16_t)header.height;
+        } else {
+            out->thumb_at = 0;
+            out->thumb_bytes = 0;
+        }
+    }
+    return true;
 }

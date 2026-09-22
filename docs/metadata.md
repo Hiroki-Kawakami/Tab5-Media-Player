@@ -213,23 +213,61 @@ An image file is its own picture, so there is no demuxer and no tag walk:
   what put an error message over a picture that was on screen. The flag also
   carries whether the failure was memory, which is the difference between "too
   large to decode" and "cannot decode the image".
-- **A picture that ran out of memory is not asked for again**, at any size: the
-  coefficients a progressive JPEG needs do not depend on the box, so every
-  other size would fail the same way after the same read.
+- **A picture that ran out of memory is not asked for again** at a size that
+  has to decode it: the coefficients a progressive JPEG needs do not depend on
+  the box, so every other size would fail the same way after the same read.
+- **A small box is served from the EXIF thumbnail** when the camera left one.
+  A browser row is 56 px and a photograph is megabytes; the thumbnail is a few
+  KB and decodes in a moment. `APP1` is capped at 64 KB, so the thumbnail is
+  always inside the 128 KB window the probe reads — a probe and the decode that
+  follows it cost no further card access at all, and only an entry whose pixels
+  have been evicted reads the few KB back by offset. It is used only when the
+  thumbnail is at least as big as the box, so the viewer's screen-sized box
+  still decodes the picture itself, and it is the one thing a picture too large
+  to decode can still show. A thumbnail that will not decode falls back to the
+  full picture. What the entry gives up is its size in pixels: the thumbnail
+  path never sees the file's own frame header, so a picture whose header sits
+  past the probe window has no resolution to show until the viewer opens it.
 
 ## Withdrawing a running job
+
+A job belongs to the stage that is holding it until it has been handed on, the
+wait for decoder room included. The decoder is the slow half, so the reader
+spends most of its time in that wait, and it used to stop being cancellable at
+the moment it entered it: a thumbnail withdrawn while the reader waited was
+handed over anyway and decoded in front of the picture the user had just
+tapped. The token stays published until the job is either queued or dropped.
 
 `media_cache_cancel()` drops a token's queued requests, but the viewer also has
 to be able to leave the picture it is no longer showing: a swipe during a decode
 must not make the next picture wait for it. Each stage therefore publishes the
-token of the job it is on, and a cancel of that token raises the stage's flag;
-the read loop and the software decode both poll it, and the hardware decode is
-one blocking call that is left to finish. A withdrawn job reports nothing, so
-the observer is not woken for a picture nobody is waiting for any more.
+token and the path of the job it is on, and a cancel of that token raises the
+stage's flag; the read loop and the software decode both poll it, and the
+hardware decode is one blocking call that is left to finish. A withdrawn job
+reports nothing, so the observer is not woken for a picture nobody is waiting
+for any more. The reader also drops the job it was about to hand over when the
+cancel landed while it was reading, so a withdrawal cannot leave the decoder a
+picture nobody asked for.
 
 The token is published and the flag cleared under the cache lock, together, so
 a cancel that arrives while the worker is picking up its next job either
 catches the job it named or nothing at all.
+
+The browser gives up everything it has asked for when a screen opens on top of
+it: `HomeScreen::onDisappear()` reaches the visible page, and the file browser
+withdraws both its tokens there. Without that, the picture or the track the
+user just tapped waits behind whatever thumbnail was in flight — with the
+reader holding its next request until the decoder has room, a folder of
+photographs put a multi-megabyte read and a full-size decode in front of it.
+`HomeScreen::onAppear()` asks again on the way back.
+
+A scrolling list wants half of that: `media_cache_retain()` takes a predicate
+over paths and withdraws everything of the token it rejects, queued or running.
+Cancelling the whole token and asking again — which is what the browser used to
+do on every row the finger travelled — restarted the thumbnail of a row that
+had never left the screen, and a picture that takes longer to decode than a row
+takes to scroll would never have finished. The predicate is called with the
+cache lock held, so it may not call back into the cache.
 
 ## Pixel format
 
@@ -331,7 +369,8 @@ Requests carry a priority: `Blocking` (something is waiting for it), `Visible`
 reader takes the highest queue first and, while the player is playing, waits
 200 ms between requests so prefetching cannot take the card away from playback.
 A token identifies the requester; `media_cache_cancel()` drops its queued
-requests when a page scrolls away or a screen leaves.
+requests when a screen leaves, and `media_cache_retain()` drops the ones that
+have scrolled out of sight.
 
 The work runs as two tasks, because reading the card and decoding a picture
 share nothing: the reader produces a `DecodeJob` and the decoder turns it into
@@ -342,7 +381,8 @@ third picture in PSRAM.
 `FileBrowserPage` asks for the visible range twice: once for tags alone, then
 for tags and thumbnails. Since the queue is FIFO within a priority, every row
 gets its title before any picture is read, which is what makes a folder look
-answered while the thumbnails are still arriving.
+answered while the thumbnails are still arriving. An image file has no title to
+show, so it only takes part in the second pass.
 
 ## What is not there
 
@@ -355,8 +395,12 @@ picture from a few seconds in as cover art (`covr` in MP4, an attachment named
 `cover.jpg` in MKV), which this cache reads like any other; see
 [`converter.md`](converter.md#thumbnails).
 
-The browser also only prefetches audio files, so a video's thumbnail is read
-when its row comes into view rather than ahead of it.
+The browser also only prefetches audio files, so a video's or a photograph's
+thumbnail is read when its row comes into view rather than ahead of it. A
+folder of photographs is the reason: a cover is a few hundred KB and reading
+two dozen of them ahead is affordable, while the pictures themselves are
+megabytes each and the row they belong to is usually gone by the time one is
+decoded.
 
 ## Harness
 

@@ -22,6 +22,7 @@ public:
     void build(lv_obj_t *contents) override;
     void save_state() override;
     void on_appear() override;
+    void on_disappear() override;
     bool is_under(const std::string &mount_point) const override;
 
 private:
@@ -42,6 +43,7 @@ private:
     uint32_t token_ = 0;
     uint32_t idle_token_ = 0;
     bool prefetched_ = false;
+    PsramVector<PsramString> visible_;
 
     bool load_entries();
     std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
@@ -50,6 +52,7 @@ private:
     void prefetch_rest();
     void release_requests();
     static void meta_ready(const std::string &path);
+    static bool keep_visible(const char *path, void *ctx);
 
     std::size_t rowCount() const override;
     int32_t rowHeight() const override;

@@ -1,5 +1,8 @@
 # Browser thumbnails and the metadata cache: Music/ holds the tagged samples
-# (JPEG cover, wide PNG cover, no cover), Movies/ has none.
+# (JPEG cover, wide PNG cover, no cover), Movies/ has none, and Pictures/ is
+# where the image files are. l_exif_thumb_3000.jpg carries an EXIF thumbnail of
+# a different picture than its own on purpose, so the capture shows which of the
+# two paths served the row.
 settle
 tap 360 226
 settle
@@ -37,4 +40,24 @@ settle
 meta drain
 settle
 capture thumbs_after_video.jpg
+meta stats
+tap 100 60
+settle
+tap 360 404
+settle
+meta drain
+settle
+capture thumbs_pictures.jpg
+meta stats
+down 360 1100
+wait 30
+move 360 700
+wait 30
+move 360 300
+wait 30
+up
+settle
+meta drain
+settle
+capture thumbs_pictures_scrolled.jpg
 meta stats

@@ -24,6 +24,13 @@ struct ImageExif {
     uint8_t orientation = 0;
     bool has_flash = false;
     bool has_bias = false;
+    /* The JPEG a camera leaves in IFD1, as an offset into the file, so a small
+       box can be served without reading or decoding the picture itself. Zero
+       when there is none. */
+    uint32_t thumb_at = 0;
+    uint32_t thumb_bytes = 0;
+    uint16_t thumb_width = 0;
+    uint16_t thumb_height = 0;
 
     bool empty() const;
 };

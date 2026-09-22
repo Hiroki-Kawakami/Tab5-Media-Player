@@ -545,7 +545,7 @@ void VideoPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     elapsed_label_ = lv_label_create(row);
     lv_obj_set_width(elapsed_label_, portrait ? kPortraitSide : kTimeWidth);
     lv_obj_set_style_text_align(elapsed_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(elapsed_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(elapsed_label_, LV_WIDGETS_FONT_BODY);
 
     seek_ = media_slider(row, kSeekRange, lv_color_white(), lv_color_hex(kTrackColor));
     if (portrait) {
@@ -571,7 +571,7 @@ void VideoPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     total_label_ = lv_label_create(row);
     lv_obj_set_width(total_label_, portrait ? kPortraitSide : kTimeWidth);
     lv_obj_set_style_text_align(total_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(total_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(total_label_, LV_WIDGETS_FONT_BODY);
 }
 
 void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {

@@ -6,7 +6,9 @@
 #include "image_viewer_screen.hpp"
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
+#include "screens/image_viewer/info_panel.hpp"
 #include "screens/media_controls.hpp"
+#include "screens/video_player/settings_panel.hpp"
 #include "bsp.h"
 #include "resources.h"
 
@@ -16,15 +18,17 @@ static constexpr int32_t kBarHeight = 80;
 static constexpr int32_t kBarPadding = 8;
 static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kSwipeThreshold = 80;
+static constexpr int32_t kPortraitPanelHeight = 640;
+static constexpr int32_t kLandscapePanelWidth = 560;
 
 static constexpr uint32_t kBarColor = 0x101010;
 static constexpr uint32_t kMessageColor = 0xffb74d;
 
 static ImageViewerScreen *s_active;
 
-static lv_obj_t *create_bar(lv_obj_t *parent, lv_align_t align) {
+static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
     lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
-    lv_obj_set_size(bar, lv_pct(100), kBarHeight);
+    lv_obj_set_size(bar, width, height);
     lv_obj_align(bar, align, 0, 0);
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     return bar;
@@ -70,25 +74,26 @@ void ImageViewerScreen::buildUi() {
     message_ = lv_label_create(stage_);
     lv_obj_set_width(message_, lv_pct(90));
     lv_label_set_long_mode(message_, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_style_text_font(message_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(message_, LV_WIDGETS_FONT_BODY);
     lv_obj_set_style_text_align(message_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(message_);
     lv_label_set_text(message_, "");
 
-    top_bar_ = create_bar(root_, LV_ALIGN_TOP_MID);
+    top_bar_ = create_bar(root_, lv_pct(100), kBarHeight, LV_ALIGN_TOP_MID);
     const MediaTopBar bar = media_top_bar_build(top_bar_, name().c_str(),
-                                                [this] { this->back(); }, [] {});
+                                                [this] { this->back(); },
+                                                [this] { requestMode(UiMode::Info); });
     title_label_ = bar.title;
     info_button_ = bar.info_button;
 
-    bottom_bar_ = create_bar(root_, LV_ALIGN_BOTTOM_MID);
+    bottom_bar_ = create_bar(root_, lv_pct(100), kBarHeight, LV_ALIGN_BOTTOM_MID);
     buildBottomBar(bottom_bar_);
-
-    lv_obj_set_state(info_button_, LV_STATE_DISABLED, true);
-    lv_obj_set_state(panel_button_, LV_STATE_DISABLED, true);
+    buildPanels();
 
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
+    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
+    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
     lv_obj_update_layout(root_);
 
     if (pixels_) showPixels(pixels_);
@@ -112,13 +117,41 @@ void ImageViewerScreen::buildBottomBar(lv_obj_t *parent) {
 
     panel_button_ = media_icon_button(parent, kIconButton, &icon_36,
                                       TABLER_ADJUSTMENTS_HORIZONTAL, lv_color_white());
+    lv_obj_add_event_fn(panel_button_, LV_EVENT_CLICKED,
+                        [this](lv_event_t *) { requestMode(UiMode::Settings); });
 
     counter_label_ = lv_label_create(parent);
     lv_obj_add_flag(counter_label_, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_set_style_text_font(counter_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(counter_label_, LV_WIDGETS_FONT_BODY);
     lv_obj_align(counter_label_, LV_ALIGN_CENTER, 0, 0);
 
     updateTransport();
+}
+
+void ImageViewerScreen::buildPanels() {
+    const bool portrait = !landscape_;
+    settings_ = portrait
+        ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    player_settings_panel_build(settings_, [this] { requestMode(UiMode::Bars); },
+                                PlayerSettingsDisplay);
+
+    info_ = portrait
+        ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    if (mode_ == UiMode::Info) populateInfo();
+}
+
+void ImageViewerScreen::refreshInfo() {
+    if (mode_ == UiMode::Info) populateInfo();
+}
+
+void ImageViewerScreen::populateInfo() {
+    if (!info_) return;
+    lv_obj_clean(info_);
+    image_info_panel_build(info_, name(), media_cache_lookup(path()).get(), pixels_.get(),
+                           [this] { requestMode(UiMode::Bars); });
+    lv_obj_update_layout(info_);
 }
 
 void ImageViewerScreen::updateTransport() {
@@ -133,13 +166,20 @@ void ImageViewerScreen::updateTransport() {
     if (next_button_) {
         lv_obj_set_state(next_button_, LV_STATE_DISABLED, !playlist_->canStep(1, RepeatMode::Off));
     }
+    if (info_button_) {
+        lv_obj_set_state(info_button_, LV_STATE_DISABLED, !media_cache_lookup(path()));
+    }
 }
 
 void ImageViewerScreen::setMode(UiMode mode) {
     mode_ = mode;
     if (!top_bar_) return;
+    if (mode == UiMode::Info) populateInfo();
+    if (mode == UiMode::Settings) lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
+    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Settings);
+    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Info);
 }
 
 void ImageViewerScreen::requestMode(UiMode mode) {
@@ -214,11 +254,13 @@ void ImageViewerScreen::load() {
     if (auto pixels = media_cache_image(path(), box_)) {
         setMessage({}, false);
         showPixels(std::move(pixels));
+        refreshInfo();
         prefetch();
         return;
     }
     showPixels(nullptr);
     setMessage("Loading\n" + name(), false);
+    refreshInfo();
     media_cache_request(path(), MetaWantInfo | MetaWantImage, box_, MetaPriority::Blocking, token_);
 }
 
@@ -241,22 +283,22 @@ static std::string describe(const MediaEntry &entry) {
     if (entry.image_width && entry.image_height) {
         text = std::to_string(entry.image_width) + "x" + std::to_string(entry.image_height);
     }
-    const char *kind = entry.image_format == ImageFormat::Png    ? "PNG"
-                     : entry.image_format != ImageFormat::Jpeg   ? nullptr
-                     : entry.image_baseline                      ? "JPEG"
-                                                                 : "progressive JPEG";
-    if (!kind) return text;
+    const char *kind = image_kind_name(entry);
+    if (!kind[0]) return text;
     if (!text.empty()) text += " ";
     return text + kind;
 }
 
 void ImageViewerScreen::showReady() {
+    updateTransport();
     if (auto pixels = media_cache_image(path(), box_)) {
         setMessage({}, false);
         showPixels(std::move(pixels));
+        refreshInfo();
         prefetch();
         return;
     }
+    refreshInfo();
     /* Whatever else completed, the picture on screen is this file's: a
        completion that carries nothing cannot turn it into an error. */
     if (image_ && shown_path_ == path()) return;

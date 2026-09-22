@@ -169,7 +169,10 @@ the UI, or leaves the UI's last pixels sitting in the video area.
 
 The Settings panel holds the settings that can be changed mid-playback: Color
 Mode is not one of them, because reconfiguring the panel format tears the video
-path down. Bars and panels are never up at the same time, so the volume they
+path down. It takes a mask of the sections to build, which is how the image
+viewer shows the same Display rows without the Sound ones
+(see [`images.md`](images.md)); the panel shell and the info rows it shares with
+the video player live in `app/screens/player_panel.*`. Bars and panels are never up at the same time, so the volume they
 both show is read again when one of them is shown rather than kept in sync.
 
 Media Info takes the same area as Settings, so both are one case in the inset

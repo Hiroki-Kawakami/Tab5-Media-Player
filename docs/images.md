@@ -29,6 +29,27 @@ travel passes `kSwipeThreshold` and exceeds the vertical one — waiting for the
 release made a deliberate swipe feel like it had been missed. The same press
 becomes a tap only if no swipe was recognised.
 
+## The two panels
+
+Media Info and Settings are the video player's panels reused: the same dark
+shell (`app/screens/player_panel.*`, which also holds the row helpers both info
+panels build from) in the same places — the bottom 640 px in portrait, the
+right 560 px in landscape — and the same way of leaving them, either the close
+button or a tap on the picture beside them.
+
+- **Settings is the player's panel with the Sound section left out.** The panel
+  takes a section mask rather than being copied, so the rows that can be
+  changed while media is open stay defined in one place. Color Mode is not
+  there for the same reason it is not there during playback: it decides the
+  format the pixels were decoded into, so changing it would mean decoding the
+  picture again.
+- **Media Info is its own panel**, because a picture has nothing a
+  `MediaSummary` describes: the rows are the file, its format and size, the
+  resolution the header gave and the size the picture is actually shown at. It
+  is rebuilt every time it is shown and whenever the picture behind it changes,
+  since a swipe beside the panel moves to the next file. The scroll-cache the
+  video player's info panel needs is not here — five rows fit.
+
 ## Where the picture comes from
 
 Nothing is read or decoded on the LVGL thread: the viewer is a `media_cache`

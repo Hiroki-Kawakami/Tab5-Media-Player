@@ -117,7 +117,7 @@ void FileBrowserPage::build(lv_obj_t *contents) {
                               LV_FLEX_ALIGN_CENTER);
         auto label = lv_label_create(contents);
         lv_label_set_text(label, opened_ ? "No files" : "Cannot open directory");
-        lv_obj_set_style_text_font(label, lv_widgets_body_font(), 0);
+        lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
         lv_obj_set_style_text_color(label, lv_color_hex(0x808080), 0);
         return;
     }
@@ -193,19 +193,19 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
     lv_obj_t *icon = lv_label_create(row);
     lv_obj_set_width(icon, kThumbSide);
     lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(icon, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(icon, LV_WIDGETS_FONT_BODY);
 
     lv_obj_t *name = lv_label_create(row);
     lv_obj_set_flex_grow(name, 1);
-    lv_obj_set_height(name, lv_font_get_line_height(lv_widgets_body_font()));
+    lv_obj_set_height(name, lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)));
     lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_font(name, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(name, LV_WIDGETS_FONT_BODY);
 
     lv_obj_t *arrow = lv_label_create(row);
     lv_obj_set_width(arrow, 48);
     lv_obj_set_style_text_align(arrow, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(arrow, LV_SYMBOL_RIGHT);
-    lv_obj_set_style_text_font(arrow, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(arrow, LV_WIDGETS_FONT_BODY);
     lv_obj_set_style_text_color(arrow, lv_color_hex(0x808080), 0);
 
     lv_obj_set_style_pad_hor(row, 24, 0);

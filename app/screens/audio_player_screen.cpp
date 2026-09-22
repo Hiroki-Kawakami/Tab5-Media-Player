@@ -243,7 +243,7 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
 
     title_label_ = lv_label_create(box);
     lv_obj_set_width(title_label_, lv_pct(100));
-    lv_obj_set_style_text_font(title_label_, lv_widgets_title_font(), 0);
+    lv_obj_set_font_role(title_label_, LV_WIDGETS_FONT_TITLE);
     lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
     shown_title_ = currentTitle();
@@ -251,8 +251,8 @@ void AudioPlayerScreen::buildTitle(lv_obj_t *parent) {
 
     subtitle_label_ = lv_label_create(box);
     lv_obj_set_width(subtitle_label_, lv_pct(100));
-    lv_obj_set_height(subtitle_label_, lv_font_get_line_height(lv_widgets_body_font()));
-    lv_obj_set_style_text_font(subtitle_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_height(subtitle_label_, lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)));
+    lv_obj_set_font_role(subtitle_label_, LV_WIDGETS_FONT_BODY);
     lv_obj_set_style_text_align(subtitle_label_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
     lv_label_set_long_mode(subtitle_label_, LV_LABEL_LONG_MODE_DOTS);
@@ -266,7 +266,7 @@ void AudioPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     elapsed_label_ = lv_label_create(row);
     lv_obj_set_width(elapsed_label_, kTimeWidth);
     lv_obj_set_style_text_align(elapsed_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(elapsed_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(elapsed_label_, LV_WIDGETS_FONT_BODY);
 
     seek_ = media_slider(row, kSeekRange, lv_color_hex(kForegroundColor),
                          lv_color_hex(kTrackColor));
@@ -289,7 +289,7 @@ void AudioPlayerScreen::buildSeekRow(lv_obj_t *parent) {
     total_label_ = lv_label_create(row);
     lv_obj_set_width(total_label_, kTimeWidth);
     lv_obj_set_style_text_align(total_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(total_label_, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(total_label_, LV_WIDGETS_FONT_BODY);
 }
 
 void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {

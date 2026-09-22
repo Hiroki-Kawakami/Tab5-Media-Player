@@ -78,10 +78,10 @@ MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<
 
     MediaTopBar result = {};
     result.title = lv_label_create(back);
-    lv_obj_set_height(result.title, lv_font_get_line_height(lv_widgets_body_font()) + 16);
+    lv_obj_set_height(result.title, lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)) + 16);
     lv_obj_set_style_pad_right(result.title, 24, 0);
     lv_obj_set_style_pad_ver(result.title, 8, 0);
-    lv_obj_set_style_text_font(result.title, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(result.title, LV_WIDGETS_FONT_BODY);
     lv_label_set_text(result.title, title);
 
     lv_spacer_create(bar, 1, 1, 1);

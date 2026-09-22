@@ -4,10 +4,23 @@
  */
 
 #include "settings_panel.hpp"
-#include "panel.hpp"
+#include "screens/player_panel.hpp"
 #include "screens/home/settings_widgets.hpp"
 #include "settings.hpp"
 #include "widgets.hpp"
+
+namespace {
+
+struct SettingsWidgets {
+    lv_obj_t *brightness = nullptr;
+    lv_obj_t *brightness_value = nullptr;
+    lv_obj_t *rotation_lock = nullptr;
+    lv_obj_t *volume = nullptr;
+    lv_obj_t *volume_value = nullptr;
+    lv_obj_t *equalizer = nullptr;
+};
+
+}
 
 static void set_brightness_text(lv_obj_t *value, int brightness) {
     lv_label_set_text_fmt(value, "%d%%", brightness);
@@ -18,69 +31,85 @@ static void set_volume_text(lv_obj_t *value, int volume) {
                           settings_volume_is_headphone() ? "Headphone" : "Speaker", volume);
 }
 
-void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close) {
-    auto contents = player_panel_build(root, "Settings", std::move(on_close));
-
+static void build_display(lv_obj_t *contents, SettingsWidgets *widgets) {
     auto section = lv_setting_section_create(contents, "Display", &kPanelColors);
 
     auto row = lv_setting_row_create(section, "Brightness");
-    auto brightness_value = lv_setting_value_create(row, &kPanelColors);
-    set_brightness_text(brightness_value, settings_display_brightness());
+    auto value = lv_setting_value_create(row, &kPanelColors);
+    set_brightness_text(value, settings_display_brightness());
 
     auto brightness = lv_setting_slider_create(section, kMinDisplayBrightness, 100,
                                                settings_display_brightness(), &kPanelColors);
-    lv_obj_add_event_fn(brightness, LV_EVENT_VALUE_CHANGED,
-                        [brightness, brightness_value](lv_event_t *) {
+    lv_obj_add_event_fn(brightness, LV_EVENT_VALUE_CHANGED, [brightness, value](lv_event_t *) {
         const int percent = lv_slider_get_value(brightness);
         settings_set_display_brightness(percent);
-        set_brightness_text(brightness_value, percent);
+        set_brightness_text(value, percent);
     });
     lv_obj_add_event_fn(brightness, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
 
     lv_setting_separator_create(section, &kPanelColors);
 
     row = lv_setting_row_create(section, "Rotation Lock");
-    auto rotation_lock = lv_setting_switch_create(row, settings_rotation_locked(),
-                                                  [](lv_obj_t *, bool locked) {
+    widgets->rotation_lock = lv_setting_switch_create(row, settings_rotation_locked(),
+                                                      [](lv_obj_t *, bool locked) {
         settings_set_rotation_lock(locked);
         settings_commit();
     }, &kPanelColors);
+    widgets->brightness = brightness;
+    widgets->brightness_value = value;
+}
 
-    section = lv_setting_section_create(contents, "Sound", &kPanelColors);
+static void build_sound(lv_obj_t *contents, SettingsWidgets *widgets) {
+    auto section = lv_setting_section_create(contents, "Sound", &kPanelColors);
 
-    row = lv_setting_row_create(section, "Volume");
-    auto volume_value = lv_setting_value_create(row, &kPanelColors);
-    set_volume_text(volume_value, settings_volume());
+    auto row = lv_setting_row_create(section, "Volume");
+    auto value = lv_setting_value_create(row, &kPanelColors);
+    set_volume_text(value, settings_volume());
 
     auto volume = lv_setting_slider_create(section, 0, 100, settings_volume(), &kPanelColors);
-    lv_obj_add_event_fn(volume, LV_EVENT_VALUE_CHANGED, [volume, volume_value](lv_event_t *) {
+    lv_obj_add_event_fn(volume, LV_EVENT_VALUE_CHANGED, [volume, value](lv_event_t *) {
         const int percent = lv_slider_get_value(volume);
         bsp_audio_set_mute(false);
         settings_set_volume(percent);
-        set_volume_text(volume_value, percent);
+        set_volume_text(value, percent);
     });
     lv_obj_add_event_fn(volume, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
-    settings_volume_observe(volume, [volume, volume_value](int percent) {
+    settings_volume_observe(volume, [volume, value](int percent) {
         if (lv_obj_has_state(volume, LV_STATE_PRESSED)) return;
         lv_slider_set_value(volume, percent, LV_ANIM_OFF);
-        set_volume_text(volume_value, percent);
+        set_volume_text(value, percent);
     });
 
     lv_setting_separator_create(section, &kPanelColors);
 
     row = lv_setting_row_create(section, "Equalizer");
-    auto equalizer = lv_setting_switch_create(row, settings_equalizer_enabled(),
-                                              [](lv_obj_t *, bool enabled) {
+    widgets->equalizer = lv_setting_switch_create(row, settings_equalizer_enabled(),
+                                                  [](lv_obj_t *, bool enabled) {
         settings_set_equalizer_enabled(enabled);
         settings_commit();
     }, &kPanelColors);
+    widgets->volume = volume;
+    widgets->volume_value = value;
+}
 
-    lv_obj_add_event_fn(root, LV_EVENT_REFRESH, [=](lv_event_t *) {
-        lv_slider_set_value(brightness, settings_display_brightness(), LV_ANIM_OFF);
-        set_brightness_text(brightness_value, settings_display_brightness());
-        lv_obj_set_state(rotation_lock, LV_STATE_CHECKED, settings_rotation_locked());
-        lv_slider_set_value(volume, settings_volume(), LV_ANIM_OFF);
-        set_volume_text(volume_value, settings_volume());
-        lv_obj_set_state(equalizer, LV_STATE_CHECKED, settings_equalizer_enabled());
+void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close,
+                                 uint8_t sections) {
+    auto contents = player_panel_build(root, "Settings", std::move(on_close));
+
+    SettingsWidgets widgets;
+    if (sections & PlayerSettingsDisplay) build_display(contents, &widgets);
+    if (sections & PlayerSettingsSound) build_sound(contents, &widgets);
+
+    lv_obj_add_event_fn(root, LV_EVENT_REFRESH, [widgets](lv_event_t *) {
+        if (widgets.brightness) {
+            lv_slider_set_value(widgets.brightness, settings_display_brightness(), LV_ANIM_OFF);
+            set_brightness_text(widgets.brightness_value, settings_display_brightness());
+            lv_obj_set_state(widgets.rotation_lock, LV_STATE_CHECKED, settings_rotation_locked());
+        }
+        if (widgets.volume) {
+            lv_slider_set_value(widgets.volume, settings_volume(), LV_ANIM_OFF);
+            set_volume_text(widgets.volume_value, settings_volume());
+            lv_obj_set_state(widgets.equalizer, LV_STATE_CHECKED, settings_equalizer_enabled());
+        }
     });
 }

@@ -4,9 +4,16 @@
  */
 
 #pragma once
+#include <cstdint>
 #include <functional>
 #include "lvgl.h"
 
-/* Display and Sound settings on a dark panel, for use over the video. The root
- * takes LV_EVENT_REFRESH to re-read the values it shares with the player bar. */
-void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close);
+enum PlayerSettingsSection : uint8_t {
+    PlayerSettingsDisplay = 1,
+    PlayerSettingsSound = 2,
+};
+
+/* The settings that can be changed while media is open, on a dark panel. The
+ * root takes LV_EVENT_REFRESH to re-read the values it shares with the bar. */
+void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close,
+                                 uint8_t sections = PlayerSettingsDisplay | PlayerSettingsSound);

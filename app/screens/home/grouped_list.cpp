@@ -36,7 +36,7 @@ void style_init() {
     lv_style_set_flex_main_place(&row_style, LV_FLEX_ALIGN_START);
     lv_style_set_flex_cross_place(&row_style, LV_FLEX_ALIGN_CENTER);
     lv_style_set_flex_track_place(&row_style, LV_FLEX_ALIGN_CENTER);
-    lv_style_set_text_font(&row_style, lv_widgets_body_font());
+    lv_style_set_text_font(&row_style, lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
 
     lv_style_init(&row_pressed_style);
     lv_style_set_bg_color(&row_pressed_style, lv_color_black());
@@ -58,7 +58,7 @@ lv_obj_t *lv_grouped_section_create(lv_obj_t *parent, const char *title) {
         auto label = lv_label_create(parent);
         if (lv_obj_get_child_count(parent) > 1) lv_obj_set_style_pad_top(label, kPadding / 2, 0);
         lv_label_set_text(label, title);
-        lv_obj_set_style_text_font(label, lv_widgets_body_font(), 0);
+        lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
         lv_obj_set_style_text_color(label, lv_color_hex(0x808080), 0);
         lv_obj_set_style_pad_hor(label, kPadding, 0);
     }

@@ -38,14 +38,14 @@ lv_obj_t *lv_setting_row_create(lv_obj_t *section, const char *label) {
 
     auto text = lv_label_create(row);
     lv_obj_set_flex_grow(text, 1);
-    lv_obj_set_style_text_font(text, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(text, LV_WIDGETS_FONT_BODY);
     lv_label_set_text(text, label);
     return row;
 }
 
 lv_obj_t *lv_setting_value_create(lv_obj_t *row, const SettingColors *colors) {
     auto value = lv_label_create(row);
-    lv_obj_set_style_text_font(value, lv_widgets_body_font(), 0);
+    lv_obj_set_font_role(value, LV_WIDGETS_FONT_BODY);
     lv_obj_set_style_text_color(value, lv_color_hex(colors ? colors->value : 0x808080), 0);
     return value;
 }

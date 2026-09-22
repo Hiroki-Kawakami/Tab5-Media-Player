@@ -23,13 +23,16 @@ public:
     static void eject(const std::string &mount_point);
 
 private:
-    enum class UiMode { Hidden, Bars };
+    enum class UiMode { Hidden, Bars, Settings, Info };
 
     const std::string &name() const { return playlist_->current().name; }
     const std::string &path() const { return playlist_->current().path; }
 
     void buildUi();
     void buildBottomBar(lv_obj_t *parent);
+    void buildPanels();
+    void populateInfo();
+    void refreshInfo();
     void setMode(UiMode mode);
     void requestMode(UiMode mode);
     void requestLoad();
@@ -60,6 +63,8 @@ private:
     lv_obj_t *message_ = nullptr;
     lv_obj_t *top_bar_ = nullptr;
     lv_obj_t *bottom_bar_ = nullptr;
+    lv_obj_t *settings_ = nullptr;
+    lv_obj_t *info_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *info_button_ = nullptr;
     lv_obj_t *panel_button_ = nullptr;

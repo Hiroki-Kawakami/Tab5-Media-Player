@@ -20,6 +20,21 @@ capture image_bars.jpg
 tap 360 640
 settle
 capture image_bars_hidden.jpg
+tap 360 640
+settle
+tap 676 40
+settle
+capture image_info.jpg
+tap 360 300
+settle
+tap 360 640
+settle
+tap 676 1240
+settle
+capture image_settings.jpg
+tap 360 300
+settle
+capture image_panel_closed.jpg
 down 600 640
 wait 60
 move 520 640
@@ -106,6 +121,11 @@ imu rot90
 wait 900
 settle
 capture image_landscape.jpg
+tap 680 44
+settle
+capture image_settings_landscape.jpg
+tap 360 900
+settle
 imu rot0
 wait 900
 settle

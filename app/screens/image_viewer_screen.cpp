@@ -4,6 +4,7 @@
  */
 
 #include "image_viewer_screen.hpp"
+#include "media/image_codec.hpp"
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
 #include "screens/image_viewer/info_panel.hpp"
@@ -250,6 +251,7 @@ void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
 
 void ImageViewerScreen::load() {
     updateTransport();
+    const ImageBox previous = box_;
     box_ = { (int16_t)lv_obj_get_width(root_), (int16_t)lv_obj_get_height(root_) };
     if (auto pixels = media_cache_image(path(), box_)) {
         setMessage({}, false);
@@ -258,8 +260,21 @@ void ImageViewerScreen::load() {
         prefetch();
         return;
     }
-    showPixels(nullptr);
-    setMessage("Loading\n" + name(), false);
+
+    /* A rotation leaves the same picture on screen at the wrong size. Rescaling
+       what is already decoded is a PPA blit, so it stands in until the size the
+       screen now wants has been decoded. */
+    std::shared_ptr<const ImagePixels> placeholder;
+    if (pixels_ && shown_path_ == path() && !(previous == box_)) {
+        placeholder = image_scale(*pixels_, box_);
+    }
+    if (placeholder) {
+        setMessage({}, false);
+        showPixels(std::move(placeholder));
+    } else {
+        showPixels(nullptr);
+        setMessage("Loading\n" + name(), false);
+    }
     refreshInfo();
     media_cache_request(path(), MetaWantInfo | MetaWantImage, box_, MetaPriority::Blocking, token_);
 }

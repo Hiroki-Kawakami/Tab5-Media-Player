@@ -12,6 +12,7 @@
 #include "imgf_resize.h"
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
+#include "driver/ppa.h"
 #include "jpeg_ppa_pipeline.h"
 #ifdef ESP_PLATFORM
 #include "driver/jpeg_encode.h"
@@ -43,6 +44,7 @@ static constexpr std::size_t kEngineReserve = 8 * 1024;
 static jpeg_ppa_pipeline_handle_t s_pipeline;
 static uint8_t *s_strips[2];
 static std::size_t s_strip_bytes;
+static ppa_client_handle_t s_srm;
 #ifdef ESP_PLATFORM
 static jpeg_encoder_handle_t s_encoder;
 #endif
@@ -580,8 +582,64 @@ bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
 
 #endif
 
+std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageBox box) {
+    if (!src.data || !box.valid()) return nullptr;
+
+    const uint32_t scale = std::min((uint32_t)box.width * kScaleDenominator / src.width,
+                                    (uint32_t)box.height * kScaleDenominator / src.height);
+    if (scale < 1 || scale > 16 * kScaleDenominator) return nullptr;
+    const uint16_t dst_w = (uint16_t)(src.width * scale / kScaleDenominator);
+    const uint16_t dst_h = (uint16_t)(src.height * scale / kScaleDenominator);
+    if (!dst_w || !dst_h) return nullptr;
+
+    if (!s_srm) {
+        ppa_client_config_t client = {};
+        client.oper_type = PPA_OPERATION_SRM;
+        client.max_pending_trans_num = 1;
+        const esp_err_t err = ppa_register_client(&client, &s_srm);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "no ppa client: %s", esp_err_to_name(err));
+            s_srm = nullptr;
+            return nullptr;
+        }
+    }
+
+    auto pixels = alloc_pixels(dst_w, dst_h, src.rgb888);
+    if (!pixels) return nullptr;
+
+    const ppa_srm_color_mode_t mode =
+        src.rgb888 ? PPA_SRM_COLOR_MODE_RGB888 : PPA_SRM_COLOR_MODE_RGB565;
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = src.data;
+    op.in.pic_w = src.width;
+    op.in.pic_h = src.height;
+    op.in.block_w = src.width;
+    op.in.block_h = src.height;
+    op.in.srm_cm = mode;
+    op.out.buffer = pixels->data;
+    op.out.buffer_size = align_up(pixels->bytes);
+    op.out.pic_w = dst_w;
+    op.out.pic_h = dst_h;
+    op.out.srm_cm = mode;
+    op.scale_x = (float)scale / kScaleDenominator;
+    op.scale_y = op.scale_x;
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+
+    const esp_err_t err = ppa_do_scale_rotate_mirror(s_srm, &op);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ppa scale %ux%u -> %ux%u: %s", (unsigned)src.width, (unsigned)src.height,
+                 (unsigned)dst_w, (unsigned)dst_h, esp_err_to_name(err));
+        return nullptr;
+    }
+    return pixels;
+}
+
 void image_codec_close() {
     release_pipeline();
+    if (s_srm) {
+        ppa_unregister_client(s_srm);
+        s_srm = nullptr;
+    }
 #ifdef ESP_PLATFORM
     if (s_encoder) {
         jpeg_del_encoder_engine(s_encoder);

@@ -70,6 +70,15 @@ priorities and when to give up on a request:
   often the one the idle queue is decoding right then.
 - **The decoded pixels are held by the screen for as long as they are shown**,
   and the cache never evicts an entry someone still holds.
+- **A rotation shows the picture it already has, rescaled by PPA**, while the
+  size the screen now wants is decoded. Reading the card and decoding again is
+  hundreds of milliseconds; a PPA blit of pixels that are already in PSRAM is
+  not, and leaving the screen blank for that long is what a rotation would
+  otherwise cost. PPA quantizes its scale to sixteenths, so the stand-in is up
+  to 6% smaller than the box — it is replaced by the real decode, and the
+  alternative (overshooting) would clip the picture instead. It runs on the
+  LVGL thread while the worker may be decoding; the two are separate PPA
+  clients and the driver serializes them.
 
 Fitting into the box is `image_codec`'s "contain, but never enlarge": the box
 is clamped to the source size before the fit is computed, so a picture smaller

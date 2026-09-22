@@ -20,6 +20,7 @@
 
 static constexpr int32_t kRowHeight = 80;
 static constexpr int32_t kThumbSide = 56;
+static constexpr ImageBox kThumbBox = { kThumbSide, kThumbSide };
 static constexpr std::size_t kLookahead = 2;
 static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
@@ -67,11 +68,11 @@ void FileBrowserPage::request_visible() {
     media_cache_cancel(token_);
     for (std::size_t i = start; i < end; i++) {
         if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo, 0, MetaPriority::Visible, token_);
+        media_cache_request(entry_path(i), MetaWantInfo, {}, MetaPriority::Visible, token_);
     }
     for (std::size_t i = start; i < end; i++) {
         if (entries_[i].directory || !has_metadata(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbSide,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbBox,
                             MetaPriority::Visible, token_);
     }
     prefetch_rest();
@@ -83,7 +84,7 @@ void FileBrowserPage::prefetch_rest() {
     std::size_t queued = 0;
     for (std::size_t i = 0; i < entries_.size() && queued < kPrefetchLimit; i++) {
         if (entries_[i].directory || entries_[i].kind != MediaKind::Audio) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbSide,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbBox,
                             MetaPriority::Idle, idle_token_);
         queued++;
     }
@@ -234,7 +235,7 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
 
     std::shared_ptr<const ImagePixels> pixels;
     if (!entry.directory && has_metadata(entry.kind)) {
-        pixels = media_cache_image(entry_path(index), kThumbSide);
+        pixels = media_cache_image(entry_path(index), kThumbBox);
     }
     lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);
     /* Inserted first so flex puts it where the icon was; everything indexed
@@ -266,7 +267,7 @@ void FileBrowserPage::didSelectRow(std::size_t index) {
     if (entry.directory) {
         home_->push(std::make_shared<FileBrowserPage>(entry_path(index), entry.name.c_str()));
     } else if (entry.kind == MediaKind::Audio) {
-        media_cache_resolve(entry_path(index), MetaWantInfo, 0, kResolveTimeoutMs);
+        media_cache_resolve(entry_path(index), MetaWantInfo, {}, kResolveTimeoutMs);
         screen_manager.push(std::make_shared<AudioPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Video) {
         screen_manager.push(std::make_shared<VideoPlayerScreen>(make_playlist(index)));

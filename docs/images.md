@@ -29,56 +29,57 @@ travel passes `kSwipeThreshold` and exceeds the vertical one — waiting for the
 release made a deliberate swipe feel like it had been missed. The same press
 becomes a tap only if no swipe was recognised.
 
-## Decoding
+## Where the picture comes from
 
-`app/media/image_codec.*` is the same two-path shape as the cover art decoder
-(see [`metadata.md`](metadata.md#decoding-a-cover)) with the box and the source
-generalised: baseline JPEG goes through `jpeg_ppa_pipeline`, and PNG, a
-progressive JPEG or a picture the hardware rejects falls back to
-image_framework's row-streaming decoder through the resizer. It is a separate
-module from `artwork_codec` rather than a shared one because the tuning pulls
-the other way: a cover is a 56 px square from bytes already in memory, a
-picture here is a screen-sized rectangle read off the card.
+Nothing is read or decoded on the LVGL thread: the viewer is a `media_cache`
+client like the browser and the audio screen, and an image file is a kind of
+entry in that cache rather than a mechanism of its own (see
+[`metadata.md`](metadata.md#image-files)). What the viewer adds is the box, the
+priorities and when to give up on a request:
 
-- **The strip buffers are sized to the source width, not fixed.** A cover is
-  capped at 1365 px by its 64 KB strips; photographs are routinely 3000-4000 px
-  wide, and a strip has to hold 16 rows of the padded width (about 192 KB at
-  4096 px). The pipeline is therefore rebuilt when a wider picture arrives and
-  released with `image_codec_close()`, so the buffers only exist while the
-  viewer is open.
-- **PPA cannot land on the wanted size**, so the pipeline runs the smallest
-  sixteenth that still overshoots and a second pass resizes exactly onto the
-  target and converts to the panel format. That pass is a stretch onto the
-  size the fit already decided, not another contain, so rounding cannot drift
-  away from it.
-- **The target box is clamped to the source size before the fit**, which is
-  what turns "contain" into "shrink only".
-- **A file up to 16 MB is read into PSRAM in chunks**; the hardware decoder
-  wants the whole stream as contiguous bytes, and chunking is what lets a read
-  be abandoned part way. Anything larger is decoded straight off the card
-  through image_framework's file stream, which gives up the hardware path but
-  never holds the file.
-- **Interrupting a decode is a property of the software path only.** The
-  `cancel` flag is polled between read chunks and between rows, and the stream
-  wrapper returns an error to unwind the decoder. `jpeg_ppa_pipeline_process()`
-  is one blocking call and runs to completion.
+- **The box is the whole screen**, so the entry is keyed by the rotation in
+  effect. Rotating asks for the other box and the first one stays cached, which
+  is why rotating back is instant.
+- **The current picture is `Blocking` and the neighbours are `Idle`**, and the
+  idle queue is dropped before the neighbours are re-requested, so a walk
+  through a folder never leaves a queue of pictures nobody is looking at.
+- **Moving on cancels the request for the picture being left**, which drops it
+  from the queue and withdraws it if it is already being read or decoded. The
+  prefetch token is deliberately not cancelled: the picture being swiped to is
+  often the one the idle queue is decoding right then.
+- **The decoded pixels are held by the screen for as long as they are shown**,
+  and the cache never evicts an entry someone still holds.
 
-## The metadata cache gives way
+Fitting into the box is `image_codec`'s "contain, but never enlarge": the box
+is clamped to the source size before the fit is computed, so a picture smaller
+than the screen comes out at its own size.
 
-`onEnter` stops the metadata worker and `onExit` starts it again, like the
-video player does. It frees the browser's JPEG engine (only one is worth
-holding) and the internal RAM behind it, and it stops thumbnail prefetching
-from competing for the card with the picture being opened. Browser thumbnails
-are dropped by the stop and asked for again when Home reappears.
+A failure is read back off the entry rather than carried in a message: nothing
+read (the file is gone), read but not an image, an image that ran out of memory
+to decode, or one that would not decode for another reason. The label in the
+middle of the screen then carries the file name, what the header said the
+picture is (`3023x3231 progressive JPEG`) and the reason, because the size and
+the kind are most of the explanation when the answer is "too large to decode".
+A completion for the current file that carries no pixels is not a failure by
+itself — after a rotation the request for the previous box completes the same
+way — so the entry has to say so.
 
-Image files are not probed for metadata at all: they carry no tags and no cover
-art, so `FileBrowserPage` skips them when it asks the cache for rows.
+## What does not fit
+
+A progressive JPEG has no hardware path and image_framework must hold int16
+coefficients for the whole frame before it can emit a row — about 3 bytes per
+pixel at 4:2:0 — so the ceiling is roughly 7 Mpx with the stores and the arenas
+already in PSRAM. A measured example: a 3023x3231 (9.8 Mpx) progressive JPEG
+wants some 29 MB against 22 MB free, and is reported as too large rather than
+as a broken file. The same picture as baseline JPEG or PNG opens, because both
+of those are decoded a band or a row at a time.
 
 ## Test material
 
 `simulator/sdcard/Pictures/` (gitignored) is what
 `simulator/verify/image_viewer.txt` walks. The samples cover both aspects, a
-picture smaller than the screen, and the two fallback formats:
+picture smaller than the screen, the two fallback formats, and a file that is
+not an image at all (`head -c 4096 /dev/urandom > g_broken.jpg`):
 
 ```sh
 cd simulator/sdcard/Pictures
@@ -89,6 +90,18 @@ ffmpeg -f lavfi -i "smptebars=size=1024x768" -frames:v 1 tmp.ppm
 cjpeg -progressive -quality 90 -outfile d_progressive_1024.jpg tmp.ppm && rm tmp.ppm
 ffmpeg -f lavfi -i "testsrc2=size=1500x1000" -frames:v 1 e_wide_1500.png
 ffmpeg -f lavfi -i "rgbtestsrc=size=600x900" -frames:v 1 f_portrait_600.png
+ffmpeg -f lavfi -i "mandelbrot=size=2048x1536" -frames:v 1 tmp.ppm
+cjpeg -progressive -quality 88 -outfile i_progressive_2048.jpg tmp.ppm && rm tmp.ppm
+```
+
+`h_exif_3000.jpg` is `a_landscape_3000.jpg` with three maximum-size APP1
+segments inserted after the SOI, which puts its frame header ~190 KB into the
+file, past the window the metadata probe reads:
+
+```python
+src = open("a_landscape_3000.jpg", "rb").read()
+seg = b"".join(b"\xff\xe1" + (65533).to_bytes(2, "big") + bytes(65531) for _ in range(3))
+open("h_exif_3000.jpg", "wb").write(src[:2] + seg + src[2:])
 ```
 
 ffmpeg's MJPEG encoder cannot write a progressive stream, which is why that one

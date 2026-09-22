@@ -4,8 +4,6 @@
  */
 
 #include "image_viewer_screen.hpp"
-#include "media/image_codec.hpp"
-#include "media/media_cache.hpp"
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
@@ -46,6 +44,7 @@ void ImageViewerScreen::build() {
         if ((lv_obj_get_width(root_) > lv_obj_get_height(root_)) == landscape_) return;
         lv_async_call([this] {
             if (s_active != this) return;
+            media_cache_cancel(token_);
             buildUi();
             load();
         });
@@ -69,6 +68,8 @@ void ImageViewerScreen::buildUi() {
     });
 
     message_ = lv_label_create(stage_);
+    lv_obj_set_width(message_, lv_pct(90));
+    lv_label_set_long_mode(message_, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_style_text_font(message_, lv_widgets_body_font(), 0);
     lv_obj_set_style_text_align(message_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(message_);
@@ -170,6 +171,7 @@ void ImageViewerScreen::requestAdvance(int delta) {
     lv_async_call([this, delta] {
         if (s_active != this) return;
         if (!playlist_->step(delta, RepeatMode::Off)) return;
+        media_cache_cancel(token_);
         if (title_label_) lv_label_set_text(title_label_, name().c_str());
         load();
     });
@@ -194,7 +196,11 @@ void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
         image_ = nullptr;
     }
     pixels_ = std::move(pixels);
-    if (!pixels_) return;
+    if (!pixels_) {
+        shown_path_.clear();
+        return;
+    }
+    shown_path_ = path();
     image_ = image_object_create(stage_, pixels_);
     if (image_) {
         lv_obj_remove_flag(image_, LV_OBJ_FLAG_CLICKABLE);
@@ -204,19 +210,66 @@ void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
 
 void ImageViewerScreen::load() {
     updateTransport();
-    showPixels(nullptr);
-    setMessage("Loading\n" + name(), false);
-    lv_refr_now(nullptr);
-
-    const bool rgb888 = bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
-    ImageLoad result = image_decode_file(path(), lv_obj_get_width(root_),
-                                         lv_obj_get_height(root_), rgb888, nullptr);
-    if (!result.pixels) {
-        setMessage(name() + "\n" + result.error, true);
+    box_ = { (int16_t)lv_obj_get_width(root_), (int16_t)lv_obj_get_height(root_) };
+    if (auto pixels = media_cache_image(path(), box_)) {
+        setMessage({}, false);
+        showPixels(std::move(pixels));
+        prefetch();
         return;
     }
-    setMessage({}, false);
-    showPixels(std::move(result.pixels));
+    showPixels(nullptr);
+    setMessage("Loading\n" + name(), false);
+    media_cache_request(path(), MetaWantInfo | MetaWantImage, box_, MetaPriority::Blocking, token_);
+}
+
+void ImageViewerScreen::prefetch() {
+    media_cache_idle_cancel();
+    for (int delta : { 1, -1 }) {
+        if (!playlist_->canStep(delta, RepeatMode::Off)) continue;
+        const std::size_t index = (std::size_t)((long long)playlist_->index() + delta);
+        media_cache_request(playlist_->at(index).path, MetaWantInfo | MetaWantImage, box_,
+                            MetaPriority::Idle, idle_token_);
+    }
+}
+
+void ImageViewerScreen::imageReady(const std::string &path) {
+    if (s_active && path == s_active->path()) s_active->showReady();
+}
+
+static std::string describe(const MediaEntry &entry) {
+    std::string text;
+    if (entry.image_width && entry.image_height) {
+        text = std::to_string(entry.image_width) + "x" + std::to_string(entry.image_height);
+    }
+    const char *kind = entry.image_format == ImageFormat::Png    ? "PNG"
+                     : entry.image_format != ImageFormat::Jpeg   ? nullptr
+                     : entry.image_baseline                      ? "JPEG"
+                                                                 : "progressive JPEG";
+    if (!kind) return text;
+    if (!text.empty()) text += " ";
+    return text + kind;
+}
+
+void ImageViewerScreen::showReady() {
+    if (auto pixels = media_cache_image(path(), box_)) {
+        setMessage({}, false);
+        showPixels(std::move(pixels));
+        prefetch();
+        return;
+    }
+    /* Whatever else completed, the picture on screen is this file's: a
+       completion that carries nothing cannot turn it into an error. */
+    if (image_ && shown_path_ == path()) return;
+    /* The picture may simply not be at this box yet: another request for the
+       same file, at the size before a rotation, completes the same way. */
+    auto entry = media_cache_lookup(path());
+    if (!entry || (entry->ok && !entry->image_failed)) return;
+    const char *reason = !entry->ok ? (entry->file_bytes ? "unsupported image format"
+                                                         : "cannot read the file")
+                       : entry->image_too_large ? "too large to decode"
+                                                : "cannot decode the image";
+    const std::string what = describe(*entry);
+    setMessage(name() + "\n" + (what.empty() ? "" : what + "\n") + reason, true);
 }
 
 void ImageViewerScreen::eject(const std::string &mount_point) {
@@ -225,13 +278,19 @@ void ImageViewerScreen::eject(const std::string &mount_point) {
 
 void ImageViewerScreen::onEnter() {
     s_active = this;
-    media_cache_stop();
+    if (!token_) {
+        token_ = media_cache_token();
+        idle_token_ = media_cache_token();
+    }
+    media_cache_observe(token_, imageReady);
+    media_cache_idle_cancel();
     requestLoad();
 }
 
 void ImageViewerScreen::onExit() {
     if (s_active == this) s_active = nullptr;
+    media_cache_unobserve(token_);
+    media_cache_cancel(token_);
+    media_cache_cancel(idle_token_);
     showPixels(nullptr);
-    image_codec_close();
-    media_cache_start();
 }

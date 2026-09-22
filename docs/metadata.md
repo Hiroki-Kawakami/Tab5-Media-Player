@@ -1,10 +1,16 @@
 # Metadata cache
 
-Tags, cover art and browser thumbnails are produced on a background task and
-kept in `app/media/media_cache.*`, so no screen ever parses a file or decodes a
-picture on the LVGL thread. `app/media/media_probe.*` is the blocking half
-(open a demuxer, take `MediaInfo`, close), `app/media/artwork_codec.*` turns
-cover bytes into pixels and back.
+Tags, cover art, browser thumbnails and the pictures the image viewer shows are
+produced on a background task and kept in `app/media/media_cache.*`, so no
+screen ever parses a file or decodes a picture on the LVGL thread.
+`app/media/media_probe.*` is the blocking half for playable files (open a
+demuxer, take `MediaInfo`, close), `app/media/image_codec.*` turns encoded
+pictures into pixels and back.
+
+An image file needs the same four things a cover does — read it, decode it,
+scale it, keep it — so it is the same cache with one more branch rather than a
+second one. Everything below applies to both unless it says otherwise; see
+[`images.md`](images.md) for what the viewer does with the result.
 
 ## Why a second arena
 
@@ -29,7 +35,8 @@ numbers it had (ring 48, bounce 16, depth 16) and lets the probe arena through
 An album's tracks carry the same cover, so images are keyed by content, not by
 path: the meta entry for a path stores only an `image_id`, so there is no
 heuristic on tags or sizes — same bytes, same entry, whether or not the files
-agree on the album name.
+agree on the album name. An image file is hashed the same way, over a window of
+the file itself, so two copies of one photograph decode once.
 
 The id is a 32-bit FNV-1a over an 8 KB window 1 KB into the picture, paired
 with the exact byte count. Hashing all of a 500 KB cover measured 20 ms per
@@ -104,7 +111,9 @@ to make `vApplicationGetTimerTaskMemory` fail — the board panicked before
 8 KiB is the size the demuxers need, not a guess: 4 KiB overflowed the task on
 the first MP3 it probed, and a PSRAM stack overflowing writes into the
 neighbouring heap block rather than tripping the stack guard, because a 4 KiB
-buffer in one frame steps straight over it.
+buffer in one frame steps straight over it. The decoder task gets 16 KiB
+instead, because it runs the image decoders rather than a header walk;
+`meta stats` prints what is left of both.
 
 ## Prefetching gives way to playback
 
@@ -114,7 +123,7 @@ and the audio codec). A directory of a hundred MP3s probed back to back walked
 that down until `mb_open()` could not create its semaphores any more, and the
 file the user tapped failed with "cannot open the file". So:
 
-- `artwork_codec` asks for a JPEG engine only when there is a clear block of
+- `image_codec` asks for a JPEG engine only when there is a clear block of
   DMA-capable internal RAM free. `jpeg_new_decoder_engine()` and
   `jpeg_new_encoder_engine()` dereference their half-built handle on the
   out-of-memory path (IDF v6.1), so running the heap down to them is a panic,
@@ -139,22 +148,27 @@ file the user tapped failed with "cannot open the file". So:
 
 | store | key | holds | budget |
 |---|---|---|---|
-| meta | path | tags, duration, codecs, `image_id` | 512 entries |
-| raw | `image_id` + side | RGB565 pixels | 1 MB |
-| jpeg | `image_id` + side | the resized image, re-encoded | 2 MB |
-| decoded | `image_id` + side | pixels expanded from `jpeg` | 2 MB |
+| meta | path | tags, duration, codecs, picture size, `image_id` | 512 entries |
+| raw | `image_id` + box | RGB565 pixels | 1 MB |
+| jpeg | `image_id` + box | the resized image, re-encoded | 4 MB |
+| decoded | `image_id` + box | pixels expanded from `jpeg` | 2 MB |
+| view | `image_id` + box | the same, for a screen-sized box | 6 MB |
 
-A request carries the side of the square it will be shown in, so the artwork on
-the audio screen is nothing but a 552 px thumbnail and a future grid layout is
-a different constant. Small images (side up to 128 px) are stored as pixels and
-handed straight to LVGL; anything larger is re-encoded with the JPEG hardware
-at quality 90, which turns a 608 KB artwork into 40-60 KB and makes "the last
+A request carries the box it has to fit inside, not a side: a thumbnail and the
+artwork are squares (56 and 552 px), but a picture on screen is 720x1280 or
+1280x720 and fitting it into a square of the longer side would be a different
+picture. Small images (box up to 128 px) are stored as pixels and handed
+straight to LVGL; anything larger is re-encoded with the JPEG hardware at
+quality 90, which turns a 608 KB artwork into 40-60 KB and makes "the last
 80 albums" affordable. Expanding one again is a few milliseconds, and only the
 worker ever does it.
 
 The budgets are separate because the rebuild costs differ by three orders of
 magnitude: with one pool, scrolling a long folder would evict the artwork of
-the track that is playing. Eviction inside a store drops orphans first (no meta
+the track that is playing. `view` exists for the same reason one step up: one
+screen-sized picture is 1.8 MB at RGB565, so a few of them in the `decoded`
+pool would evict every album the audio screen has seen. The split is by box
+size (over 640 px goes to `view`), not by who asked. Eviction inside a store drops orphans first (no meta
 entry references the id any more), never touches an entry the UI still holds a
 `shared_ptr` to, and otherwise takes the least recently used. Dropping a cache
 slot is always safe — the pixels live until the LVGL object that shows them is
@@ -162,6 +176,54 @@ deleted.
 
 Probe failures are cached as well. Without that, a broken file is reopened on
 every pass of the browser.
+
+## Image files
+
+An image file is its own picture, so there is no demuxer and no tag walk:
+
+- **The probe reads a 128 KB window**, hashes the id from it and takes the
+  picture's size from the JPEG SOF or the PNG IHDR if it is in there. Whether
+  the size was found says nothing about whether the file can be decoded — a
+  camera JPEG puts EXIF, a thumbnail and an ICC profile before its frame
+  header, and 200 KB of that is ordinary — so only the format has to be
+  recognised for the entry to count as a picture, and the decode fills the size
+  in afterwards. Gating the entry on the frame header instead is what made
+  large JPEGs fail while PNGs, whose IHDR is always at byte 16, kept working.
+- **The picture itself is read by the decoder stage, not the reader.** A cover
+  is a few hundred KB, so handing the bytes from stage one to stage two costs
+  nothing; a photograph is megabytes, and with the reader already fetching the
+  next one, two encoded pictures sit in PSRAM at once. Together with the stores
+  and the two arenas that was enough to run the board out of memory on a folder
+  of large JPEGs — the decode failed, on a file that had opened a minute
+  earlier. Stage two opens the file itself instead: one encoded picture at a
+  time, paid for with the overlap between a read and the decode before it.
+- **Up to 8 MB is read into memory**, because the hardware decoder wants the
+  stream as contiguous bytes; beyond that the rows are streamed off the card
+  through image_framework, which is bounded but software-only.
+- **A failed decode is recorded as a flag on the entry**, not by taking the
+  picture away from it. Cover art can afford "this file has no picture" because
+  there is one size; an image file is asked for at several boxes, and clearing
+  the entry's id on the box that failed loses the sizes that decoded — which is
+  what put an error message over a picture that was on screen. The flag also
+  carries whether the failure was memory, which is the difference between "too
+  large to decode" and "cannot decode the image".
+- **A picture that ran out of memory is not asked for again**, at any size: the
+  coefficients a progressive JPEG needs do not depend on the box, so every
+  other size would fail the same way after the same read.
+
+## Withdrawing a running job
+
+`media_cache_cancel()` drops a token's queued requests, but the viewer also has
+to be able to leave the picture it is no longer showing: a swipe during a decode
+must not make the next picture wait for it. Each stage therefore publishes the
+token of the job it is on, and a cancel of that token raises the stage's flag;
+the read loop and the software decode both poll it, and the hardware decode is
+one blocking call that is left to finish. A withdrawn job reports nothing, so
+the observer is not woken for a picture nobody is waiting for any more.
+
+The token is published and the flag cleared under the cache lock, together, so
+a cancel that arrives while the worker is picking up its next job either
+catches the job it named or nothing at all.
 
 ## Pixel format
 
@@ -181,11 +243,11 @@ with no swap.
 
 ## Decoding a cover
 
-Baseline JPEG within 1.5 Mpx goes through `jpeg_ppa_pipeline` (Layer 2 of
+Baseline JPEG goes through `jpeg_ppa_pipeline` (Layer 2 of
 jpeg_decode_enhanced): the hardware decoder writes 16-row strips and PPA SRM
 scales each strip down as it lands. Both targets take this path — the host
 build is backed by image_framework, so the simulator exercises what the board
-runs. Above that limit, and for PNG or a progressive JPEG the hardware cannot
+runs. For PNG, a progressive JPEG or a picture wider than the strip buffers can
 take, the fallback streams rows out of image_framework's decoder through the
 resizer, which never materialises the full picture.
 
@@ -207,16 +269,25 @@ of every 8x8 block. Thumbnails come out slightly crisper and noisier than the
 old full box filter. Cascading halvings through PPA would average properly if
 that ever matters more than the 3x.
 
-The two strip buffers are 64 KB of PSRAM, which caps the JPEG at 1365 px wide
-(16 rows x 3 bytes must fit one buffer); wider covers fall back to software.
-Doubling them to 128 KB was measured and changed nothing — PPA is bound by
-reading the strips out of PSRAM, not by per-strip overhead. Internal RAM would
-be the fast place for them, but 2 x 34 KB is most of what the board has free
-and the video path already claims that budget.
+The two strip buffers start at 64 KB of PSRAM, which is a 1365 px wide JPEG
+(16 rows x 3 bytes must fit one buffer), and grow in 64 KB steps with the
+widest picture seen — a 3000 px photograph wants 144 KB each. They are capped
+at 4096 px wide; anything wider falls back to software. Doubling 64 KB to
+128 KB for covers was measured and changed nothing — PPA is bound by reading
+the strips out of PSRAM, not by per-strip overhead. Internal RAM would be the
+fast place for them, but 2 x 34 KB is most of what the board has free and the
+video path already claims that budget.
 
-The JPEG header is parsed by `jpeg_image_size()`, shared with the MJPEG
-renderer; it also rejects progressive, so the hardware path is never tried for
-a frame it cannot take.
+`image_header()` parses the JPEG frame header and the PNG IHDR; a JPEG that is
+not baseline is marked as such there, so the hardware path is never tried for a
+picture it cannot take.
+
+A progressive JPEG is the expensive case: the hardware cannot decode one at
+all, and image_framework has to hold int16 coefficients for the whole frame
+(about 3 bytes per pixel at 4:2:0) before it can emit a single row. A 5 Mpx
+wallpaper therefore wants some 15 MB, which the heap has in total but, with the
+arenas and the stores in it, rarely in one piece — the decoder allocates those
+coefficients one block row at a time for that reason.
 
 The decoder and encoder engines are created on first use and released when the
 worker stops: browsing a folder without covers, or playing audio, holds no JPEG
@@ -284,5 +355,6 @@ when its row comes into view rather than ahead of it.
 ## Harness
 
 `meta drain` waits until the queues are empty and the results have been
-dispatched; `meta stats` logs the entry and byte counts of the four stores.
+dispatched; `meta stats` logs the entry and byte counts of the five stores and
+what is left of PSRAM.
 `simulator/verify/thumbnails.txt` uses both.

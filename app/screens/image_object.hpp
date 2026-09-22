@@ -4,7 +4,7 @@
  */
 
 #pragma once
-#include "media/artwork_codec.hpp"
+#include "media/image_pixels.hpp"
 #include "widgets.hpp"
 
 #include <memory>

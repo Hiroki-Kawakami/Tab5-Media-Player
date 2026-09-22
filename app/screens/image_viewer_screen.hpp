@@ -4,7 +4,7 @@
  */
 
 #pragma once
-#include "media/image_pixels.hpp"
+#include "media/media_cache.hpp"
 #include "playback/playlist.hpp"
 #include "screen_manager.hpp"
 #include "widgets.hpp"
@@ -35,6 +35,9 @@ private:
     void requestLoad();
     void requestAdvance(int delta);
     void load();
+    void prefetch();
+    static void imageReady(const std::string &path);
+    void showReady();
     void showPixels(std::shared_ptr<const ImagePixels> pixels);
     void setMessage(const std::string &message, bool failed);
     void updateTransport();
@@ -46,8 +49,12 @@ private:
     bool landscape_ = false;
     bool swiped_ = false;
     lv_point_t press_ = {};
+    ImageBox box_;
+    uint32_t token_ = 0;
+    uint32_t idle_token_ = 0;
 
     std::shared_ptr<const ImagePixels> pixels_;
+    std::string shown_path_;
     lv_obj_t *stage_ = nullptr;
     lv_obj_t *image_ = nullptr;
     lv_obj_t *message_ = nullptr;

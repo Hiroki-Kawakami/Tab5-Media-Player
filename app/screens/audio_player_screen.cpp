@@ -22,6 +22,7 @@ static constexpr int32_t kGap = 24;
 static constexpr int32_t kTimeWidth = 100;
 static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kArtworkSide = 552;
+static constexpr ImageBox kArtworkBox = { kArtworkSide, kArtworkSide };
 static constexpr int32_t kArtworkRadius = 24;
 
 static constexpr uint32_t kForegroundColor = 0x101010;
@@ -179,7 +180,8 @@ void AudioPlayerScreen::resetArtwork() {
 
 void AudioPlayerScreen::applyArtwork() {
     if (!artwork_ || artwork_image_) return;
-    if (!cover_) cover_ = media_cache_image(path(), artwork_side_);
+    const ImageBox box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
+    if (!cover_) cover_ = media_cache_image(path(), box);
     if (!cover_) return;
 
     artwork_image_ = image_object_create(artwork_, cover_);
@@ -199,8 +201,8 @@ std::string AudioPlayerScreen::currentTitle() const {
 }
 
 void AudioPlayerScreen::requestMeta() {
-    meta_ = media_cache_resolve(path(), MetaWantInfo, 0, kResolveTimeoutMs);
-    media_cache_request(path(), MetaWantInfo | MetaWantImage, kArtworkSide,
+    meta_ = media_cache_resolve(path(), MetaWantInfo, {}, kResolveTimeoutMs);
+    media_cache_request(path(), MetaWantInfo | MetaWantImage, kArtworkBox,
                         MetaPriority::Blocking, token_);
     prefetch_after_us_ = esp_timer_get_time() + kPrefetchDelayUs;
     prefetched_ = false;
@@ -217,10 +219,10 @@ void AudioPlayerScreen::prefetchNeighbours() {
     const std::size_t next = (index + 1) % count;
     const std::size_t previous = (index + count - 1) % count;
 
-    media_cache_request(playlist_->at(next).path, MetaWantInfo | MetaWantImage, kArtworkSide,
+    media_cache_request(playlist_->at(next).path, MetaWantInfo | MetaWantImage, kArtworkBox,
                         MetaPriority::Idle, token_);
     if (previous != next) {
-        media_cache_request(playlist_->at(previous).path, MetaWantInfo, 0, MetaPriority::Idle,
+        media_cache_request(playlist_->at(previous).path, MetaWantInfo, {}, MetaPriority::Idle,
                             token_);
     }
 }

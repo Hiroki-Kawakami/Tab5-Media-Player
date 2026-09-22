@@ -1,6 +1,8 @@
 # Image viewer: Pictures/ holds JPEG and PNG samples of both aspects, one
-# picture smaller than the screen, and a progressive JPEG the hardware path
-# cannot take.
+# picture smaller than the screen, a progressive JPEG the hardware path cannot
+# take, a file that is not an image, a JPEG whose frame header sits past the
+# window the probe reads, and a progressive JPEG big enough to need megabytes of
+# coefficients.
 settle
 tap 360 226
 settle
@@ -8,9 +10,10 @@ tap 360 404
 settle
 capture image_list.jpg
 tap 360 164
-wait 1500
+meta drain
 settle
 capture image_opened.jpg
+meta stats
 tap 360 640
 settle
 capture image_bars.jpg
@@ -22,7 +25,7 @@ wait 60
 move 520 640
 wait 60
 move 380 640
-wait 600
+wait 250
 up
 settle
 capture image_swipe_next.jpg
@@ -38,27 +41,67 @@ capture image_swipe_prev.jpg
 tap 360 640
 settle
 tap 124 1240
-wait 800
+meta drain
 settle
 tap 124 1240
-wait 800
+meta drain
 settle
 capture image_small.jpg
 tap 124 1240
-wait 1200
+meta drain
 settle
 capture image_progressive.jpg
 tap 124 1240
-wait 1200
+meta drain
 settle
 capture image_png_wide.jpg
 tap 124 1240
-wait 1200
+meta drain
 settle
 capture image_png_portrait.jpg
-tap 44 1240
-wait 1200
+tap 124 1240
+meta drain
 settle
+capture image_failed.jpg
+tap 124 1240
+meta drain
+settle
+capture image_late_header.jpg
+tap 124 1240
+meta drain
+settle
+capture image_progressive_big.jpg
+tap 44 1240
+meta drain
+settle
+meta stats
+# three swipes back to back, each one leaving the load before it unfinished
+down 140 640
+wait 40
+move 240 640
+wait 40
+move 380 640
+wait 40
+up
+wait 120
+down 140 640
+wait 40
+move 240 640
+wait 40
+move 380 640
+wait 40
+up
+wait 120
+down 140 640
+wait 40
+move 240 640
+wait 40
+move 380 640
+wait 40
+up
+meta drain
+settle
+capture image_swipe_burst.jpg
 imu rot90
 wait 900
 settle
@@ -67,6 +110,7 @@ imu rot0
 wait 900
 settle
 capture image_portrait.jpg
+meta stats
 imu release
 tap 40 40
 settle

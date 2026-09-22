@@ -50,6 +50,7 @@ void ImageViewerScreen::build() {
         lv_async_call([this] {
             if (s_active != this) return;
             media_cache_cancel(token_);
+            media_cache_cancel(idle_token_);
             buildUi();
             load();
         });

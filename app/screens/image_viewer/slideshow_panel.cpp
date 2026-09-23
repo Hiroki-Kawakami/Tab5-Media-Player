@@ -16,7 +16,7 @@ static constexpr int32_t kStartButtonHeight = 72;
 static constexpr uint32_t kIntervals[] = { 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600 };
 static constexpr const char *kIntervalOptions =
     "5 sec\n10 sec\n20 sec\n30 sec\n1 min\n2 min\n5 min\n10 min\n15 min\n30 min\n1 hour";
-static constexpr const char *kTransitionOptions = "None\nFade\nWipe\nSlide In";
+static constexpr const char *kTransitionOptions = "None\nFade\nWipe\nSlide In\nSlide Out";
 static constexpr const char *kDirectionOptions =
     "Left to Right\nRight to Left\nTop to Bottom\nBottom to Top";
 

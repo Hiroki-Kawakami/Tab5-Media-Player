@@ -239,6 +239,14 @@ whatever a frame costs.
   the same copy of the screen; but the target is somewhere else every frame, so
   each frame redraws all of it that is on screen rather than a band. The
   target's black border travels with it and covers the old picture too.
+- **The slide-out moves the old picture out instead**, uncovering the target
+  where it stands. Nothing is copied ahead: each frame copies the part of the
+  old picture still on screen, shifted by how far the edge moved, out of the
+  framebuffer on screen into the next one, and draws the target only into the
+  band that framebuffer has not had yet. Between them they cover the whole
+  screen. The wipe, the slide-in and the slide-out are one class with two
+  switches — whether the target moves and whether the old picture does — and
+  a push, with both moving, needs no more than setting both.
 - **A direction belongs to the transition setting, not to one transition.**
   `transition_has_direction()` says which kinds use it, and the panel shows
   the row only for those.

@@ -101,32 +101,33 @@ private:
     Placement to_;
 };
 
-/* A wipe reveals the target where it stands; a slide-in moves it in from the
-   edge over the old picture, which stays where it is. */
 class Sweep : public Transition {
 public:
-    Sweep(TransitionDirection direction, bool moving) : direction_(direction), moving_(moving) {}
+    Sweep(TransitionDirection direction, bool target_moves, bool source_moves)
+        : direction_(direction), target_moves_(target_moves), source_moves_(source_moves) {}
 
     int64_t duration_us() const override { return kDurationUs; }
 
     bool prepare(SlideshowOutput &output, const Placement &, const Placement &to) override {
         to_ = to;
+        shown_extent_ = 0;
+        for (int &drawn : drawn_) drawn = 0;
+        ready_ = true;
+        if (source_moves_) return true;
         const int shown = output.shown();
-        copied_ = true;
         for (int i = 0; i < SlideshowOutput::kFramebuffers; i++) {
-            drawn_[i] = 0;
-            if (i != shown) copied_ &= output.copy(output.framebuffer(i), output.framebuffer(shown));
+            if (i != shown) ready_ &= output.copy(output.framebuffer(i), output.framebuffer(shown));
         }
         return true;
     }
 
     bool step(SlideshowOutput &output, float progress, float) override {
-        if (!copied_) return false;
+        if (!ready_) return false;
         return reveal(output, (int)std::lround(progress * (float)length(output)));
     }
 
     void finish(SlideshowOutput &output) override {
-        if (!copied_) {
+        if (!ready_) {
             for (int &drawn : drawn_) drawn = 0;
         }
         reveal(output, length(output));
@@ -157,36 +158,48 @@ private:
         }
     }
 
-    Placement placed(const SlideshowOutput &output, int extent) const {
-        Placement placement = to_;
-        if (!moving_) return placement;
-        const int offset = length(output) - extent;
+    bsp_point_t moved(bsp_point_t point, int distance) const {
         switch (direction_) {
-        case TransitionDirection::RightToLeft: placement.rect.origin.x += offset; break;
-        case TransitionDirection::TopToBottom: placement.rect.origin.y -= offset; break;
-        case TransitionDirection::BottomToTop: placement.rect.origin.y += offset; break;
-        default: placement.rect.origin.x -= offset; break;
+        case TransitionDirection::RightToLeft: return { point.x - distance, point.y };
+        case TransitionDirection::TopToBottom: return { point.x, point.y + distance };
+        case TransitionDirection::BottomToTop: return { point.x, point.y - distance };
+        default: return { point.x + distance, point.y };
         }
-        return placement;
     }
 
     bool reveal(SlideshowOutput &output, int extent) {
+        const int total = length(output);
         const int out = output.least_recent(output.shown());
-        const int from = moving_ ? 0 : drawn_[out];
-        if (extent > from && !output.draw_region(output.framebuffer(out), placed(output, extent),
-                                                 band(output, from, extent))) {
-            return false;
+        uint8_t *frame = output.framebuffer(out);
+
+        if (source_moves_ && extent < total) {
+            const bsp_rect_t to = band(output, extent, total);
+            bsp_rect_t from = to;
+            from.origin = moved(to.origin, shown_extent_ - extent);
+            if (!output.copy_region(frame, to.origin, output.framebuffer(output.shown()), from)) {
+                return false;
+            }
+        }
+
+        const int drawn = target_moves_ ? 0 : drawn_[out];
+        if (extent > drawn) {
+            Placement placement = to_;
+            if (target_moves_) placement.rect.origin = moved(to_.rect.origin, extent - total);
+            if (!output.draw_region(frame, placement, band(output, drawn, extent))) return false;
         }
         drawn_[out] = std::max(drawn_[out], extent);
         output.present(out);
+        shown_extent_ = extent;
         return true;
     }
 
     TransitionDirection direction_;
-    bool moving_;
+    bool target_moves_;
+    bool source_moves_;
     Placement to_;
     int drawn_[SlideshowOutput::kFramebuffers] = {};
-    bool copied_ = false;
+    int shown_extent_ = 0;
+    bool ready_ = false;
 };
 }
 
@@ -197,16 +210,19 @@ std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDir
         if (output.rgb565()) return std::make_unique<MixingFade>();
         return std::make_unique<AccumulatingFade>();
     case TransitionKind::Wipe:
-        return std::make_unique<Sweep>(direction, false);
+        return std::make_unique<Sweep>(direction, false, false);
     case TransitionKind::SlideIn:
-        return std::make_unique<Sweep>(direction, true);
+        return std::make_unique<Sweep>(direction, true, false);
+    case TransitionKind::SlideOut:
+        return std::make_unique<Sweep>(direction, false, true);
     default:
         return std::make_unique<Cut>();
     }
 }
 
 bool transition_has_direction(TransitionKind kind) {
-    return kind == TransitionKind::Wipe || kind == TransitionKind::SlideIn;
+    return kind == TransitionKind::Wipe || kind == TransitionKind::SlideIn ||
+           kind == TransitionKind::SlideOut;
 }
 
 float transition_ease(TransitionCurve, float t) {

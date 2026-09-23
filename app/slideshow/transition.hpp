@@ -10,8 +10,8 @@
 class SlideshowOutput;
 struct Placement;
 
-enum class TransitionKind : uint8_t { None, Fade, Wipe, SlideIn };
-inline constexpr int kTransitionKinds = 4;
+enum class TransitionKind : uint8_t { None, Fade, Wipe, SlideIn, SlideOut };
+inline constexpr int kTransitionKinds = 5;
 
 /* The way a transition moves across the screen, as the viewer sees it. */
 enum class TransitionDirection : uint8_t { LeftToRight, RightToLeft, TopToBottom, BottomToTop };

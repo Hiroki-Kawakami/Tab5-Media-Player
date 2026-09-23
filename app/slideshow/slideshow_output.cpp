@@ -217,18 +217,30 @@ bool SlideshowOutput::draw_region(uint8_t *frame, const Placement &placement,
 }
 
 bool SlideshowOutput::copy(uint8_t *out, const uint8_t *in) {
+    return copy_region(out, { 0, 0 }, in, { { 0, 0 }, screen() });
+}
+
+bool SlideshowOutput::copy_region(uint8_t *out, bsp_point_t to, const uint8_t *in,
+                                  bsp_rect_t from) {
     if (!out || !in) return false;
+    if (from.size.width <= 0 || from.size.height <= 0) return true;
+    const bsp_rect_t source = to_panel(from);
+    const bsp_rect_t target = to_panel({ to, from.size });
     ppa_srm_oper_config_t op = {};
     op.in.buffer = in;
     op.in.pic_w = panel_.width;
     op.in.pic_h = panel_.height;
-    op.in.block_w = panel_.width;
-    op.in.block_h = panel_.height;
+    op.in.block_offset_x = source.origin.x;
+    op.in.block_offset_y = source.origin.y;
+    op.in.block_w = source.size.width;
+    op.in.block_h = source.size.height;
     op.in.srm_cm = srm_mode_;
     op.out.buffer = out;
     op.out.buffer_size = (uint32_t)frame_bytes();
     op.out.pic_w = panel_.width;
     op.out.pic_h = panel_.height;
+    op.out.block_offset_x = target.origin.x;
+    op.out.block_offset_y = target.origin.y;
     op.out.srm_cm = srm_mode_;
     op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
     op.scale_x = 1.0f;

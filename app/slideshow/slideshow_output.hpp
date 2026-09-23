@@ -50,6 +50,7 @@ public:
     /* Draws the part of the composed picture that falls inside `region`. */
     bool draw_region(uint8_t *frame, const Placement &placement, bsp_rect_t region);
     bool copy(uint8_t *out, const uint8_t *in);
+    bool copy_region(uint8_t *out, bsp_point_t to, const uint8_t *in, bsp_rect_t from);
     bool blend(uint8_t *out, const uint8_t *bg, const uint8_t *fg, uint8_t fg_alpha);
     void fill_black(uint8_t *frame);
 

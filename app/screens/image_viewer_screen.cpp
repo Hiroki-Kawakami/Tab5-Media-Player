@@ -446,8 +446,7 @@ void ImageViewerScreen::startSlideshow() {
     config.direction = settings_slideshow_direction();
     slideshow_running_ = true;
     const bool started = slideshow_start(
-        std::move(paths), playlist_->index(), box_, nullptr, config,
-        [this](std::size_t index, std::shared_ptr<const ImagePixels>) {
+        std::move(paths), playlist_->index(), box_, config, [this](std::size_t index) {
             if (s_active == this && slideshow_running_) endSlideshow(index);
         });
     if (started) return;

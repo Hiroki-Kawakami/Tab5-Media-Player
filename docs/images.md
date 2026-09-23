@@ -197,6 +197,16 @@ time into a progress through the curve, calls `step()` as often as PPA allows,
 and calls `finish()` once the duration is up, so a transition lasts the same
 whatever a frame costs.
 
+A transition also says where the new picture is read to (`pixels_buffer()`),
+since that too depends on how it uses the framebuffers. One that needs the
+pixels only to compose the target reads them into a framebuffer that is
+neither on screen nor about to be composed into; one that draws from them every
+frame keeps a panel-sized buffer of its own. That buffer, and the RGB565
+fade's composed target, are allocated when the slideshow starts and only by
+the transitions that need them, so no transition takes more than one buffer
+beyond the three framebuffers, and the cache holds no picture for the
+slideshow.
+
 - **The fade depends on the panel format**, because the cheap way to fade goes
   wrong at RGB565 and the right way costs memory, which is short: every
   megabyte of PSRAM comes off the largest picture that can be decoded.
@@ -211,9 +221,10 @@ whatever a frame costs.
     to 5 bits of red and blue and 6 of green, so on the device, which takes many
     small steps, red and blue stop moving while green still does and the whole
     fade turns green (the simulator blends too slowly to take steps that
-    small). Each frame instead composes the old picture from its pixels and
-    blends the target over it in place, and the target lives in a 1.8 MB PSRAM
-    frame of its own for the length of the slideshow.
+    small). Each frame instead blends the target over the framebuffer the fade
+    started from, which holds the old picture and is not written until the
+    fade is over, into one of the other two. The composed target lives in a
+    1.8 MB PSRAM frame of its own for the length of the slideshow.
 - **PPA blend cannot rotate**, so the target is composed — rotated, centred and
   its borders blacked — before the fade starts. Blending only the picture's
   rectangle would leave the old picture standing wherever the new one's black
@@ -221,19 +232,18 @@ whatever a frame costs.
 - **Nothing waits for a presented framebuffer to reach the panel.** The DPI
   panel picks up a flushed framebuffer only when the frame it is sending ends,
   so a write into the one presented just before can land while it is still on
-  the glass. The RGB565 fade writes each frame three times (borders, old
-  picture, blend), which flickered at the edges when two framebuffers
-  alternated, so it cycles through all three, writing the one presented longest
-  ago. Waiting for the switch in the BSP instead fixed the flicker but capped
-  the steps at the refresh rate and the fade visibly slowed. The RGB888 fade
-  writes each frame once, close to the one before, and alternating two shows
-  nothing.
+  the glass. Writing a frame in several passes (borders, then picture) into
+  the one presented just before flickers at the edges, so the sweeps write the
+  one presented longest ago. Waiting for the switch in the BSP instead fixed
+  the flicker but capped the steps at the refresh rate and the fade visibly
+  slowed. The fades write each frame once, close to the one before, and
+  alternating two shows nothing.
 - **The wipe copies the screen into every framebuffer first**, while it is
   being prepared, and then reveals the target a band at a time into the
   framebuffer presented longest ago. Each framebuffer remembers how far it has
   been revealed, so a frame draws only the band revealed since that
   framebuffer's last turn, and the band is cut straight out of the picture's
-  pixels: nothing is composed ahead and no buffer beyond the three is needed.
+  pixels in the sweep's own buffer: nothing is composed ahead.
   Positions are worked out in screen coordinates, the orientation the viewer
   sees, and mapped onto the panel only when drawn, so a direction means the
   same thing whichever way the device is held.

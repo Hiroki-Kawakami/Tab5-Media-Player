@@ -26,11 +26,15 @@ class Transition {
 public:
     virtual ~Transition() = default;
     virtual int64_t duration_us() const = 0;
-    virtual bool prepare(SlideshowOutput &output, const Placement &from, const Placement &to) = 0;
+    /* Where the new picture is read before prepare(), a panel-sized buffer.
+       Nothing may be presented in between. */
+    virtual uint8_t *pixels_buffer(SlideshowOutput &output) = 0;
+    virtual bool prepare(SlideshowOutput &output, const Placement &to) = 0;
     virtual bool step(SlideshowOutput &output, float progress, float previous) = 0;
     virtual void finish(SlideshowOutput &output) = 0;
 };
 
+/* Null if the buffer the transition needs cannot be allocated. */
 std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDirection direction,
                                               const SlideshowOutput &output);
 bool transition_has_direction(TransitionKind kind);

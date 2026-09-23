@@ -147,15 +147,16 @@ static bsp_rect_t intersect(bsp_rect_t a, bsp_rect_t b) {
     return { { left, top }, { right - left, bottom - top } };
 }
 
-bool SlideshowOutput::place(const ImagePixels &pixels, Placement *out) const {
-    const bsp_size_t size = screen();
-    if (!pixels.data || !pixels.width || pixels.width > size.width || !pixels.height ||
-        pixels.height > size.height) {
+bool SlideshowOutput::place(const uint8_t *data, ImageSize size, Placement *out) const {
+    const bsp_size_t screen_size = screen();
+    if (!data || !size.valid() || size.width > screen_size.width ||
+        size.height > screen_size.height) {
         return false;
     }
-    out->pixels = &pixels;
-    out->rect = { { (size.width - pixels.width) / 2, (size.height - pixels.height) / 2 },
-                  { pixels.width, pixels.height } };
+    out->data = data;
+    out->size = size;
+    out->rect = { { (screen_size.width - size.width) / 2, (screen_size.height - size.height) / 2 },
+                  { size.width, size.height } };
     return true;
 }
 
@@ -165,8 +166,7 @@ bool SlideshowOutput::compose(uint8_t *frame, const Placement &placement) {
 
 bool SlideshowOutput::draw_region(uint8_t *frame, const Placement &placement,
                                   bsp_rect_t region) {
-    const ImagePixels *pixels = placement.pixels;
-    if (!frame || !pixels) return false;
+    if (!frame || !placement.data) return false;
     region = intersect(region, { { 0, 0 }, screen() });
     if (!region.size.width) return true;
 
@@ -191,14 +191,14 @@ bool SlideshowOutput::draw_region(uint8_t *frame, const Placement &placement,
 
     const bsp_rect_t out = to_panel(image);
     ppa_srm_oper_config_t op = {};
-    op.in.buffer = pixels->data;
-    op.in.pic_w = pixels->width;
-    op.in.pic_h = pixels->height;
+    op.in.buffer = placement.data;
+    op.in.pic_w = placement.size.width;
+    op.in.pic_h = placement.size.height;
     op.in.block_offset_x = image.origin.x - placement.rect.origin.x;
     op.in.block_offset_y = image.origin.y - placement.rect.origin.y;
     op.in.block_w = image.size.width;
     op.in.block_h = image.size.height;
-    op.in.srm_cm = pixels->rgb888 ? PPA_SRM_COLOR_MODE_RGB888 : PPA_SRM_COLOR_MODE_RGB565;
+    op.in.srm_cm = srm_mode_;
     op.out.buffer = frame;
     op.out.buffer_size = (uint32_t)frame_bytes();
     op.out.pic_w = panel_.width;

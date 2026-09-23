@@ -33,7 +33,7 @@ namespace {
 struct Session {
     std::vector<std::string> paths;
     ImageSize box;
-    std::shared_ptr<const ImagePixels> shown;
+    bool shown = false;
     std::size_t index = 0;
     SlideshowConfig config;
     SlideshowFinished on_finished;
@@ -43,6 +43,8 @@ struct Session {
 
 static Session s_session;
 static SlideshowOutput s_output;
+static std::unique_ptr<Transition> s_cut;
+static std::unique_ptr<Transition> s_change;
 static bool s_running;
 static EventGroupHandle_t s_events;
 static uint32_t s_token;
@@ -76,16 +78,18 @@ static void request(std::size_t index) {
                         s_idle_token);
 }
 
-static std::shared_ptr<const ImagePixels> fetch(std::size_t index, bool *stop) {
+static bool fetch(std::size_t index, uint8_t *buffer, ImageSize *size, bool *stop) {
     const std::string &path = s_session.paths[index];
     for (;;) {
-        if (auto pixels = media_cache_image(path, s_session.box)) return pixels;
+        if (media_cache_read_image(path, s_session.box, buffer, s_output.frame_bytes(), size)) {
+            return true;
+        }
         auto entry = media_cache_lookup(path);
-        if (entry && (!entry->ok || entry->image_failed)) return nullptr;
+        if (entry && (!entry->ok || entry->image_failed)) return false;
         const EventBits_t bits = wait(pdMS_TO_TICKS(kRetryMs));
         if (bits & kStop) {
             *stop = true;
-            return nullptr;
+            return false;
         }
         if (!bits) request(index);
     }
@@ -95,12 +99,6 @@ static bool stop_requested() {
     return xEventGroupGetBits(s_events) & kStop;
 }
 
-static bool prepare(Transition &transition, const ImagePixels &pixels) {
-    Placement from;
-    if (s_session.shown && !s_output.place(*s_session.shown, &from)) from = {};
-    Placement to;
-    return s_output.place(pixels, &to) && transition.prepare(s_output, from, to);
-}
 
 static bool play(Transition &transition) {
     const int64_t duration_us = transition.duration_us();
@@ -122,30 +120,22 @@ static bool play(Transition &transition) {
 static void run() {
     const std::size_t count = s_session.paths.size();
     const int64_t interval_us = (int64_t)s_session.config.interval_ms * 1000;
-    auto cut = transition_create(TransitionKind::None, s_session.config.direction, s_output);
-    auto change = transition_create(s_session.config.transition, s_session.config.direction,
-                                    s_output);
     std::size_t target = s_session.index;
     int64_t due_us = esp_timer_get_time();
-
-    if (auto first = std::move(s_session.shown)) {
-        if (prepare(*cut, *first) && play(*cut)) {
-            s_session.shown = std::move(first);
-            target = next_of(target);
-            due_us += interval_us;
-        }
-    }
 
     std::size_t misses = 0;
     while (!(s_session.shown && target == s_session.index) && misses < count) {
         request(target);
+        Transition &transition = s_session.shown ? *s_change : *s_cut;
+        uint8_t *buffer = transition.pixels_buffer(s_output);
+        ImageSize size;
         bool stop = false;
-        auto pixels = fetch(target, &stop);
+        const bool fetched = fetch(target, buffer, &size, &stop);
         if (stop) return;
-        Transition &transition = s_session.shown ? *change : *cut;
-        if (pixels && prepare(transition, *pixels)) {
+        Placement to;
+        if (fetched && s_output.place(buffer, size, &to) && transition.prepare(s_output, to)) {
             if (!sleep_until(due_us) || !play(transition)) return;
-            s_session.shown = std::move(pixels);
+            s_session.shown = true;
             s_session.index = target;
             misses = 0;
             due_us = esp_timer_get_time() + interval_us;
@@ -162,16 +152,17 @@ static void finish() {
     display_manager.set_outside_touch_callback(nullptr);
     ui_orientation_set_listener(nullptr, nullptr);
     SlideshowFinished on_finished = std::move(s_session.on_finished);
-    auto shown = std::move(s_session.shown);
     const std::size_t index = s_session.index;
     s_session = {};
-    if (on_finished) on_finished(index, std::move(shown));
+    if (on_finished) on_finished(index);
     media_player_release_sram();
     s_running = false;
 }
 
 static void task_main(void *) {
     run();
+    s_cut.reset();
+    s_change.reset();
     media_cache_unobserve(s_token);
     media_cache_cancel(s_token);
     media_cache_cancel(s_idle_token);
@@ -209,8 +200,7 @@ static BaseType_t spawn() {
 }
 
 bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
-                     std::shared_ptr<const ImagePixels> first, const SlideshowConfig &config,
-                     SlideshowFinished on_finished) {
+                     const SlideshowConfig &config, SlideshowFinished on_finished) {
     if (s_running || index >= paths.size() || !box.valid()) return false;
     if (!s_events) s_events = xEventGroupCreate();
     if (!s_token) {
@@ -219,8 +209,16 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     }
     if (!s_events || !s_token) return false;
     if (!s_output.open(ui_orientation_current())) return false;
+    s_cut = transition_create(TransitionKind::None, config.direction, s_output);
+    s_change = transition_create(config.transition, config.direction, s_output);
+    if (!s_cut || !s_change) {
+        s_cut.reset();
+        s_change.reset();
+        s_output.close();
+        return false;
+    }
 
-    s_session = { std::move(paths), box, std::move(first), index, config, std::move(on_finished) };
+    s_session = { std::move(paths), box, false, index, config, std::move(on_finished) };
     xEventGroupClearBits(s_events, kStop | kReady);
 
     ui_orientation_set_listener([](bsp_rotation_t, void *) {}, nullptr);
@@ -229,6 +227,8 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     if (spawn() != pdPASS) {
         ESP_LOGE(TAG, "no task");
         media_cache_unobserve(s_token);
+        s_cut.reset();
+        s_change.reset();
         s_output.close();
         s_session = {};
         ui_orientation_set_listener(nullptr, nullptr);

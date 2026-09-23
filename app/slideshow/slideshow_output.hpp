@@ -6,7 +6,7 @@
 #pragma once
 #include "bsp_types.h"
 #include "driver/ppa.h"
-#include "media/image_pixels.hpp"
+#include "media/image_codec.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -20,7 +20,8 @@ using Frame = std::unique_ptr<uint8_t, FrameDeleter>;
 /* Rectangles here are in screen coordinates, the orientation the slideshow
    is shown in; only the output maps them onto the panel. */
 struct Placement {
-    const ImagePixels *pixels = nullptr;
+    const uint8_t *data = nullptr;
+    ImageSize size;
     bsp_rect_t rect = {};
 };
 
@@ -40,12 +41,14 @@ public:
     uint8_t *framebuffer(int index) const;
     /* A panel-sized buffer in PSRAM that PPA can write. */
     Frame allocate_frame() const;
+    std::size_t frame_bytes() const;
     int shown() const { return shown_; }
     /* The framebuffer presented longest ago, other than the two given. */
     int least_recent(int exclude, int also_exclude = -1) const;
     void present(int index);
 
-    bool place(const ImagePixels &pixels, Placement *out) const;
+    /* `data` holds packed pixels in the panel's format. */
+    bool place(const uint8_t *data, ImageSize size, Placement *out) const;
     bool compose(uint8_t *frame, const Placement &placement);
     /* Draws the part of the composed picture that falls inside `region`. */
     bool draw_region(uint8_t *frame, const Placement &placement, bsp_rect_t region);
@@ -57,7 +60,6 @@ public:
 private:
     void fill_black(uint8_t *frame, bsp_rect_t area) const;
     bsp_rect_t to_panel(bsp_rect_t rect) const;
-    std::size_t frame_bytes() const;
 
     bsp_rotation_t rotation_ = BSP_ROTATION_0;
     bsp_size_t panel_ = {};

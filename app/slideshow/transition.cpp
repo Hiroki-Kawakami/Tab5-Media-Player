@@ -17,11 +17,21 @@ uint8_t alpha_of(float weight) {
     return (uint8_t)std::clamp((int)std::lround(weight * 255.0f), 0, 255);
 }
 
+/* Neither on screen nor the one least_recent() picks to compose into. */
+int scratch_framebuffer(const SlideshowOutput &output) {
+    const int shown = output.shown();
+    return output.least_recent(shown, output.least_recent(shown));
+}
+
 class Cut : public Transition {
 public:
     int64_t duration_us() const override { return 0; }
 
-    bool prepare(SlideshowOutput &output, const Placement &, const Placement &to) override {
+    uint8_t *pixels_buffer(SlideshowOutput &output) override {
+        return output.framebuffer(scratch_framebuffer(output));
+    }
+
+    bool prepare(SlideshowOutput &output, const Placement &to) override {
         target_ = output.least_recent(output.shown());
         return output.compose(output.framebuffer(target_), to);
     }
@@ -38,7 +48,11 @@ class AccumulatingFade : public Transition {
 public:
     int64_t duration_us() const override { return kDurationUs; }
 
-    bool prepare(SlideshowOutput &output, const Placement &, const Placement &to) override {
+    uint8_t *pixels_buffer(SlideshowOutput &output) override {
+        return output.framebuffer(scratch_framebuffer(output));
+    }
+
+    bool prepare(SlideshowOutput &output, const Placement &to) override {
         source_ = output.shown();
         target_ = output.least_recent(source_);
         spare_ = output.least_recent(source_, target_);
@@ -69,21 +83,25 @@ private:
 
 class MixingFade : public Transition {
 public:
+    explicit MixingFade(Frame target) : target_(std::move(target)) {}
+
     int64_t duration_us() const override { return kDurationUs; }
 
-    bool prepare(SlideshowOutput &output, const Placement &from, const Placement &to) override {
-        if (!target_) target_ = output.allocate_frame();
-        from_ = from;
-        to_ = to;
-        return !target_ || output.compose(target_.get(), to);
+    uint8_t *pixels_buffer(SlideshowOutput &output) override {
+        return output.framebuffer(output.least_recent(output.shown()));
     }
 
+    bool prepare(SlideshowOutput &output, const Placement &to) override {
+        source_ = output.shown();
+        return output.compose(target_.get(), to);
+    }
+
+    /* The framebuffer the fade started from holds the old picture and is never
+       written, so each frame mixes the two pictures afresh. */
     bool step(SlideshowOutput &output, float progress, float) override {
-        if (!target_ || !from_.pixels) return false;
-        const int out = output.least_recent(output.shown());
-        uint8_t *frame = output.framebuffer(out);
-        if (!output.compose(frame, from_) ||
-            !output.blend(frame, frame, target_.get(), alpha_of(progress))) {
+        const int out = output.least_recent(source_, output.shown());
+        if (!output.blend(output.framebuffer(out), output.framebuffer(source_), target_.get(),
+                          alpha_of(progress))) {
             return false;
         }
         output.present(out);
@@ -91,24 +109,26 @@ public:
     }
 
     void finish(SlideshowOutput &output) override {
-        const int out = output.least_recent(output.shown());
-        if (output.compose(output.framebuffer(out), to_)) output.present(out);
+        const int out = output.least_recent(source_, output.shown());
+        if (output.copy(output.framebuffer(out), target_.get())) output.present(out);
     }
 
 private:
     Frame target_;
-    Placement from_;
-    Placement to_;
+    int source_ = -1;
 };
 
 class Sweep : public Transition {
 public:
-    Sweep(TransitionDirection direction, bool target_moves, bool source_moves)
-        : direction_(direction), target_moves_(target_moves), source_moves_(source_moves) {}
+    Sweep(TransitionDirection direction, bool target_moves, bool source_moves, Frame pixels)
+        : direction_(direction), target_moves_(target_moves), source_moves_(source_moves),
+          pixels_(std::move(pixels)) {}
 
     int64_t duration_us() const override { return kDurationUs; }
 
-    bool prepare(SlideshowOutput &output, const Placement &, const Placement &to) override {
+    uint8_t *pixels_buffer(SlideshowOutput &) override { return pixels_.get(); }
+
+    bool prepare(SlideshowOutput &output, const Placement &to) override {
         to_ = to;
         shown_extent_ = 0;
         for (int &drawn : drawn_) drawn = 0;
@@ -196,27 +216,39 @@ private:
     TransitionDirection direction_;
     bool target_moves_;
     bool source_moves_;
+    Frame pixels_;
     Placement to_;
     int drawn_[SlideshowOutput::kFramebuffers] = {};
     int shown_extent_ = 0;
     bool ready_ = false;
 };
+
+std::unique_ptr<Transition> sweep(TransitionDirection direction, bool target_moves,
+                                  bool source_moves, const SlideshowOutput &output) {
+    Frame pixels = output.allocate_frame();
+    if (!pixels) return nullptr;
+    return std::make_unique<Sweep>(direction, target_moves, source_moves, std::move(pixels));
+}
+
 }
 
 std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDirection direction,
                                               const SlideshowOutput &output) {
     switch (kind) {
-    case TransitionKind::Fade:
-        if (output.rgb565()) return std::make_unique<MixingFade>();
-        return std::make_unique<AccumulatingFade>();
+    case TransitionKind::Fade: {
+        if (!output.rgb565()) return std::make_unique<AccumulatingFade>();
+        Frame target = output.allocate_frame();
+        if (!target) return nullptr;
+        return std::make_unique<MixingFade>(std::move(target));
+    }
     case TransitionKind::Wipe:
-        return std::make_unique<Sweep>(direction, false, false);
+        return sweep(direction, false, false, output);
     case TransitionKind::SlideIn:
-        return std::make_unique<Sweep>(direction, true, false);
+        return sweep(direction, true, false, output);
     case TransitionKind::SlideOut:
-        return std::make_unique<Sweep>(direction, false, true);
+        return sweep(direction, false, true, output);
     case TransitionKind::Push:
-        return std::make_unique<Sweep>(direction, true, true);
+        return sweep(direction, true, true, output);
     default:
         return std::make_unique<Cut>();
     }

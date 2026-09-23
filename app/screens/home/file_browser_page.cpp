@@ -21,7 +21,7 @@
 
 static constexpr int32_t kRowHeight = 80;
 static constexpr int32_t kThumbSide = 56;
-static constexpr ImageBox kThumbBox = { kThumbSide, kThumbSide };
+static constexpr ImageSize kThumbBox = { kThumbSide, kThumbSide };
 static constexpr std::size_t kLookahead = 2;
 static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;

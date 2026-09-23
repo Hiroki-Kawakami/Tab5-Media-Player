@@ -56,7 +56,7 @@ namespace {
 
 struct ImageKey {
     uint64_t id;
-    ImageBox box;
+    ImageSize box;
 
     bool operator==(const ImageKey &other) const {
         return id == other.id && box == other.box;
@@ -89,7 +89,7 @@ struct ImageStore {
 struct Request {
     PsramString path;
     uint8_t want = 0;
-    ImageBox box;
+    ImageSize box;
     uint32_t token = 0;
 };
 
@@ -477,7 +477,7 @@ static CoverArt read_thumb(const std::string &path, uint32_t at, uint32_t bytes)
 /* The thumbnail only stands in for the picture when it is at least as big as
    the box: below that it would be enlarged, and the picture it replaces would
    have come out sharper. */
-static bool thumb_covers(const std::shared_ptr<MediaEntry> &entry, ImageBox box) {
+static bool thumb_covers(const std::shared_ptr<MediaEntry> &entry, ImageSize box) {
     const auto &exif = entry->image_exif;
     if (!exif || !exif->thumb_bytes) return false;
     return exif->thumb_width >= box.width && exif->thumb_height >= box.height;
@@ -956,7 +956,7 @@ std::shared_ptr<const MediaEntry> media_cache_lookup(const std::string &path) {
     return find_meta(path);
 }
 
-std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageBox box) {
+std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageSize box) {
     if (!s_lock || !box.valid()) return nullptr;
     Lock lock;
     auto entry = find_meta(path);
@@ -964,7 +964,30 @@ std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, Im
     return take_pixels({ entry->image_id, box });
 }
 
-void media_cache_request(const std::string &path, uint8_t want, ImageBox box,
+bool media_cache_read_image(const std::string &path, ImageSize box, uint8_t *dst,
+                            std::size_t capacity, ImageSize *size) {
+    if (!s_lock || !box.valid() || box.longest() <= kRawMaxSide || !dst) return false;
+    const bool rgb888 = panel_rgb888();
+    const std::size_t pixel_bytes = rgb888 ? 3 : 2;
+    if ((uintptr_t)dst % kImageAlignment ||
+        capacity < (std::size_t)box.width * box.height * pixel_bytes) {
+        ESP_LOGE(TAG, "read_image: buffer does not fit %dx%d", box.width, box.height);
+        return false;
+    }
+    Lock lock;
+    auto entry = find_meta(path);
+    if (!entry || !entry->has_cover) return false;
+    auto pixels = take_pixels({ entry->image_id, box });
+    if (!pixels || pixels->rgb888 != rgb888) return false;
+    const std::size_t row = (std::size_t)pixels->width * pixel_bytes;
+    for (uint16_t y = 0; y < pixels->height; y++) {
+        memcpy(dst + (std::size_t)y * row, pixels->data + (std::size_t)y * pixels->stride, row);
+    }
+    *size = { (int16_t)pixels->width, (int16_t)pixels->height };
+    return true;
+}
+
+void media_cache_request(const std::string &path, uint8_t want, ImageSize box,
                          MetaPriority priority, uint32_t token) {
     if (!s_running) return;
     {
@@ -982,7 +1005,7 @@ void media_cache_request(const std::string &path, uint8_t want, ImageBox box,
 }
 
 std::shared_ptr<const MediaEntry> media_cache_resolve(const std::string &path, uint8_t want,
-                                                      ImageBox box, uint32_t timeout_ms) {
+                                                      ImageSize box, uint32_t timeout_ms) {
     if (!s_lock) return nullptr;
     auto satisfied = [&]() -> std::shared_ptr<const MediaEntry> {
         Lock lock;

@@ -280,7 +280,7 @@ void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
 void ImageViewerScreen::load() {
     if (slideshow_running_) return;
     updateTransport();
-    const ImageBox previous = box_;
+    const ImageSize previous = box_;
     box_ = { (int16_t)lv_obj_get_width(root_), (int16_t)lv_obj_get_height(root_) };
     if (auto pixels = media_cache_image(path(), box_)) {
         setMessage({}, false);

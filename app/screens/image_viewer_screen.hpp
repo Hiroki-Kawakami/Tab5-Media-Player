@@ -56,7 +56,7 @@ private:
     bool swiped_ = false;
     bool slideshow_running_ = false;
     lv_point_t press_ = {};
-    ImageBox box_;
+    ImageSize box_;
     uint32_t token_ = 0;
     uint32_t idle_token_ = 0;
 

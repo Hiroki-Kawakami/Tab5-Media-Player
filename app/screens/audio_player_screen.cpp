@@ -25,7 +25,7 @@ static constexpr int32_t kArtworkGap = 64;
 static constexpr int32_t kSeekRowHeight = 56;
 static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kArtworkSide = 552;
-static constexpr ImageBox kArtworkBox = { kArtworkSide, kArtworkSide };
+static constexpr ImageSize kArtworkBox = { kArtworkSide, kArtworkSide };
 static constexpr int32_t kArtworkRadius = 24;
 
 static constexpr uint32_t kForegroundColor = 0x101010;
@@ -183,7 +183,7 @@ void AudioPlayerScreen::resetArtwork() {
 
 void AudioPlayerScreen::applyArtwork() {
     if (!artwork_ || artwork_image_) return;
-    const ImageBox box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
+    const ImageSize box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
     if (!cover_) cover_ = media_cache_image(path(), box);
     if (!cover_) return;
 

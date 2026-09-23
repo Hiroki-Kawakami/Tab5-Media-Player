@@ -9,6 +9,7 @@
 #include "media/media_types.hpp"
 #include "media_buffer.h"
 #include "media_tags.h"
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -63,11 +64,16 @@ void media_cache_observe(uint32_t token, void (*on_ready)(const std::string &pat
 void media_cache_unobserve(uint32_t token);
 
 std::shared_ptr<const MediaEntry> media_cache_lookup(const std::string &path);
-std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageBox box);
-void media_cache_request(const std::string &path, uint8_t want, ImageBox box,
+std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageSize box);
+/* Writes the picture cached at `box` into `dst` as packed rows in the panel's
+   format. `dst` must be 64-byte aligned and hold box width x height pixels; not
+   for thumbnail-sized boxes. False if nothing is cached for that box yet. */
+bool media_cache_read_image(const std::string &path, ImageSize box, uint8_t *dst,
+                            std::size_t capacity, ImageSize *size);
+void media_cache_request(const std::string &path, uint8_t want, ImageSize box,
                          MetaPriority priority, uint32_t token);
 std::shared_ptr<const MediaEntry> media_cache_resolve(const std::string &path, uint8_t want,
-                                                      ImageBox box, uint32_t timeout_ms);
+                                                      ImageSize box, uint32_t timeout_ms);
 void media_cache_cancel(uint32_t token);
 /* Keeps only the paths `keep` accepts: the rest of the token's requests are
    dropped and a running job the token owns is withdrawn. `keep` is called with

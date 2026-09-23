@@ -18,13 +18,13 @@ enum class ImageFormat {
     Png,
 };
 
-struct ImageBox {
+struct ImageSize {
     int16_t width = 0;
     int16_t height = 0;
 
     bool valid() const { return width > 0 && height > 0; }
     int32_t longest() const { return width > height ? width : height; }
-    bool operator==(const ImageBox &other) const {
+    bool operator==(const ImageSize &other) const {
         return width == other.width && height == other.height;
     }
 };
@@ -44,16 +44,16 @@ struct ImageNotes {
 
 bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out);
 
-std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageBox box,
+std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageSize box,
                                           bool rgb888, const volatile bool *cancel,
                                           ImageNotes *notes = nullptr);
-std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageBox box, bool rgb888,
+std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSize box, bool rgb888,
                                                const volatile bool *cancel,
                                                ImageNotes *notes = nullptr);
 bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out);
 
 /* Rescales decoded pixels to fit `box` with PPA, for a picture that has to be
    shown at a new size before it can be decoded at that size. */
-std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageBox box);
+std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageSize box);
 
 void image_codec_close();

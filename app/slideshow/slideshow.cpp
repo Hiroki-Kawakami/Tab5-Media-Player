@@ -32,7 +32,7 @@ namespace {
 
 struct Session {
     std::vector<std::string> paths;
-    ImageBox box;
+    ImageSize box;
     std::shared_ptr<const ImagePixels> shown;
     std::size_t index = 0;
     SlideshowConfig config;
@@ -208,7 +208,7 @@ static BaseType_t spawn() {
 #endif
 }
 
-bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageBox box,
+bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
                      std::shared_ptr<const ImagePixels> first, const SlideshowConfig &config,
                      SlideshowFinished on_finished) {
     if (s_running || index >= paths.size() || !box.valid()) return false;

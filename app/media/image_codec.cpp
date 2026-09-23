@@ -118,7 +118,7 @@ static imgf_pixfmt_t target_pixfmt(bool rgb888) {
     return rgb888 ? IMGF_PIX_BGR888 : IMGF_PIX_RGB565;
 }
 
-static imgf_resize_opts_t contain_opts(uint32_t src_w, uint32_t src_h, ImageBox box, bool rgb888) {
+static imgf_resize_opts_t contain_opts(uint32_t src_w, uint32_t src_h, ImageSize box, bool rgb888) {
     imgf_resize_opts_t opts = {};
     opts.target_w = (uint16_t)std::min<uint32_t>((uint32_t)box.width, src_w);
     opts.target_h = (uint16_t)std::min<uint32_t>((uint32_t)box.height, src_h);
@@ -128,7 +128,7 @@ static imgf_resize_opts_t contain_opts(uint32_t src_w, uint32_t src_h, ImageBox 
     return opts;
 }
 
-static bool fit_inside(uint32_t src_w, uint32_t src_h, ImageBox box, uint16_t *dst_w,
+static bool fit_inside(uint32_t src_w, uint32_t src_h, ImageSize box, uint16_t *dst_w,
                        uint16_t *dst_h) {
     const imgf_resize_opts_t opts = contain_opts(src_w, src_h, box, false);
     return imgf_resize_compute_dst((uint16_t)src_w, (uint16_t)src_h, &opts, dst_w, dst_h) == IMGF_OK;
@@ -246,7 +246,7 @@ static ppa_srm_color_mode_t panel_color_mode(bool rgb888) {
 /* How far short of the fitted size a picture may land before it is worth an
    intermediate and a pass of the box resizer to correct: five per cent of the
    box, capped so that a screen-sized picture cannot lose a visible border. */
-static int32_t direct_shortfall_max(ImageBox box) {
+static int32_t direct_shortfall_max(ImageSize box) {
     return std::min<int32_t>(box.longest() * 5 / 100, kDirectShortfallMax);
 }
 
@@ -274,7 +274,7 @@ static uint32_t ppa_scale(uint32_t width, uint32_t height, uint16_t dst_w, uint1
 }
 
 static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::size_t size,
-                                                    const ImageHeader &header, ImageBox box,
+                                                    const ImageHeader &header, ImageSize box,
                                                     bool rgb888) {
     if (header.width > kMaxHardwareWidth) {
         ESP_LOGI(TAG, "%ux%u is wider than the strip buffers allow", (unsigned)header.width,
@@ -378,7 +378,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
 }
 
 static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, ImageFormat format,
-                                                     ImageBox box, bool rgb888,
+                                                     ImageSize box, bool rgb888,
                                                      const volatile bool *cancel, bool *oom) {
     imgf_decoder_t *dec =
         imgf_make_decoder(format == ImageFormat::Png ? IMGF_FMT_PNG : IMGF_FMT_JPEG);
@@ -469,7 +469,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
     return pixels;
 }
 
-std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageBox box,
+std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageSize box,
                                           bool rgb888, const volatile bool *cancel,
                                           ImageNotes *notes) {
     if (!data || size == 0 || !box.valid() || stopped(cancel)) return nullptr;
@@ -525,7 +525,7 @@ static uint8_t *read_file(FILE *fp, std::size_t size, const volatile bool *cance
     return buffer;
 }
 
-std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageBox box, bool rgb888,
+std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSize box, bool rgb888,
                                                const volatile bool *cancel, ImageNotes *notes) {
     if (!box.valid()) return nullptr;
     FILE *fp = fopen(path.c_str(), "rb");
@@ -654,7 +654,7 @@ bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
 
 #endif
 
-std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageBox box) {
+std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageSize box) {
     if (!src.data || !box.valid()) return nullptr;
 
     const uint32_t scale = std::min((uint32_t)box.width * kScaleDenominator / src.width,

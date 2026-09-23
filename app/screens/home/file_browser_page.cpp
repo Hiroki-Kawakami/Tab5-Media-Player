@@ -16,8 +16,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <dirent.h>
-#include <strings.h>
 
 static constexpr int32_t kRowHeight = 80;
 static constexpr int32_t kThumbSide = 56;
@@ -131,7 +129,7 @@ void FileBrowserPage::build(lv_obj_t *contents) {
     list_ = nullptr;
 
     if (!loaded_) {
-        opened_ = load_entries();
+        opened_ = media_directory_list(path_, &entries_);
         loaded_ = true;
     }
     if (!opened_ || entries_.empty()) {
@@ -183,25 +181,6 @@ bool FileBrowserPage::is_under(const std::string &mount_point) const {
     return path_is_under(path_, mount_point);
 }
 
-bool FileBrowserPage::load_entries() {
-    DIR *dir = opendir(path_.c_str());
-    if (!dir) return false;
-    while (struct dirent *ent = readdir(dir)) {
-        if (ent->d_name[0] == '.') continue;
-        const bool directory = ent->d_type == DT_DIR;
-        const MediaKind kind = directory ? MediaKind::None : demuxer_media_kind(ent->d_name);
-        entries_.push_back({ PsramString(ent->d_name), directory, kind });
-    }
-    closedir(dir);
-
-    std::sort(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) {
-        if (a.directory != b.directory) return a.directory;
-        return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
-    });
-    entries_.shrink_to_fit();
-    return true;
-}
-
 std::size_t FileBrowserPage::rowCount() const {
     return entries_.size();
 }
@@ -244,7 +223,7 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
 }
 
 void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
-    const Entry &entry = entries_[index];
+    const DirectoryEntry &entry = entries_[index];
     const char *icon = entry.directory                ? LV_SYMBOL_DIRECTORY
                      : entry.kind == MediaKind::Video ? LV_SYMBOL_VIDEO
                      : entry.kind == MediaKind::Audio ? LV_SYMBOL_AUDIO
@@ -280,7 +259,7 @@ std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) cons
     std::vector<PlaylistItem> items;
     std::size_t current = 0;
     for (std::size_t i = 0; i < entries_.size(); i++) {
-        const Entry &entry = entries_[i];
+        const DirectoryEntry &entry = entries_[i];
         if (entry.directory || entry.kind != kind) continue;
         if (i == index) current = items.size();
         items.push_back({ entry.name.c_str(), entry_path(i) });
@@ -289,7 +268,7 @@ std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) cons
 }
 
 void FileBrowserPage::didSelectRow(std::size_t index) {
-    const Entry &entry = entries_[index];
+    const DirectoryEntry &entry = entries_[index];
     if (entry.directory) {
         home_->push(std::make_shared<FileBrowserPage>(entry_path(index), entry.name.c_str()));
     } else if (entry.kind == MediaKind::Audio) {

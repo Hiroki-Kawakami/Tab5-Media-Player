@@ -4,6 +4,9 @@
  */
 
 #include "playlist.hpp"
+#include "media/media_directory.hpp"
+
+#include <sys/stat.h>
 
 Playlist::Playlist(std::vector<PlaylistItem> items, std::size_t index)
     : items_(std::move(items)), index_(index) {
@@ -29,4 +32,24 @@ bool Playlist::step(int delta, RepeatMode repeat) {
 
 void Playlist::select(std::size_t index) {
     if (index < items_.size()) index_ = index;
+}
+
+std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind) {
+    std::vector<PlaylistItem> items;
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return items;
+    if (!S_ISDIR(st.st_mode)) {
+        const std::size_t slash = path.rfind('/');
+        const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+        if (demuxer_media_kind(name.c_str()) == kind) items.push_back({ name, path });
+        return items;
+    }
+
+    PsramVector<DirectoryEntry> entries;
+    if (!media_directory_list(path, &entries)) return items;
+    for (const DirectoryEntry &entry : entries) {
+        if (entry.directory || entry.kind != kind) continue;
+        items.push_back({ entry.name.c_str(), path + "/" + entry.name.c_str() });
+    }
+    return items;
 }

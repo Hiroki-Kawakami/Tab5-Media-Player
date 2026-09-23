@@ -54,7 +54,7 @@ settle
 tap 530 970
 settle
 capture slideshow_panel.jpg
-tap 360 965
+tap 360 1220
 wait 700
 capture slideshow_start.jpg
 wait 500
@@ -77,7 +77,7 @@ wait 900
 settle
 tap 680 124
 settle
-tap 325 280
+tap 660 280
 wait 1200
 settle
 capture slideshow_landscape.jpg
@@ -113,7 +113,7 @@ settle
 capture slideshow_interval_list.jpg
 tap 530 585
 settle
-tap 360 965
+tap 360 1220
 wait 1200
 settle
 capture slideshow_interval_first.jpg
@@ -165,7 +165,7 @@ settle
 tap 530 1045
 settle
 capture slideshow_wipe_panel.jpg
-tap 360 1040
+tap 360 1220
 wait 6650
 capture slideshow_wipe.jpg
 wait 1200
@@ -189,7 +189,7 @@ settle
 tap 530 1058
 settle
 capture slideshow_slide_in_panel.jpg
-tap 360 1040
+tap 360 1220
 wait 6650
 capture slideshow_slide_in.jpg
 wait 1200
@@ -212,7 +212,7 @@ up
 settle
 tap 530 1102
 settle
-tap 360 1040
+tap 360 1220
 wait 6650
 capture slideshow_slide_out.jpg
 wait 1200
@@ -235,7 +235,7 @@ up
 settle
 tap 530 1138
 settle
-tap 360 1040
+tap 360 1220
 wait 6650
 capture slideshow_push.jpg
 wait 1200

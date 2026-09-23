@@ -4,6 +4,7 @@
  */
 
 #pragma once
+#include "media/demuxer.hpp"
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -32,3 +33,7 @@ private:
     std::vector<PlaylistItem> items_;
     std::size_t index_ = 0;
 };
+
+/* The files of `kind` in a directory, by name, or the path itself when it is
+   a file of that kind. */
+std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind);

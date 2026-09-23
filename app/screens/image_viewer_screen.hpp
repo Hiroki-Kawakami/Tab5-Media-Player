@@ -50,6 +50,7 @@ private:
     void updateTransport();
     void handlePress(lv_event_t *event);
     void handleMove(lv_event_t *event);
+    void chooseBgm();
     void startSlideshow();
     void endSlideshow(std::size_t index);
 

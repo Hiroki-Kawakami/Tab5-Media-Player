@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 #include "home_page.hpp"
-#include "media/demuxer.hpp"
-#include "media/psram_allocator.hpp"
+#include "media/media_directory.hpp"
 #include "playback/playlist.hpp"
 #include "widgets.hpp"
 
@@ -26,15 +25,9 @@ public:
     bool is_under(const std::string &mount_point) const override;
 
 private:
-    struct Entry {
-        PsramString name;
-        bool directory;
-        MediaKind kind;
-    };
-
     std::string path_;
     std::string title_;
-    PsramVector<Entry> entries_;
+    PsramVector<DirectoryEntry> entries_;
     bool loaded_ = false;
     bool opened_ = false;
     lv_obj_t *list_ = nullptr;
@@ -45,7 +38,6 @@ private:
     bool prefetched_ = false;
     PsramVector<PsramString> visible_;
 
-    bool load_entries();
     std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
     std::string entry_path(std::size_t index) const;
     void request_visible();

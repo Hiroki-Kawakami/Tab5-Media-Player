@@ -7,12 +7,14 @@
 #include "media/image_codec.hpp"
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
+#include "screens/image_viewer/bgm_picker_screen.hpp"
 #include "screens/image_viewer/info_panel.hpp"
 #include "screens/image_viewer/slideshow_panel.hpp"
 #include "screens/media_controls.hpp"
 #include "screens/video_player/settings_panel.hpp"
 #include "settings.hpp"
 #include "slideshow/slideshow.hpp"
+#include "screen_manager.hpp"
 #include "bsp.h"
 #include "driver/ppa.h"
 #include "esp_log.h"
@@ -54,6 +56,12 @@ static std::size_t framebuffer_bytes() {
 /* LVGL draws through framebuffer 0 only, so 1 and 2 hold the picture. */
 static int spare_framebuffer(int shown) {
     return shown == 1 ? 2 : 1;
+}
+
+static SlideshowPanelValues slideshow_values() {
+    return { (uint32_t)settings_slideshow_interval(), settings_slideshow_transition(),
+             settings_slideshow_direction(), settings_slideshow_bgm(),
+             settings_slideshow_bgm_path() };
 }
 
 static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
@@ -170,15 +178,14 @@ void ImageViewerScreen::buildPanels() {
     slideshow_ = portrait
         ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
         : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
-    const SlideshowPanelValues values = { (uint32_t)settings_slideshow_interval(),
-                                          settings_slideshow_transition(),
-                                          settings_slideshow_direction() };
-    image_slideshow_panel_build(slideshow_, values, [](const SlideshowPanelValues &changed) {
+    image_slideshow_panel_build(slideshow_, slideshow_values(),
+                                [](const SlideshowPanelValues &changed) {
         settings_set_slideshow_interval((int)changed.interval_s);
         settings_set_slideshow_transition(changed.transition);
         settings_set_slideshow_direction(changed.direction);
+        settings_set_slideshow_bgm(changed.bgm);
         settings_commit();
-    }, [this] {
+    }, [this] { chooseBgm(); }, [this] {
         lv_async_call([this] {
             if (s_active == this) startSlideshow();
         });
@@ -194,6 +201,17 @@ void ImageViewerScreen::buildPanels() {
         ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
         : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
     if (mode_ == UiMode::Info) populateInfo();
+}
+
+void ImageViewerScreen::chooseBgm() {
+    const std::string &saved = settings_slideshow_bgm_path();
+    screen_manager.push(std::make_shared<BgmPickerScreen>(
+        saved.empty() ? path() : saved, [this](const std::string &picked) {
+            settings_set_slideshow_bgm_path(picked);
+            settings_commit();
+            const SlideshowPanelValues values = slideshow_values();
+            if (slideshow_) lv_obj_send_event(slideshow_, LV_EVENT_REFRESH, (void *)&values);
+        }));
 }
 
 void ImageViewerScreen::refreshInfo() {
@@ -444,9 +462,14 @@ void ImageViewerScreen::startSlideshow() {
     config.interval_ms = (uint32_t)settings_slideshow_interval() * 1000;
     config.transition = settings_slideshow_transition();
     config.direction = settings_slideshow_direction();
+    std::vector<PlaylistItem> bgm;
+    if (settings_slideshow_bgm()) {
+        bgm = playlist_items_at(settings_slideshow_bgm_path(), MediaKind::Audio);
+    }
     slideshow_running_ = true;
     const bool started = slideshow_start(
-        std::move(paths), playlist_->index(), box_, config, [this](std::size_t index) {
+        std::move(paths), playlist_->index(), box_, config, std::move(bgm),
+        [this](std::size_t index) {
             if (s_active == this && slideshow_running_) endSlideshow(index);
         });
     if (started) return;
@@ -468,7 +491,9 @@ void ImageViewerScreen::endSlideshow(std::size_t index) {
 }
 
 void ImageViewerScreen::eject(const std::string &mount_point) {
-    if (s_active && path_is_under(s_active->path(), mount_point)) s_active->back();
+    if (!s_active || !path_is_under(s_active->path(), mount_point)) return;
+    if (screen_manager.current_screen() != s_active) screen_manager.pop();
+    s_active->back();
 }
 
 void ImageViewerScreen::onEnter() {

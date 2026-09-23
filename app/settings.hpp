@@ -5,6 +5,7 @@
 
 #pragma once
 #include <functional>
+#include <string>
 #include "bsp.h"
 #include "lvgl.h"
 #include "slideshow/transition.hpp"
@@ -45,3 +46,9 @@ void settings_set_slideshow_transition(TransitionKind kind);
 
 TransitionDirection settings_slideshow_direction();
 void settings_set_slideshow_direction(TransitionDirection direction);
+
+bool settings_slideshow_bgm();
+void settings_set_slideshow_bgm(bool enabled);
+
+const std::string &settings_slideshow_bgm_path();
+void settings_set_slideshow_bgm_path(const std::string &path);

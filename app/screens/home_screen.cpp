@@ -8,14 +8,12 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
-#include "bsp.h"
 #include "media_player.hpp"
 #include "resources.h"
 #include "screens/home/display_page.hpp"
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
 #include "screens/home/sound_page.hpp"
-#include "usb_msc.h"
 #include "widgets.hpp"
 
 static constexpr int32_t kMenuWidth = 400;
@@ -177,29 +175,23 @@ void HomeScreen::select(std::size_t index) {
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_sd_card() {
-    if (!bsp_sd_is_mounted()) {
-        bsp_sd_mount_config_t config = {};
-        config.psram_bounce_buffer = true;
-        esp_err_t err = bsp_sd_mount(kSdMountPoint, &config);
-        if (err != ESP_OK) {
-            show_mount_error("SD Card", "Failed to mount SD card", err);
-            return nullptr;
-        }
+    esp_err_t err = media_player_mount_sd();
+    if (err != ESP_OK) {
+        show_mount_error("SD Card", "Failed to mount SD card", err);
+        return nullptr;
     }
     return std::make_shared<FileBrowserPage>(kSdMountPoint, "SD Card");
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
-    if (!usb_msc_is_mounted()) {
-        esp_err_t err = usb_msc_mount(kUsbMountPoint, 0);
-        if (err == ESP_ERR_NOT_FOUND) {
-            show_mount_error("USB Drive", "No USB drive connected", ESP_OK);
-            return nullptr;
-        }
-        if (err != ESP_OK) {
-            show_mount_error("USB Drive", "Failed to mount USB drive", err);
-            return nullptr;
-        }
+    esp_err_t err = media_player_mount_usb();
+    if (err == ESP_ERR_NOT_FOUND) {
+        show_mount_error("USB Drive", "No USB drive connected", ESP_OK);
+        return nullptr;
+    }
+    if (err != ESP_OK) {
+        show_mount_error("USB Drive", "Failed to mount USB drive", err);
+        return nullptr;
     }
     return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
 }

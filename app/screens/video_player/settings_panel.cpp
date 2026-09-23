@@ -59,9 +59,7 @@ static void build_display(lv_obj_t *contents, SettingsWidgets *widgets) {
     widgets->brightness_value = value;
 }
 
-static void build_sound(lv_obj_t *contents, SettingsWidgets *widgets) {
-    auto section = lv_setting_section_create(contents, "Sound", &kPanelColors);
-
+PlayerVolumeRows player_volume_rows_build(lv_obj_t *section) {
     auto row = lv_setting_row_create(section, "Volume");
     auto value = lv_setting_value_create(row, &kPanelColors);
     set_volume_text(value, settings_volume());
@@ -79,17 +77,23 @@ static void build_sound(lv_obj_t *contents, SettingsWidgets *widgets) {
         lv_slider_set_value(volume, percent, LV_ANIM_OFF);
         set_volume_text(value, percent);
     });
+    return { row, volume, value };
+}
+
+static void build_sound(lv_obj_t *contents, SettingsWidgets *widgets) {
+    auto section = lv_setting_section_create(contents, "Sound", &kPanelColors);
+    const PlayerVolumeRows volume = player_volume_rows_build(section);
 
     lv_setting_separator_create(section, &kPanelColors);
 
-    row = lv_setting_row_create(section, "Equalizer");
+    auto row = lv_setting_row_create(section, "Equalizer");
     widgets->equalizer = lv_setting_switch_create(row, settings_equalizer_enabled(),
                                                   [](lv_obj_t *, bool enabled) {
         settings_set_equalizer_enabled(enabled);
         settings_commit();
     }, &kPanelColors);
-    widgets->volume = volume;
-    widgets->volume_value = value;
+    widgets->volume = volume.slider;
+    widgets->volume_value = volume.value;
 }
 
 void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close,

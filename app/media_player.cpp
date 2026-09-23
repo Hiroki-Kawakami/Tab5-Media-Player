@@ -15,6 +15,7 @@
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
 #include "screens/audio_player_screen.hpp"
+#include "screens/image_viewer/bgm_picker_screen.hpp"
 #include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
 #include "settings.hpp"
@@ -55,6 +56,18 @@ static esp_err_t display_init() {
     display_config.buffer.buffers[1] = sram.halves[1];
     display_config.buffer.buffer_size = sram.half_bytes;
     return display_manager.create_display(display_config, &s_main);
+}
+
+esp_err_t media_player_mount_sd() {
+    if (bsp_sd_is_mounted()) return ESP_OK;
+    bsp_sd_mount_config_t config = {};
+    config.psram_bounce_buffer = true;
+    return bsp_sd_mount(kSdMountPoint, &config);
+}
+
+esp_err_t media_player_mount_usb() {
+    if (usb_msc_is_mounted()) return ESP_OK;
+    return usb_msc_mount(kUsbMountPoint, 0);
 }
 
 SharedSram media_player_acquire_sram() {
@@ -130,6 +143,7 @@ void app_entry() {
             media_cache_forget(kUsbMountPoint);
             AudioPlayerScreen::eject(kUsbMountPoint);
             VideoPlayerScreen::eject(kUsbMountPoint);
+            BgmPickerScreen::eject(kUsbMountPoint);
             ImageViewerScreen::eject(kUsbMountPoint);
             if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
         });

@@ -149,14 +149,15 @@ operations between framebuffers. Nothing is laid over the pictures, so there is
 no LVGL display of its own either.
 
 - **It has its own task, and the task owns the end.** The loop waits on an
-  event group — stop, and "a cache request completed" from a `media_cache`
-  observer — rather than being driven by LVGL timers, so what is added later
-  (music) has one place to live. Stopping only sets the bit: the task blacks
-  out framebuffer 0, presents it, holds it for `kBlackMs`, and then hands over
-  to the LVGL thread with `lv_async_call`, which restores the viewer and shows
-  the main display again. Nothing ever waits for the task, since a wait on the
-  LVGL thread would deadlock against the task taking the LVGL lock. The event
-  group outlives the task, so a touch arriving as it exits is harmless.
+  event group — stop, "a cache request completed" from a `media_cache`
+  observer, and a player state change for the music — rather than being
+  driven by LVGL timers, so the music has one place to live. Stopping only
+  sets the bit: the task blacks out framebuffer 0, presents it, holds it for
+  `kBlackMs`, and then hands over to the LVGL thread with `lv_async_call`,
+  which restores the viewer and shows the main display again. Nothing ever
+  waits for the task, since a wait on the LVGL thread would deadlock against
+  the task taking the LVGL lock. The event group outlives the task, so a touch
+  arriving as it exits is harmless.
 - **Framebuffer 0 is presented before LVGL comes back.** On the device the BSP
   blits LVGL's chunks into whichever framebuffer is on screen, while the main
   display flushes framebuffer 0 when a pass is complete; left on a slideshow
@@ -192,6 +193,33 @@ no LVGL display of its own either.
   transition, so neither a slow decode nor the transition cuts the time a
   picture stands still. One that cannot be decoded is skipped; if none in a
   whole lap can be shown, the last one stays up.
+
+### Music
+
+The panel's BGM section switches music on and picks its source, one audio
+file or a directory, with `BgmPickerScreen`.
+
+- **The slideshow task plays it through the player**, the same one the audio
+  screen uses. The first item is opened as the task starts, and the player is
+  closed as soon as the loop ends, before the black. The state callback only
+  sets a bit in the task's event group; the task reads `player_status()`
+  itself and steps the list: `Finished` moves on, `Failed` skips (at most once
+  round the list in a row, so a directory of unplayable files goes quiet), and
+  a single file loops in the player rather than being opened again.
+- **Only the path is saved.** The list is read when the slideshow starts, with
+  `playlist_items_at()`, since the files may have changed since it was chosen.
+  Directories below it are not played.
+- **The volume is the global one.** The Volume row is the player settings
+  panel's (`player_volume_rows_build()`), so the speaker/headphone split and
+  the other screens' sliders stay in step.
+- **The picker is a screen pushed over the viewer**, not a panel, because it
+  needs the whole screen for a list. The viewer stays open under it, so its
+  eject pops the picker before leaving itself. It starts at the saved source
+  (or the picture's directory), walking up to the nearest directory that
+  exists on a mounted storage, and goes up no further than the storage list.
+  That list always shows both the SD card and the USB drive and mounts one
+  when it is chosen, as Home does (`media_player_mount_sd/usb()`), because a
+  drive plugged in but never opened is not mounted yet.
 
 ### Transitions
 
@@ -301,6 +329,10 @@ ffmpeg -f lavfi -i "rgbtestsrc=size=600x900" -frames:v 1 f_portrait_600.png
 ffmpeg -f lavfi -i "mandelbrot=size=2048x1536" -frames:v 1 tmp.ppm
 cjpeg -progressive -quality 88 -outfile i_progressive_2048.jpg tmp.ppm && rm tmp.ppm
 ```
+
+`simulator/verify/slideshow_bgm.txt` plays `simulator/sdcard/Music/` (see
+[`playback.md`](playback.md)) under the slideshow; run it with `--log` to see
+each track open.
 
 `j_exif_camera.jpg` and `k_exif_600.png` carry the tags the two panel sections
 show, the first in a JPEG `APP1` and the second in a PNG `eXIf` chunk. Pillow

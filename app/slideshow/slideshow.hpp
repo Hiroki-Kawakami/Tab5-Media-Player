@@ -5,6 +5,7 @@
 
 #pragma once
 #include "media/image_codec.hpp"
+#include "playback/playlist.hpp"
 #include "slideshow/transition.hpp"
 
 #include <cstddef>
@@ -23,10 +24,12 @@ struct SlideshowConfig {
 
 using SlideshowFinished = std::function<void(std::size_t index)>;
 
-/* Hides the LVGL display and takes the framebuffers until the slideshow ends.
-   `on_finished` runs on the LVGL thread just before the display is shown
-   again, with the index of the picture that was on screen. */
+/* Hides the LVGL display and takes the framebuffers until the slideshow ends,
+   and plays `bgm` in a loop through the player meanwhile. `on_finished` runs
+   on the LVGL thread just before the display is shown again, with the index
+   of the picture that was on screen. */
 bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
-                     const SlideshowConfig &config, SlideshowFinished on_finished);
+                     const SlideshowConfig &config, std::vector<PlaylistItem> bgm,
+                     SlideshowFinished on_finished);
 /* Returns at once; the end runs as it does after a touch. */
 void slideshow_stop();

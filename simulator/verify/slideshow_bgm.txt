@@ -1,0 +1,115 @@
+# Slideshow BGM: the slideshow panel's BGM section turns music on, picks its
+# source with the picker (a folder from the storage list down, or one file)
+# and shares the volume row with the player's settings. Started with a folder,
+# Music/ plays in order while the pictures change — a_aac, b_opus, then
+# c_alac, which cannot be opened and is skipped, then d_pcm — as `--log`
+# shows in audio_out's open lines; a touch ends the music with the pictures.
+# With one file, f_mp3, that file loops through the player's own loop, so it
+# is opened once however long it plays. The picker opens at the source chosen
+# before, or at the pictures when there is none; its storage list has no way
+# back, and Cancel leaves the source as it was. The transition is set to Fade first so the
+# rows sit where the script expects, and music is switched off at the end;
+# the chosen source stays in NVS.
+settle
+tap 360 226
+settle
+tap 360 404
+settle
+tap 360 164
+meta drain
+settle
+tap 360 640
+settle
+tap 596 1240
+settle
+tap 570 867
+settle
+down 530 920
+wait 60
+move 530 1020
+wait 60
+move 530 1120
+wait 250
+up
+settle
+tap 530 970
+settle
+capture bgm_panel_off.jpg
+tap 630 1028
+settle
+down 360 1150
+wait 60
+move 360 1000
+wait 60
+move 360 850
+wait 250
+up
+settle
+capture bgm_panel_on.jpg
+tap 360 1005
+settle
+capture bgm_picker_start.jpg
+tap 60 60
+settle
+capture bgm_picker_sd.jpg
+tap 60 60
+settle
+tap 60 60
+settle
+capture bgm_picker_storage.jpg
+tap 360 160
+settle
+tap 360 320
+settle
+capture bgm_picker_music.jpg
+tap 540 1220
+settle
+capture bgm_panel_folder.jpg
+tap 360 1220
+wait 4000
+capture bgm_playing.jpg
+wait 11000
+tap 360 640
+wait 400
+settle
+capture bgm_stopped.jpg
+tap 596 1240
+settle
+down 360 1150
+wait 60
+move 360 1000
+wait 60
+move 360 850
+wait 250
+up
+settle
+tap 360 1005
+settle
+tap 360 560
+settle
+capture bgm_panel_file.jpg
+tap 360 1220
+wait 8000
+tap 360 640
+wait 400
+settle
+tap 596 1240
+settle
+down 360 1150
+wait 60
+move 360 1000
+wait 60
+move 360 850
+wait 250
+up
+settle
+tap 360 1005
+settle
+tap 180 1220
+settle
+capture bgm_panel_cancelled.jpg
+tap 630 932
+settle
+capture bgm_panel_restored.jpg
+tap 668 692
+settle

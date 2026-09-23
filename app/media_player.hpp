@@ -26,6 +26,10 @@ inline bool path_is_under(const std::string &path, const std::string &mount_poin
 
 void app_entry();
 
+/* ESP_OK when already mounted; USB answers ESP_ERR_NOT_FOUND with no drive. */
+esp_err_t media_player_mount_sd();
+esp_err_t media_player_mount_usb();
+
 SharedSram media_player_acquire_sram();
 void media_player_release_sram();
 

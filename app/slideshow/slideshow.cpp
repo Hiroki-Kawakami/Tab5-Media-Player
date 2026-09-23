@@ -7,6 +7,7 @@
 #include "slideshow_output.hpp"
 #include "media/media_cache.hpp"
 #include "media_player.hpp"
+#include "playback/player.hpp"
 #include "ui_orientation.hpp"
 #include "bsp.h"
 #include "display_manager.hpp"
@@ -27,6 +28,7 @@ static constexpr BaseType_t kCore = 1;
 
 static constexpr EventBits_t kStop = 1u << 0;
 static constexpr EventBits_t kReady = 1u << 1;
+static constexpr EventBits_t kTrack = 1u << 2;
 
 namespace {
 
@@ -39,6 +41,12 @@ struct Session {
     SlideshowFinished on_finished;
 };
 
+struct Bgm {
+    Playlist playlist;
+    bool awaiting = false;
+    std::size_t skips = 0;
+};
+
 }
 
 static Session s_session;
@@ -48,10 +56,63 @@ static bool s_running;
 static EventGroupHandle_t s_events;
 static uint32_t s_token;
 static uint32_t s_idle_token;
+static Bgm *s_bgm;
+
+static void bgm_open() {
+    s_bgm->awaiting = true;
+    player_open(s_bgm->playlist.current().path);
+    player_set_loop(s_bgm->playlist.size() == 1);
+    player_play();
+}
+
+/* Notifications collapse, so the state is read rather than inferred. */
+static void bgm_update() {
+    if (!s_bgm) return;
+    const PlayerStatus status = player_status();
+    if (status.state == PlayerState::Failed) {
+        if (++s_bgm->skips >= s_bgm->playlist.size()) return;
+        s_bgm->playlist.step(1, RepeatMode::All);
+        bgm_open();
+    } else if (s_bgm->awaiting) {
+        if (status.state != PlayerState::Playing) return;
+        s_bgm->awaiting = false;
+        s_bgm->skips = 0;
+    } else if (status.state == PlayerState::Finished) {
+        s_bgm->playlist.step(1, RepeatMode::All);
+        bgm_open();
+    }
+}
+
+static void bgm_changed() {
+    xEventGroupSetBits(s_events, kTrack);
+}
+
+static void bgm_start() {
+    if (!s_bgm) return;
+    player_observe_state(bgm_changed);
+    bgm_open();
+}
+
+static void bgm_stop() {
+    if (!s_bgm) return;
+    player_observe_state(nullptr);
+    player_close();
+    delete s_bgm;
+    s_bgm = nullptr;
+}
 
 static EventBits_t wait(TickType_t ticks) {
-    return xEventGroupWaitBits(s_events, kStop | kReady, pdTRUE, pdFALSE, ticks) &
-           (kStop | kReady);
+    const TickType_t start = xTaskGetTickCount();
+    for (;;) {
+        const TickType_t elapsed = xTaskGetTickCount() - start;
+        const TickType_t left = ticks == portMAX_DELAY ? portMAX_DELAY
+                              : elapsed < ticks        ? ticks - elapsed
+                                                       : 0;
+        const EventBits_t bits =
+            xEventGroupWaitBits(s_events, kStop | kReady | kTrack, pdTRUE, pdFALSE, left);
+        if (bits & kTrack) bgm_update();
+        if ((bits & (kStop | kReady)) || !(bits & kTrack)) return bits & (kStop | kReady);
+    }
 }
 
 static bool sleep_until(int64_t due_us) {
@@ -117,6 +178,7 @@ static bool play(Transition &transition) {
 }
 
 static void run() {
+    bgm_start();
     const std::size_t count = s_session.paths.size();
     const int64_t interval_us = (int64_t)s_session.config.interval_ms * 1000;
     std::size_t target = s_session.index;
@@ -162,6 +224,7 @@ static void finish() {
 
 static void task_main(void *) {
     run();
+    bgm_stop();
     s_change.reset();
     media_cache_unobserve(s_token);
     media_cache_cancel(s_token);
@@ -200,7 +263,8 @@ static BaseType_t spawn() {
 }
 
 bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
-                     const SlideshowConfig &config, SlideshowFinished on_finished) {
+                     const SlideshowConfig &config, std::vector<PlaylistItem> bgm,
+                     SlideshowFinished on_finished) {
     if (s_running || index >= paths.size() || !box.valid()) return false;
     if (!s_events) s_events = xEventGroupCreate();
     if (!s_token) {
@@ -216,6 +280,7 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     }
 
     s_session = { std::move(paths), box, false, index, config, std::move(on_finished) };
+    if (!bgm.empty()) s_bgm = new Bgm{ Playlist(std::move(bgm), 0) };
     xEventGroupClearBits(s_events, kStop | kReady);
 
     ui_orientation_set_listener([](bsp_rotation_t, void *) {}, nullptr);
@@ -223,6 +288,8 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     media_cache_observe(s_token, image_ready);
     if (spawn() != pdPASS) {
         ESP_LOGE(TAG, "no task");
+        delete s_bgm;
+        s_bgm = nullptr;
         media_cache_unobserve(s_token);
         s_change.reset();
         s_output.close();

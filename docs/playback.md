@@ -775,12 +775,17 @@ what both screens are constructed with, so a screen has no path of its own —
 `name()` and `path()` read the item under the cursor. Stepping it is
 `step(delta, repeat)`, which is also the single place the wrap rule lives.
 
-- **The list comes from the file browser, not from a second scan.**
+- **The screens' list comes from the file browser, not from a second scan.**
   `FileBrowserPage` already holds the directory listing, and on FAT another
   `opendir` walk over a few hundred files is not free. It hands over the
   entries of the same `MediaKind` as the file that was tapped, in the order it
   shows them, so a music file plays the directory's music and a video its
   videos. A different source (an `.m3u`, a queue) fills the same vector.
+- **A caller with no listing reads one with `playlist_items_at()`**, next to
+  the class: a directory's files of one kind, or the path itself when it is a
+  file of that kind. The slideshow's music is that caller. The listing and its
+  order are `media_directory_list()` (`app/media/media_directory.*`), the same
+  one the browser shows, so both put the files in the same order.
 - **The player is untouched.** Everything here is the screen reacting to
   `PlayerState::Finished` with another `player_open()`, which is what
   [the layering](#decisions-taken-now-because-they-are-expensive-later) already

@@ -73,7 +73,6 @@ esp_err_t media_player_set_display_pixel_format(bsp_pixel_format_t format) {
     const esp_err_t err = bsp_display_reconfigure(format, 0);
     display_manager.set_color_format(s_main);
     display_manager.set_visible(s_main, true);
-    media_cache_invalidate_decoded();
     return err;
 }
 

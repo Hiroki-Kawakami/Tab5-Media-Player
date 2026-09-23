@@ -172,41 +172,71 @@ file the user tapped failed with "cannot open the file". So:
   the whole directory, and `AudioPlayerScreen` drops the idle queue when it
   opens so the file being played is never behind a hundred probes.
 
-## Three stores, three budgets
+## Three stores, three heaps
 
-| store | key | holds | budget |
+| store | key | holds | heap |
 |---|---|---|---|
-| meta | path | tags, duration, codecs, picture size, `image_id` | 512 entries |
-| raw | `image_id` + box | RGB565 pixels | 1 MB |
-| jpeg | `image_id` + box | the resized image, re-encoded | 4 MB |
-| decoded | `image_id` + box | pixels expanded from `jpeg` | 2 MB |
-| view | `image_id` + box | the same, for a screen-sized box | 6 MB |
+| meta | path | tags, duration, codecs, picture size, `image_id` | 768 KB, at most 512 entries |
+| thumbnails | `image_id` + box | RGB565 pixels | 2 MB |
+| pictures | `image_id` + box | the fitted picture, re-encoded as JPEG | 4 MB |
 
 A request carries the box it has to fit inside, not a side: a thumbnail and the
 artwork are squares (56 and 552 px), but a picture on screen is 720x1280 or
 1280x720 and fitting it into a square of the longer side would be a different
-picture. Small images (box up to 128 px) are stored as pixels and handed
-straight to LVGL; anything larger is re-encoded with the JPEG hardware at
-quality 90, which turns a 608 KB artwork into 40-60 KB and makes "the last
-80 albums" affordable. Expanding one again is a few milliseconds, and only the
-worker ever does it.
+picture. It also says which of the two it wants. `MetaWantThumbnail` pixels are
+handed straight to LVGL. `MetaWantImage` pictures are re-encoded with the JPEG
+hardware at quality 90, which turns a 608 KB artwork into 40-60 KB, and
+`media_cache_read_image()` expands one into the caller's buffer on the
+caller's thread: the JPEG is already fitted to the box, so it goes through the
+pipeline at 1:1 straight into that buffer.
 
-The budgets are separate because the rebuild costs differ by three orders of
-magnitude: with one pool, scrolling a long folder would evict the artwork of
-the track that is playing. `view` exists for the same reason one step up: one
-screen-sized picture is 1.8 MB at RGB565, so a few of them in the `decoded`
-pool would evict every album the audio screen has seen. The split is by box
-size (over 640 px goes to `view`), not by who asked. Eviction inside a store drops orphans first (no meta
-entry references the id any more), never touches an entry the UI still holds a
-`shared_ptr` to, and otherwise takes the least recently used. Dropping a cache
-slot is always safe — the pixels live until the LVGL object that shows them is
-deleted.
+Each store lives in a `multi_heap` over a PSRAM region of its own
+(`app/media/cache_heap.*`). What the cache keeps for minutes then never sits
+between the multi-megabyte buffers a decode takes for a moment, and the general
+heap stays in pieces large enough for the next one. Separate heaps also keep
+the stores from evicting each other — scrolling a long folder cannot push out
+the artwork of the track that is playing — and a full heap fails the way its
+store can afford:
+
+- **meta** overflows into the general heap with a warning. Its containers have
+  no way to report a failed allocation (exceptions are off), so failing there
+  is an abort.
+- **thumbnails** and **pictures** evict and try again, and then give up: a row
+  without its thumbnail, a picture that is not kept.
+
+Eviction drops orphans first (no meta entry references the id any more), never
+touches an entry someone still holds a `shared_ptr` to, and otherwise takes the
+least recently used. Dropping a thumbnail is always safe — the pixels live
+until the LVGL object that shows them is deleted.
 
 Only thumbnails are handed out as a `shared_ptr`. The artwork and the image
 viewer's picture are copied out with `media_cache_read_image()` into a buffer
 the screen owns — framebuffer 1 or 2, which LVGL never draws through — so the
 cache never lends a buffer large enough to split PSRAM for as long as a screen
 keeps it.
+
+## Reading a picture
+
+- **Someone waiting gets the decoder's own pixels.** A job for a `Blocking` or
+  `Visible` request parks the pixels it produced in `staged` and reports done
+  before re-encoding them; `media_cache_read_image()` copies them once, and the
+  encoder reads the same buffer. They stay until they are read or the next job
+  starts, so a screen-sized buffer never outlives the picture it was for. A
+  prefetch nobody waits for goes straight to the encoder.
+- **A request for a picture a stage is already on joins that job.** Swiping to
+  the picture the prefetch is decoding would otherwise decode it twice. A
+  request that is waited for takes the job over — it is staged when done — and
+  withdrawing that request turns the job back into the prefetch it was, so
+  swiping on past it does not throw the decode away.
+- **A read may wait for the JPEG engine.** The pipeline holds it for a whole
+  frame and the worker uses it too, so a read can block for as long as the
+  frame in progress. A prefetch nobody waits for is withdrawn when a read finds
+  the engine busy, so it is never more than that one frame.
+- **The picture store can be released** (`media_cache_release_pictures()`).
+  Every read then needs a request of its own and is served from `staged`, and
+  idle requests for pictures are dropped since there is nowhere to keep what
+  they would produce. Nothing releases it: the screen that is short of PSRAM is
+  the image viewer, which is the one that needs it.
 
 Probe failures are cached as well. Without that, a broken file is reopened on
 every pass of the browser.
@@ -307,12 +337,11 @@ cache lock held, so it may not call back into the cache.
 
 Thumbnails are always RGB565: converting 56x56 at draw time is nothing, and
 making them follow the panel would mean throwing all of them away (and
-re-probing every file) whenever Color Mode changes. The artwork follows
+re-probing every file) whenever Color Mode changes. Pictures follow
 `bsp_display_get_pixel_format()`, because a 552 px image converted per pixel by
-LVGL is not. Since the artwork is stored as JPEG, a format switch only
-invalidates the `decoded` store — `media_player_set_display_pixel_format()`
-calls `media_cache_invalidate_decoded()` and the few entries are expanded again
-from bytes that did not care.
+LVGL is not. They are kept as JPEG and expanded into the panel's format when
+read, so a format switch invalidates nothing; `staged` pixels in the old format
+are simply passed over.
 
 RGB888 pixels are in LVGL's B, G, R order (`IMGF_PIX_BGR888`, added to
 image_framework for this) and IDF's `JPEG_ENCODE_IN_FORMAT_RGB888` is
@@ -402,10 +431,10 @@ hardware and no internal RAM.
 `VideoPlayerScreen::onEnter()` calls `media_cache_stop()` before it takes the
 shared SRAM, and `onExit()` calls `media_cache_start()` after it gives it back.
 Stop joins both worker tasks (2 s budget each), which frees their stacks and
-the JPEG engines, and drops the raw, jpeg and decoded stores. The meta entries stay:
-they are text, a few hundred KB at the cap, and keeping them is what makes the
-browser instant on the way back. `HomeScreen::onAppear()` lets the visible
-`FileBrowserPage` ask again for the images that were dropped.
+the JPEG engines, and drops what was queued. The stores stay: they are in heaps
+of their own, and keeping them is what makes the browser instant on the way
+back. `HomeScreen::onAppear()` lets the visible `FileBrowserPage` ask again for
+the thumbnails whose requests were dropped.
 
 ## Why the results are polled
 

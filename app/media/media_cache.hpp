@@ -46,7 +46,8 @@ struct MediaEntry {
 
 enum MetaWant : uint8_t {
     MetaWantInfo = 1,
-    MetaWantImage = 2,
+    MetaWantThumbnail = 2,
+    MetaWantImage = 4,
 };
 
 enum class MetaPriority : uint8_t {
@@ -64,12 +65,17 @@ void media_cache_observe(uint32_t token, void (*on_ready)(const std::string &pat
 void media_cache_unobserve(uint32_t token);
 
 std::shared_ptr<const MediaEntry> media_cache_lookup(const std::string &path);
-std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageSize box);
-/* Writes the picture cached at `box` into `dst` as packed rows in the panel's
-   format. `dst` must be 64-byte aligned and hold box width x height pixels; not
-   for thumbnail-sized boxes. False if nothing is cached for that box yet. */
+/* What a MetaWantThumbnail request produced: RGB565 pixels shared with the cache. */
+std::shared_ptr<const ImagePixels> media_cache_thumbnail(const std::string &path, ImageSize box);
+/* Writes what a MetaWantImage request produced into `dst` as packed rows in the
+   panel's format. `dst` must be 64-byte aligned and hold box width x height
+   pixels. False if nothing is ready for that box yet. */
 bool media_cache_read_image(const std::string &path, ImageSize box, uint8_t *dst,
                             std::size_t capacity, ImageSize *size);
+/* The store that keeps MetaWantImage pictures between reads. Without it every
+   read needs a request of its own, and idle requests for pictures are dropped. */
+bool media_cache_reserve_pictures();
+void media_cache_release_pictures();
 void media_cache_request(const std::string &path, uint8_t want, ImageSize box,
                          MetaPriority priority, uint32_t token);
 std::shared_ptr<const MediaEntry> media_cache_resolve(const std::string &path, uint8_t want,
@@ -81,5 +87,4 @@ void media_cache_cancel(uint32_t token);
 void media_cache_retain(uint32_t token, bool (*keep)(const char *path, void *ctx), void *ctx);
 void media_cache_idle_cancel();
 void media_cache_forget(const std::string &mount_point);
-void media_cache_invalidate_decoded();
 void media_cache_register_harness();

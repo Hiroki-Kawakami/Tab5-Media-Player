@@ -14,6 +14,8 @@ struct ImagePixels {
     uint32_t stride = 0;
     std::size_t bytes = 0;
     bool rgb888 = false;
+    /* How `data` is freed; null means heap_caps_free(). */
+    void (*release)(uint8_t *data) = nullptr;
 
     ~ImagePixels();
 };

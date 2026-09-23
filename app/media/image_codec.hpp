@@ -5,10 +5,10 @@
 
 #pragma once
 #include "media/image_pixels.hpp"
-#include "media/psram_allocator.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -50,6 +50,14 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
 std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSize box, bool rgb888,
                                                const volatile bool *cancel,
                                                ImageNotes *notes = nullptr);
-bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out);
+/* Decodes into `dst` as packed rows, blocking while another task holds the
+   JPEG engine; `contended` is called first when it has to wait. */
+bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
+                       uint8_t *dst, std::size_t capacity, ImageSize *out,
+                       void (*contended)(void *ctx) = nullptr, void *ctx = nullptr);
+/* `store` gets the encoded bytes, which live only for the call. */
+bool image_encode(const ImagePixels &pixels,
+                  const std::function<bool(const uint8_t *data, std::size_t size)> &store);
 
+void image_codec_init();
 void image_codec_close();

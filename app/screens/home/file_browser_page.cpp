@@ -94,7 +94,7 @@ void FileBrowserPage::request_visible() {
     }
     for (std::size_t i = start; i < end; i++) {
         if (entries_[i].directory || !has_thumbnail(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbBox,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, kThumbBox,
                             MetaPriority::Visible, token_);
     }
     prefetch_rest();
@@ -106,7 +106,7 @@ void FileBrowserPage::prefetch_rest() {
     std::size_t queued = 0;
     for (std::size_t i = 0; i < entries_.size() && queued < kPrefetchLimit; i++) {
         if (entries_[i].directory || entries_[i].kind != MediaKind::Audio) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantImage, kThumbBox,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, kThumbBox,
                             MetaPriority::Idle, idle_token_);
         queued++;
     }
@@ -261,7 +261,7 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
 
     std::shared_ptr<const ImagePixels> pixels;
     if (!entry.directory && has_thumbnail(entry.kind)) {
-        pixels = media_cache_image(entry_path(index), kThumbBox);
+        pixels = media_cache_thumbnail(entry_path(index), kThumbBox);
     }
     lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);
     /* Inserted first so flex puts it where the icon was; everything indexed

@@ -13,8 +13,11 @@
 #include "imgf_sniff.h"
 #include "imgf_stream.h"
 #include "driver/ppa.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "jpeg_ppa_pipeline.h"
 #ifdef ESP_PLATFORM
+#include "esp_cache.h"
 #include "driver/jpeg_encode.h"
 #else
 #include "imgf_encoder.h"
@@ -42,6 +45,9 @@ static constexpr int32_t kDirectShortfallMax = 20;
    there is clearly room: the software path covers the rest. */
 static constexpr std::size_t kEngineReserve = 8 * 1024;
 
+/* The pipeline, its strips and the encoder are used both by the cache's worker
+   and synchronously by whoever reads a cached picture. */
+static SemaphoreHandle_t s_codec;
 static jpeg_ppa_pipeline_handle_t s_pipeline;
 static uint8_t *s_strips[2];
 static std::size_t s_strip_bytes;
@@ -72,6 +78,18 @@ bool stopped(const volatile bool *cancel) {
     return cancel && *cancel;
 }
 
+struct CodecLock {
+    explicit CodecLock(void (*contended)(void *) = nullptr, void *ctx = nullptr) {
+        if (!s_codec) return;
+        if (xSemaphoreTake(s_codec, 0) == pdTRUE) return;
+        if (contended) contended(ctx);
+        xSemaphoreTake(s_codec, portMAX_DELAY);
+    }
+    ~CodecLock() {
+        if (s_codec) xSemaphoreGive(s_codec);
+    }
+};
+
 }
 
 static unsigned psram_free() {
@@ -87,7 +105,8 @@ static unsigned psram_largest() {
 }
 
 ImagePixels::~ImagePixels() {
-    heap_caps_free(data);
+    if (release) release(data);
+    else heap_caps_free(data);
 }
 
 static std::size_t align_up(std::size_t value) {
@@ -280,6 +299,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
                  (unsigned)header.height);
         return nullptr;
     }
+    CodecLock codec;
     const uint32_t padded = (header.width + kStripRows - 1) / kStripRows * kStripRows;
     jpeg_ppa_pipeline_handle_t handle = pipeline(kStripRows * padded * 3);
     if (!handle) return nullptr;
@@ -506,6 +526,53 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
     return pixels;
 }
 
+bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
+                       uint8_t *dst, std::size_t capacity, ImageSize *out,
+                       void (*contended)(void *ctx), void *ctx) {
+    ImageHeader header;
+    if (!data || !dst || !image_header(data, size, &header) || !header.width) return false;
+    uint16_t fit_w = 0;
+    uint16_t fit_h = 0;
+    if (!fit_inside(header.width, header.height, box, &fit_w, &fit_h)) return false;
+    const std::size_t row = (std::size_t)fit_w * (rgb888 ? 3 : 2);
+    if (row * fit_h > capacity) return false;
+
+    if (header.hardware && header.width == fit_w && header.height == fit_h &&
+        header.width <= kMaxHardwareWidth) {
+        CodecLock codec(contended, ctx);
+        const uint32_t padded = (header.width + kStripRows - 1) / kStripRows * kStripRows;
+        if (jpeg_ppa_pipeline_handle_t handle = pipeline(kStripRows * padded * 3)) {
+            jpeg_ppa_output_t target = {};
+            target.buffer = dst;
+            target.buffer_size = capacity;
+            target.pic_w = fit_w;
+            target.pic_h = fit_h;
+            target.color_mode = panel_color_mode(rgb888);
+            jpeg_ppa_transform_t transform = {};
+            transform.rgb_swap = true;
+            const esp_err_t err =
+                jpeg_ppa_pipeline_process(handle, data, size, &target, &transform, nullptr);
+            if (err == ESP_OK) {
+                *out = { (int16_t)fit_w, (int16_t)fit_h };
+                return true;
+            }
+            ESP_LOGW(TAG, "jpeg decode: %s", esp_err_to_name(err));
+        }
+    }
+
+    auto pixels = image_decode(data, size, box, rgb888, nullptr);
+    if (!pixels || (std::size_t)pixels->width * (rgb888 ? 3 : 2) * pixels->height > capacity) {
+        return false;
+    }
+    const std::size_t packed = (std::size_t)pixels->width * (rgb888 ? 3 : 2);
+    for (uint16_t y = 0; y < pixels->height; y++) {
+        memcpy(dst + (std::size_t)y * packed, pixels->data + (std::size_t)y * pixels->stride,
+               packed);
+    }
+    *out = { (int16_t)pixels->width, (int16_t)pixels->height };
+    return true;
+}
+
 static uint8_t *read_file(FILE *fp, std::size_t size, const volatile bool *cancel) {
     uint8_t *buffer = alloc_dma(size);
     if (!buffer) {
@@ -597,7 +664,9 @@ static jpeg_encoder_handle_t encoder() {
     return s_encoder;
 }
 
-bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
+bool image_encode(const ImagePixels &pixels,
+                  const std::function<bool(const uint8_t *data, std::size_t size)> &store) {
+    CodecLock codec;
     jpeg_encoder_handle_t handle = encoder();
     if (!handle) return false;
 
@@ -612,18 +681,25 @@ bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
     cfg.sub_sample = JPEG_DOWN_SAMPLING_YUV420;
     cfg.image_quality = kQuality;
 
+    /* A dirty line left from the memory's last use can be evicted while the
+       encoder writes and land on top of its output. No sync afterwards: the
+       driver invalidates the payload itself, and the header is written by the
+       CPU, so invalidating it would throw the header away. */
+    esp_cache_msync(buffer, capacity,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);
     uint32_t written = 0;
     const esp_err_t err = jpeg_encoder_process(handle, &cfg, pixels.data, (uint32_t)pixels.bytes,
                                                buffer, (uint32_t)capacity, &written);
-    if (err == ESP_OK && written > 0) out->assign(buffer, buffer + written);
+    const bool stored = err == ESP_OK && written > 0 && store(buffer, written);
     heap_caps_free(buffer);
     if (err != ESP_OK) ESP_LOGW(TAG, "jpeg encode: %s", esp_err_to_name(err));
-    return err == ESP_OK && written > 0;
+    return stored;
 }
 
 #else
 
-bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
+bool image_encode(const ImagePixels &pixels,
+                  const std::function<bool(const uint8_t *data, std::size_t size)> &store) {
     imgf_jpege_opts_t opts = {};
     opts.quality = kQuality;
     opts.subsample = IMGF_JPEG_SUBSAMPLE_420;
@@ -634,26 +710,28 @@ bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out) {
                                                 &opts, &err);
     if (!encoder) return false;
 
-    out->resize(imgf_encoder_buffer_size(encoder));
-    bool ok = imgf_encoder_bind_buffer(encoder, out->data(), out->size()) == IMGF_OK;
+    const std::size_t capacity = imgf_encoder_buffer_size(encoder);
+    auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM));
+    bool ok = buffer && imgf_encoder_bind_buffer(encoder, buffer, capacity) == IMGF_OK;
     for (uint16_t y = 0; ok && y < pixels.height; y++) {
         ok = imgf_encoder_push_row(encoder, pixels.data + (std::size_t)y * pixels.stride) == 1;
     }
     std::size_t written = 0;
     ok = ok && imgf_encoder_finish(encoder, &written) == IMGF_OK && written > 0;
     imgf_encoder_destroy(encoder);
-    if (!ok) {
-        out->clear();
-        return false;
-    }
-    out->resize(written);
-    out->shrink_to_fit();
-    return true;
+    ok = ok && store(buffer, written);
+    heap_caps_free(buffer);
+    return ok;
 }
 
 #endif
 
+void image_codec_init() {
+    if (!s_codec) s_codec = xSemaphoreCreateMutex();
+}
+
 void image_codec_close() {
+    CodecLock codec;
     release_pipeline();
 #ifdef ESP_PLATFORM
     if (s_encoder) {

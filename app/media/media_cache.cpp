@@ -6,6 +6,7 @@
 #include "sdkconfig.h"
 
 #include "media_cache.hpp"
+#include "media/cache_heap.hpp"
 #include "media/demuxer.hpp"
 #include "media/media_probe.hpp"
 #include "media/psram_allocator.hpp"
@@ -21,6 +22,8 @@
 #include "freertos/task.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -30,12 +33,9 @@
 static const char *TAG = "media_cache";
 
 static constexpr std::size_t kMetaEntries = 512;
-static constexpr std::size_t kRawBudget = 1024 * 1024;
-static constexpr std::size_t kJpegBudget = 4 * 1024 * 1024;
-static constexpr std::size_t kDecodedBudget = 2 * 1024 * 1024;
-static constexpr std::size_t kViewBudget = 6 * 1024 * 1024;
-static constexpr int32_t kRawMaxSide = 128;
-static constexpr int32_t kDecodedMaxSide = 640;
+static constexpr std::size_t kMetaHeapBytes = 768 * 1024;
+static constexpr std::size_t kThumbnailHeapBytes = 2 * 1024 * 1024;
+static constexpr std::size_t kPictureHeapBytes = 4 * 1024 * 1024;
 static constexpr uint32_t kReaderStackBytes = 8192;
 /* The decoder runs the image decoders themselves, not just a demuxer's header
    walk, so it gets more room than the reader. */
@@ -52,7 +52,71 @@ static constexpr std::size_t kImageAlignment = 64;
    to hide the decode behind the SD read without holding a third picture. */
 static constexpr uint32_t kDecodeDepth = 1;
 
+static CacheHeap s_meta_heap;
+static CacheHeap s_thumbnail_heap;
+static CacheHeap s_picture_heap;
+static std::atomic<bool> s_meta_overflow;
+static std::atomic<int> s_live_pictures;
+static std::atomic<bool> s_release_pictures;
+
+/* Past the meta heap the general heap takes over rather than failing: the
+   containers below cannot report a failed allocation. */
+static void *meta_allocate(std::size_t bytes) {
+    if (void *memory = s_meta_heap.allocate(bytes, alignof(std::max_align_t))) {
+        s_meta_overflow = false;
+        return memory;
+    }
+    if (!s_meta_overflow.exchange(true)) {
+        ESP_LOGW(TAG, "meta heap full, using the general heap (%u bytes free)",
+                 (unsigned)s_meta_heap.free_bytes());
+    }
+    void *memory = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    if (!memory) abort();
+    return memory;
+}
+
+static void meta_release(void *memory) {
+    if (s_meta_heap.contains(memory)) s_meta_heap.release(memory);
+    else heap_caps_free(memory);
+}
+
 namespace {
+
+template <class T>
+struct MetaAllocator {
+    using value_type = T;
+
+    MetaAllocator() = default;
+    template <class U> MetaAllocator(const MetaAllocator<U> &) {}
+
+    T *allocate(std::size_t count) { return static_cast<T *>(meta_allocate(count * sizeof(T))); }
+    void deallocate(T *pointer, std::size_t) { meta_release(pointer); }
+
+    template <class U> bool operator==(const MetaAllocator<U> &) const { return true; }
+    template <class U> bool operator!=(const MetaAllocator<U> &) const { return false; }
+};
+
+using MetaString = std::basic_string<char, std::char_traits<char>, MetaAllocator<char>>;
+template <class T> using MetaVector = std::vector<T, MetaAllocator<T>>;
+template <class T> using MetaDeque = std::deque<T, MetaAllocator<T>>;
+template <class K, class V, class H = std::hash<K>>
+using MetaMap = std::unordered_map<K, V, H, std::equal_to<K>, MetaAllocator<std::pair<const K, V>>>;
+
+template <class T, class... Args>
+std::shared_ptr<T> meta_make_shared(Args &&...args) {
+    return std::allocate_shared<T>(MetaAllocator<T>(), std::forward<Args>(args)...);
+}
+
+struct MetaStringHash {
+    std::size_t operator()(const MetaString &value) const {
+        std::size_t hash = 2166136261u;
+        for (char c : value) {
+            hash ^= (unsigned char)c;
+            hash *= 16777619u;
+        }
+        return hash;
+    }
+};
 
 struct ImageKey {
     uint64_t id;
@@ -70,27 +134,39 @@ struct ImageKeyHash {
     }
 };
 
-using JpegBytes = PsramVector<uint8_t>;
+struct PictureBytes {
+    uint8_t *data = nullptr;
+    std::size_t size = 0;
 
-struct ImageEntry {
-    std::shared_ptr<ImagePixels> pixels;
-    std::shared_ptr<JpegBytes> jpeg;
-    std::size_t bytes = 0;
-    uint64_t used = 0;
-    bool rgb888 = false;
+    PictureBytes() { s_live_pictures++; }
+    PictureBytes(const PictureBytes &) = delete;
+    PictureBytes &operator=(const PictureBytes &) = delete;
+    ~PictureBytes();
 };
 
-struct ImageStore {
-    PsramMap<ImageKey, ImageEntry, ImageKeyHash> map;
-    std::size_t bytes = 0;
-    std::size_t budget = 0;
+struct Thumbnail {
+    std::shared_ptr<ImagePixels> pixels;
+    uint64_t used = 0;
+};
+
+struct Picture {
+    std::shared_ptr<PictureBytes> jpeg;
+    uint64_t used = 0;
+};
+
+/* Pixels a decode produced for someone waiting on them, handed over before
+   they are re-encoded for the picture store. */
+struct Staged {
+    ImageKey key = {};
+    std::shared_ptr<ImagePixels> pixels;
 };
 
 struct Request {
-    PsramString path;
+    MetaString path;
     uint8_t want = 0;
     ImageSize box;
     uint32_t token = 0;
+    bool waited = false;
 };
 
 struct MetaSlot {
@@ -99,13 +175,18 @@ struct MetaSlot {
 };
 
 struct DecodeJob {
-    PsramString path;
+    MetaString path;
     std::shared_ptr<MediaEntry> entry;
     CoverArt cover;
-    std::shared_ptr<JpegBytes> jpeg;
     ImageKey key;
     uint32_t token = 0;
     bool image = false;
+    bool thumbnail = false;
+    bool waited = false;
+    bool notified = false;
+    /* The idle request that started a job someone waited for later: withdrawing
+       the one waiting leaves it a prefetch again. */
+    uint32_t prefetch_token = 0;
 };
 
 struct Observer {
@@ -114,20 +195,29 @@ struct Observer {
 };
 
 struct CacheState {
-    PsramMap<PsramString, MetaSlot, PsramStringHash> meta;
-    PsramMap<uint64_t, uint32_t> uses;
-    ImageStore raw;
-    ImageStore jpeg;
-    ImageStore decoded;
-    ImageStore view;
-    PsramDeque<Request> queues[3];
-    PsramDeque<DecodeJob> decodes;
-    PsramVector<PsramString> completed;
-    PsramVector<Observer> observers;
+    MetaMap<MetaString, MetaSlot, MetaStringHash> meta;
+    MetaMap<uint64_t, uint32_t> uses;
+    MetaMap<ImageKey, Thumbnail, ImageKeyHash> thumbnails;
+    MetaMap<ImageKey, Picture, ImageKeyHash> pictures;
+    Staged staged;
+    MetaDeque<Request> queues[3];
+    MetaDeque<DecodeJob> decodes;
+    MetaVector<MetaString> completed;
+    MetaVector<Observer> observers;
     /* The path each stage is on, beside its token: a requester withdrawing all
-       but the rows it still shows names paths, not tokens. */
-    PsramString reader_path;
-    PsramString decoder_path;
+       but the rows it still shows names paths, not tokens. The rest is what a
+       request for the same picture needs to join the job instead of repeating
+       it. */
+    MetaString reader_path;
+    uint8_t reader_want = 0;
+    ImageSize reader_box;
+    bool reader_waited = false;
+    uint32_t reader_prefetch_token = 0;
+    MetaString decoder_path;
+    ImageKey decoder_key = {};
+    bool decoder_thumbnail = false;
+    bool decoder_waited = false;
+    uint32_t decoder_prefetch_token = 0;
     uint64_t clock = 0;
     uint32_t next_token = 1;
 };
@@ -217,29 +307,39 @@ static void release_image_id(uint64_t id) {
     if (--it->second == 0) s_state->uses.erase(it);
 }
 
-static bool protected_entry(const ImageEntry &entry) {
-    return entry.pixels.use_count() > 1 || entry.jpeg.use_count() > 1;
+PictureBytes::~PictureBytes() {
+    s_picture_heap.release(data);
+    if (--s_live_pictures == 0 && s_release_pictures.exchange(false)) s_picture_heap.destroy();
 }
 
-static void evict_images(ImageStore &store) {
-    while (store.bytes > store.budget) {
-        auto victim = store.map.end();
-        uint64_t best_used = 0;
-        bool best_orphan = false;
-        for (auto it = store.map.begin(); it != store.map.end(); ++it) {
-            if (protected_entry(it->second)) continue;
-            const bool orphan = s_state->uses.find(it->first.id) == s_state->uses.end();
-            if (victim == store.map.end() || (orphan && !best_orphan) ||
-                (orphan == best_orphan && it->second.used < best_used)) {
-                victim = it;
-                best_used = it->second.used;
-                best_orphan = orphan;
-            }
+/* Orphans first (no meta entry refers to the id any more), then the least
+   recently used; never what someone still holds. */
+template <class Store, class Held>
+static bool evict_one(Store &store, Held held) {
+    auto victim = store.end();
+    uint64_t best_used = 0;
+    bool best_orphan = false;
+    for (auto it = store.begin(); it != store.end(); ++it) {
+        if (held(it->second)) continue;
+        const bool orphan = s_state->uses.find(it->first.id) == s_state->uses.end();
+        if (victim == store.end() || (orphan && !best_orphan) ||
+            (orphan == best_orphan && it->second.used < best_used)) {
+            victim = it;
+            best_used = it->second.used;
+            best_orphan = orphan;
         }
-        if (victim == store.map.end()) break;
-        store.bytes -= victim->second.bytes;
-        store.map.erase(victim);
     }
+    if (victim == store.end()) return false;
+    store.erase(victim);
+    return true;
+}
+
+static bool held_thumbnail(const Thumbnail &thumbnail) {
+    return thumbnail.pixels.use_count() > 1;
+}
+
+static bool held_picture(const Picture &picture) {
+    return picture.jpeg.use_count() > 1;
 }
 
 static void evict_meta() {
@@ -254,48 +354,32 @@ static void evict_meta() {
     }
 }
 
-static void store_image(ImageStore &store, const ImageKey &key, ImageEntry entry) {
-    Lock lock;
-    auto it = store.map.find(key);
-    if (it != store.map.end()) store.bytes -= it->second.bytes;
-    entry.used = ++s_state->clock;
-    store.bytes += entry.bytes;
-    store.map[key] = std::move(entry);
-    evict_images(store);
+static std::shared_ptr<const ImagePixels> take_thumbnail(const ImageKey &key) {
+    auto it = s_state->thumbnails.find(key);
+    if (it == s_state->thumbnails.end()) return nullptr;
+    it->second.used = ++s_state->clock;
+    return it->second.pixels;
 }
 
-/* Which store a size belongs in: thumbnails are kept as pixels, artwork and
-   the picture on screen are re-encoded, and the screen-sized ones get their own
-   budget so that opening a folder of photographs cannot evict every thumbnail. */
-static ImageStore &pixel_store(const ImageKey &key) {
-    if (key.box.longest() <= kRawMaxSide) return s_state->raw;
-    return key.box.longest() <= kDecodedMaxSide ? s_state->decoded : s_state->view;
+static bool has_picture(const ImageKey &key) {
+    auto it = s_state->pictures.find(key);
+    if (it == s_state->pictures.end()) return false;
+    it->second.used = ++s_state->clock;
+    return true;
 }
 
-static std::shared_ptr<const ImagePixels> take_pixels(const ImageKey &key) {
-    auto raw = s_state->raw.map.find(key);
-    if (raw != s_state->raw.map.end()) {
-        raw->second.used = ++s_state->clock;
-        return raw->second.pixels;
-    }
-    for (ImageStore *store : { &s_state->decoded, &s_state->view }) {
-        auto it = store->map.find(key);
-        if (it != store->map.end() && it->second.rgb888 == panel_rgb888()) {
-            it->second.used = ++s_state->clock;
-            return it->second.pixels;
-        }
-    }
-    return nullptr;
+static bool cached(const ImageKey &key, bool thumbnail) {
+    return thumbnail ? take_thumbnail(key) != nullptr : has_picture(key);
 }
 
 static std::shared_ptr<MediaEntry> find_meta(const std::string &path) {
-    auto it = s_state->meta.find(PsramString(path.c_str()));
+    auto it = s_state->meta.find(MetaString(path.c_str()));
     if (it == s_state->meta.end()) return nullptr;
     it->second.used = ++s_state->clock;
     return it->second.entry;
 }
 
-static void keep_meta(const PsramString &path, const std::shared_ptr<MediaEntry> &entry) {
+static void keep_meta(const MetaString &path, const std::shared_ptr<MediaEntry> &entry) {
     Lock lock;
     auto it = s_state->meta.find(path);
     if (it != s_state->meta.end()) release_image_id(it->second.entry->image_id);
@@ -304,23 +388,48 @@ static void keep_meta(const PsramString &path, const std::shared_ptr<MediaEntry>
     evict_meta();
 }
 
-static void store_pixels(const ImageKey &key, std::shared_ptr<ImagePixels> pixels, bool rgb888) {
-    if (key.box.longest() <= kRawMaxSide) {
-        store_image(s_state->raw, key, { pixels, nullptr, pixels->bytes, 0, rgb888 });
-        return;
-    }
-    auto jpeg = psram_make_shared<JpegBytes>();
-    if (image_encode(*pixels, jpeg.get())) {
-        store_image(s_state->jpeg, key, { nullptr, jpeg, jpeg->size(), 0, false });
-    }
-    store_image(pixel_store(key), key, { pixels, nullptr, pixels->bytes, 0, rgb888 });
+static void release_thumbnail(uint8_t *data) {
+    s_thumbnail_heap.release(data);
 }
 
-static bool produce(const ImageKey &key, const uint8_t *data, std::size_t size) {
-    const bool rgb888 = key.box.longest() > kRawMaxSide && panel_rgb888();
-    auto pixels = image_decode(data, size, key.box, rgb888, &s_decoder_cancel);
-    if (!pixels) return false;
-    store_pixels(key, std::move(pixels), rgb888);
+static void store_thumbnail(const ImageKey &key, const ImagePixels &source) {
+    Lock lock;
+    void *memory = s_thumbnail_heap.allocate(source.bytes, kImageAlignment);
+    while (!memory && evict_one(s_state->thumbnails, held_thumbnail)) {
+        memory = s_thumbnail_heap.allocate(source.bytes, kImageAlignment);
+    }
+    if (!memory) {
+        ESP_LOGW(TAG, "no room for a %ux%u thumbnail", source.width, source.height);
+        return;
+    }
+    memcpy(memory, source.data, source.bytes);
+    auto pixels = meta_make_shared<ImagePixels>();
+    pixels->data = static_cast<uint8_t *>(memory);
+    pixels->width = source.width;
+    pixels->height = source.height;
+    pixels->stride = source.stride;
+    pixels->bytes = source.bytes;
+    pixels->rgb888 = source.rgb888;
+    pixels->release = release_thumbnail;
+    s_state->thumbnails[key] = { std::move(pixels), ++s_state->clock };
+}
+
+static bool store_picture(const ImageKey &key, const uint8_t *data, std::size_t size) {
+    Lock lock;
+    if (!s_picture_heap.ready() || s_release_pictures) return false;
+    void *memory = s_picture_heap.allocate(size);
+    while (!memory && evict_one(s_state->pictures, held_picture)) {
+        memory = s_picture_heap.allocate(size);
+    }
+    if (!memory) {
+        ESP_LOGW(TAG, "no room for a %u byte picture", (unsigned)size);
+        return false;
+    }
+    memcpy(memory, data, size);
+    auto jpeg = meta_make_shared<PictureBytes>();
+    jpeg->data = static_cast<uint8_t *>(memory);
+    jpeg->size = size;
+    s_state->pictures[key] = { std::move(jpeg), ++s_state->clock };
     return true;
 }
 
@@ -334,7 +443,7 @@ static void forget_cover(const std::shared_ptr<MediaEntry> &entry) {
 
 static std::shared_ptr<MediaEntry> make_entry(const MediaSummary &summary, bool ok,
                                               const CoverArt &cover) {
-    auto entry = psram_make_shared<MediaEntry>();
+    auto entry = meta_make_shared<MediaEntry>();
     entry->ok = ok;
     entry->duration_us = summary.duration_us;
     entry->file_bytes = summary.file_bytes;
@@ -489,7 +598,7 @@ static bool thumb_covers(const std::shared_ptr<MediaEntry> &entry, ImageSize box
 static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt *thumb) {
     int64_t size = 0;
     CoverArt data = read_image(path, kImageProbeWindow, &size);
-    auto entry = psram_make_shared<MediaEntry>();
+    auto entry = meta_make_shared<MediaEntry>();
     entry->file_bytes = size;
     entry->cover_scanned = true;
     if (!data) return entry;
@@ -515,7 +624,7 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
 
     ImageExif exif;
     if (image_exif_parse(data.data->data(), data.data->size(), &exif)) {
-        entry->image_exif = psram_make_shared<ImageExif>(exif);
+        entry->image_exif = meta_make_shared<ImageExif>(exif);
         if (thumb && exif.thumb_bytes) {
             *thumb = keep_thumb(data.data->data(), exif.thumb_at, exif.thumb_bytes);
         }
@@ -523,8 +632,21 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
     return entry;
 }
 
+static bool wants_pixels(const Request &request) {
+    return (request.want & (MetaWantThumbnail | MetaWantImage)) && request.box.valid();
+}
+
+static bool wants_thumbnail(const Request &request) {
+    return request.want & MetaWantThumbnail;
+}
+
+/* Nobody is waiting for a picture that has nowhere to be kept. */
+static bool worth_decoding(const Request &request) {
+    return wants_thumbnail(request) || request.waited || s_picture_heap.ready();
+}
+
 static bool prepare_image(const Request &request, const std::string &path, DecodeJob *job) {
-    const bool want_image = (request.want & MetaWantImage) && request.box.valid();
+    const bool want_image = wants_pixels(request);
 
     std::shared_ptr<MediaEntry> entry;
     {
@@ -538,25 +660,19 @@ static bool prepare_image(const Request &request, const std::string &path, Decod
         if (s_reader_cancel) return false;
         keep_meta(request.path, entry);
     }
-    if (!want_image || !entry->ok) return false;
+    if (!want_image || !entry->ok || !worth_decoding(request)) return false;
 
     const ImageKey key = { entry->image_id, request.box };
-    std::shared_ptr<JpegBytes> jpeg;
     {
         Lock lock;
-        if (take_pixels(key)) return false;
-        auto it = s_state->jpeg.map.find(key);
-        if (it != s_state->jpeg.map.end()) {
-            it->second.used = ++s_state->clock;
-            jpeg = it->second.jpeg;
-        }
+        if (cached(key, wants_thumbnail(request))) return false;
     }
 
     /* A browser-sized box is served from the EXIF thumbnail when there is one:
        a few KB and a tiny decode instead of megabytes off the card and a full
        picture through the resizer. It is also the only thing a picture too
        large to decode can still show. */
-    if (jpeg || !thumb_covers(entry, request.box)) {
+    if (!thumb_covers(entry, request.box)) {
         thumb = {};
         if (entry->image_too_large) return false;
     } else if (!thumb) {
@@ -567,10 +683,11 @@ static bool prepare_image(const Request &request, const std::string &path, Decod
     job->path = request.path;
     job->entry = entry;
     job->cover = std::move(thumb);
-    job->jpeg = std::move(jpeg);
     job->key = key;
     job->token = request.token;
     job->image = true;
+    job->thumbnail = wants_thumbnail(request);
+    job->waited = request.waited;
     return true;
 }
 
@@ -582,7 +699,7 @@ static bool prepare(const Request &request, DecodeJob *job) {
         return prepare_image(request, path, job);
     }
 
-    const bool want_image = (request.want & MetaWantImage) && request.box.valid();
+    const bool want_image = wants_pixels(request);
 
     std::shared_ptr<MediaEntry> entry;
     {
@@ -600,7 +717,7 @@ static bool prepare(const Request &request, DecodeJob *job) {
         keep_meta(request.path, entry);
     }
 
-    if (!want_image) return false;
+    if (!want_image || !worth_decoding(request)) return false;
     /* A probe told to skip pictures leaves "no cover" unanswered unless the
        container said where one was, so only a scanned entry can say no. */
     if (!entry->has_cover && entry->cover_scanned) return false;
@@ -615,17 +732,11 @@ static bool prepare(const Request &request, DecodeJob *job) {
     }
 
     const ImageKey key = { entry->image_id, request.box };
-    std::shared_ptr<JpegBytes> jpeg;
     {
         Lock lock;
-        if (take_pixels(key)) return false;
-        auto it = s_state->jpeg.map.find(key);
-        if (it != s_state->jpeg.map.end()) {
-            it->second.used = ++s_state->clock;
-            jpeg = it->second.jpeg;
-        }
+        if (cached(key, wants_thumbnail(request))) return false;
     }
-    if (!jpeg && !cover) {
+    if (!cover) {
         cover = fetch_cover(path, entry);
         if (!cover) {
             forget_cover(entry);
@@ -636,85 +747,94 @@ static bool prepare(const Request &request, DecodeJob *job) {
     job->path = request.path;
     job->entry = entry;
     job->cover = std::move(cover);
-    job->jpeg = std::move(jpeg);
     job->key = key;
     job->token = request.token;
+    job->thumbnail = wants_thumbnail(request);
+    job->waited = request.waited;
     return true;
+}
+
+/* Someone waiting gets the pixels as they come out of the decoder, without
+   waiting for the re-encode or paying for a decode of it. */
+static void hand_over(DecodeJob &job, const std::shared_ptr<ImagePixels> &pixels) {
+    Lock lock;
+    if (job.notified || !(job.waited || s_state->decoder_waited)) return;
+    s_state->staged = { job.key, pixels };
+    s_state->completed.push_back(job.path);
+    job.notified = true;
 }
 
 /* Stage two: no file access for tags and cover art, so it runs while the reader
    is on the next one. An image file is read here instead, which gives up that
    overlap to keep one encoded picture in memory at a time. */
 static void finish(DecodeJob &job) {
-    if (job.jpeg) {
-        const bool rgb888 = panel_rgb888();
-        auto pixels = image_decode(job.jpeg->data(), job.jpeg->size(), job.key.box, rgb888,
-                                   &s_decoder_cancel);
-        if (pixels) {
-            store_image(pixel_store(job.key), job.key,
-                        { pixels, nullptr, pixels->bytes, 0, rgb888 });
-            return;
-        }
-        if (s_decoder_cancel) return;
-        /* A re-encoded copy that will not decode is worse than none: drop it so
-           the next request goes back to the original picture. */
-        Lock lock;
-        auto it = s_state->jpeg.map.find(job.key);
-        if (it != s_state->jpeg.map.end()) {
-            s_state->jpeg.bytes -= it->second.bytes;
-            s_state->jpeg.map.erase(it);
-        }
-        return;
-    }
-
-    bool produced = false;
+    const bool rgb888 = !job.thumbnail && panel_rgb888();
+    std::shared_ptr<ImagePixels> pixels;
     if (job.cover) {
-        produced = produce(job.key, job.cover.data->data(), job.cover.data->size());
+        pixels = image_decode(job.cover.data->data(), job.cover.data->size(), job.key.box, rgb888,
+                              &s_decoder_cancel);
     }
     /* An EXIF thumbnail that will not decode is not the whole answer: the
        picture itself is still there, so the full path is the fallback. */
-    if (!produced && !s_decoder_cancel && job.image && !job.entry->image_too_large) {
-        const bool rgb888 = panel_rgb888();
+    if (!pixels && !s_decoder_cancel && job.image && !job.entry->image_too_large) {
         ImageNotes notes;
-        auto pixels = image_decode_file(std::string(job.path.c_str()), job.key.box, rgb888,
-                                        &s_decoder_cancel, &notes);
-        produced = pixels != nullptr;
+        pixels = image_decode_file(std::string(job.path.c_str()), job.key.box, rgb888,
+                                   &s_decoder_cancel, &notes);
         /* The header the decode saw is the whole file's, so it knows the size
            even when the probe's window stopped short of the frame header. */
-        {
-            Lock lock;
-            if (notes.header.width) {
-                job.entry->image_width = (uint16_t)notes.header.width;
-                job.entry->image_height = (uint16_t)notes.header.height;
-                job.entry->image_format = notes.header.format;
-                job.entry->image_baseline = notes.header.hardware;
-            }
-            /* Per file, not per box: a picture that ran out of memory at one
-               size runs out at every other one too. A failure is recorded
-               rather than taken out of `has_cover`, so the sizes that did
-               decode stay reachable through the entry's id. */
-            job.entry->image_failed = !produced && !s_decoder_cancel;
-            job.entry->image_too_large = notes.out_of_memory;
+        Lock lock;
+        if (notes.header.width) {
+            job.entry->image_width = (uint16_t)notes.header.width;
+            job.entry->image_height = (uint16_t)notes.header.height;
+            job.entry->image_format = notes.header.format;
+            job.entry->image_baseline = notes.header.hardware;
         }
-        if (produced) store_pixels(job.key, std::move(pixels), rgb888);
+        /* Per file, not per box: a picture that ran out of memory at one size
+           runs out at every other one too. A failure is recorded rather than
+           taken out of `has_cover`, so the sizes that did decode stay
+           reachable through the entry's id. */
+        job.entry->image_failed = !pixels && !s_decoder_cancel;
+        job.entry->image_too_large = notes.out_of_memory;
     }
-    if (!produced && !s_decoder_cancel) {
+    if (!pixels) {
+        if (s_decoder_cancel) return;
         ESP_LOGE(TAG, "no picture for %s at %dx%d (%u source bytes, psram free %u, stack left %u)",
                  job.path.c_str(), job.key.box.width, job.key.box.height,
                  (unsigned)job.entry->file_bytes, psram_free(), stack_left());
         if (!job.image) forget_cover(job.entry);
+        return;
     }
+
+    if (job.thumbnail) {
+        store_thumbnail(job.key, *pixels);
+        return;
+    }
+    hand_over(job, pixels);
+    bool stored = false;
+    if (!s_decoder_cancel) {
+        stored = image_encode(*pixels, [&job](const uint8_t *data, std::size_t size) {
+            return store_picture(job.key, data, size);
+        });
+    }
+    /* A request that joined while the picture was being encoded. */
+    if (!stored) hand_over(job, pixels);
 }
 
 static bool take_request(Request *out) {
     Lock lock;
-    for (auto &queue : s_state->queues) {
+    for (int priority = 0; priority < 3; priority++) {
+        auto &queue = s_state->queues[priority];
         if (queue.empty()) continue;
         *out = std::move(queue.front());
         queue.pop_front();
+        out->waited = priority != (int)MetaPriority::Idle;
         s_reader_cancel = false;
         s_reader_token = out->token;
         s_state->reader_path = out->path;
+        s_state->reader_want = out->want;
+        s_state->reader_box = out->box;
+        s_state->reader_waited = out->waited;
+        s_state->reader_prefetch_token = out->waited ? 0 : out->token;
         return true;
     }
     return false;
@@ -764,6 +884,9 @@ static void reader_task(void *) {
         {
             Lock lock;
             if (room && !cancelled) {
+                job.token = s_reader_token;
+                job.waited = s_state->reader_waited;
+                job.prefetch_token = s_state->reader_prefetch_token;
                 s_state->decodes.push_back(std::move(job));
                 handed = true;
             }
@@ -795,6 +918,11 @@ static void decoder_task(void *) {
                 s_decoder_cancel = false;
                 s_decoder_token = job.token;
                 s_state->decoder_path = job.path;
+                s_state->decoder_key = job.key;
+                s_state->decoder_thumbnail = job.thumbnail;
+                s_state->decoder_waited = job.waited;
+                s_state->decoder_prefetch_token = job.prefetch_token;
+                s_state->staged = {};
                 have = true;
             }
         }
@@ -812,9 +940,10 @@ static void decoder_task(void *) {
             Lock lock;
             s_decoder_token = 0;
             s_state->decoder_path.clear();
+            s_state->decoder_waited = false;
         }
         if (s_quit) break;
-        if (cancelled) continue;
+        if (cancelled || job.notified) continue;
         {
             Lock lock;
             s_state->completed.push_back(job.path);
@@ -827,14 +956,14 @@ static void decoder_task(void *) {
 }
 
 static void dispatch(lv_timer_t *) {
-    PsramVector<PsramString> done;
-    PsramVector<Observer> observers;
+    MetaVector<MetaString> done;
+    MetaVector<Observer> observers;
     {
         Lock lock;
         done.swap(s_state->completed);
         observers = s_state->observers;
     }
-    for (const PsramString &path : done) {
+    for (const MetaString &path : done) {
         const std::string copy(path.c_str());
         for (const Observer &observer : observers) observer.on_ready(copy);
     }
@@ -847,11 +976,13 @@ void media_cache_init(const media_arena_t &arena) {
         ESP_LOGE(TAG, "no memory for the cache");
         return;
     }
+    if (!s_meta_heap.create(kMetaHeapBytes)) ESP_LOGE(TAG, "no memory for the meta heap");
+    if (!s_thumbnail_heap.create(kThumbnailHeapBytes)) {
+        ESP_LOGE(TAG, "no memory for the thumbnail heap");
+    }
+    if (!s_picture_heap.create(kPictureHeapBytes)) ESP_LOGE(TAG, "no memory for the picture heap");
+    image_codec_init();
     s_state = new (memory) CacheState();
-    s_state->raw.budget = kRawBudget;
-    s_state->jpeg.budget = kJpegBudget;
-    s_state->decoded.budget = kDecodedBudget;
-    s_state->view.budget = kViewBudget;
     s_arena = arena;
     s_lock = xSemaphoreCreateMutex();
     s_wake = xSemaphoreCreateBinary();
@@ -921,10 +1052,7 @@ void media_cache_stop() {
     for (auto &queue : s_state->queues) queue.clear();
     s_state->decodes.clear();
     s_state->completed.clear();
-    for (ImageStore *store : { &s_state->raw, &s_state->jpeg, &s_state->decoded, &s_state->view }) {
-        store->map.clear();
-        store->bytes = 0;
-    }
+    s_state->staged = {};
 }
 
 uint32_t media_cache_token() {
@@ -956,17 +1084,27 @@ std::shared_ptr<const MediaEntry> media_cache_lookup(const std::string &path) {
     return find_meta(path);
 }
 
-std::shared_ptr<const ImagePixels> media_cache_image(const std::string &path, ImageSize box) {
+std::shared_ptr<const ImagePixels> media_cache_thumbnail(const std::string &path, ImageSize box) {
     if (!s_lock || !box.valid()) return nullptr;
     Lock lock;
     auto entry = find_meta(path);
     if (!entry || !entry->has_cover) return nullptr;
-    return take_pixels({ entry->image_id, box });
+    return take_thumbnail({ entry->image_id, box });
+}
+
+/* Called while a reader waits for the JPEG engine: a prefetch nobody is
+   waiting for gives way once the frame it is on is done. */
+static void yield_prefetch(void *ctx) {
+    const ImageKey &key = *static_cast<const ImageKey *>(ctx);
+    Lock lock;
+    if (s_decoder_token && !s_state->decoder_waited && !(s_state->decoder_key == key)) {
+        s_decoder_cancel = true;
+    }
 }
 
 bool media_cache_read_image(const std::string &path, ImageSize box, uint8_t *dst,
                             std::size_t capacity, ImageSize *size) {
-    if (!s_lock || !box.valid() || box.longest() <= kRawMaxSide || !dst) return false;
+    if (!s_lock || !box.valid() || !dst) return false;
     const bool rgb888 = panel_rgb888();
     const std::size_t pixel_bytes = rgb888 ? 3 : 2;
     if ((uintptr_t)dst % kImageAlignment ||
@@ -974,17 +1112,92 @@ bool media_cache_read_image(const std::string &path, ImageSize box, uint8_t *dst
         ESP_LOGE(TAG, "read_image: buffer does not fit %dx%d", box.width, box.height);
         return false;
     }
-    Lock lock;
-    auto entry = find_meta(path);
-    if (!entry || !entry->has_cover) return false;
-    auto pixels = take_pixels({ entry->image_id, box });
-    if (!pixels || pixels->rgb888 != rgb888) return false;
-    const std::size_t row = (std::size_t)pixels->width * pixel_bytes;
-    for (uint16_t y = 0; y < pixels->height; y++) {
-        memcpy(dst + (std::size_t)y * row, pixels->data + (std::size_t)y * pixels->stride, row);
+
+    ImageKey key;
+    std::shared_ptr<ImagePixels> staged;
+    std::shared_ptr<PictureBytes> jpeg;
+    {
+        Lock lock;
+        auto entry = find_meta(path);
+        if (!entry || !entry->has_cover) return false;
+        key = { entry->image_id, box };
+        if (s_state->staged.pixels && s_state->staged.key == key &&
+            s_state->staged.pixels->rgb888 == rgb888) {
+            staged = std::move(s_state->staged.pixels);
+        } else if (auto it = s_state->pictures.find(key); it != s_state->pictures.end()) {
+            it->second.used = ++s_state->clock;
+            jpeg = it->second.jpeg;
+        }
     }
-    *size = { (int16_t)pixels->width, (int16_t)pixels->height };
-    return true;
+
+    if (staged) {
+        const std::size_t row = (std::size_t)staged->width * pixel_bytes;
+        for (uint16_t y = 0; y < staged->height; y++) {
+            memcpy(dst + (std::size_t)y * row, staged->data + (std::size_t)y * staged->stride, row);
+        }
+        *size = { (int16_t)staged->width, (int16_t)staged->height };
+        return true;
+    }
+    if (!jpeg) return false;
+    if (image_decode_into(jpeg->data, jpeg->size, box, rgb888, dst, capacity, size,
+                          yield_prefetch, &key)) {
+        return true;
+    }
+    /* A re-encoded copy that will not decode is worse than none: drop it so the
+       next request goes back to the original picture. */
+    Lock lock;
+    auto it = s_state->pictures.find(key);
+    if (it != s_state->pictures.end() && it->second.jpeg == jpeg) s_state->pictures.erase(it);
+    return false;
+}
+
+bool media_cache_reserve_pictures() {
+    if (!s_lock) return false;
+    Lock lock;
+    s_release_pictures = false;
+    return s_picture_heap.ready() || s_picture_heap.create(kPictureHeapBytes);
+}
+
+void media_cache_release_pictures() {
+    if (!s_lock) return;
+    Lock lock;
+    s_state->pictures.clear();
+    if (s_live_pictures == 0) s_picture_heap.destroy();
+    else s_release_pictures = true;
+}
+
+/* A request for the picture a stage is already on joins that job instead of
+   repeating it; one that is waited for takes the job over, so withdrawing the
+   request that started it no longer stops it. */
+static bool join_running(const std::string &path, uint8_t want, ImageSize box, uint32_t token,
+                         bool waited) {
+    const bool thumbnail = want & MetaWantThumbnail;
+    auto same = [&](const MetaString &other) { return strcmp(other.c_str(), path.c_str()) == 0; };
+    if (s_decoder_token && s_state->decoder_key.box == box &&
+        s_state->decoder_thumbnail == thumbnail && same(s_state->decoder_path)) {
+        if (waited) {
+            s_decoder_token = token;
+            s_state->decoder_waited = true;
+        }
+        return true;
+    }
+    for (DecodeJob &job : s_state->decodes) {
+        if (!(job.key.box == box) || job.thumbnail != thumbnail || !same(job.path)) continue;
+        if (waited) {
+            job.token = token;
+            job.waited = true;
+        }
+        return true;
+    }
+    if (s_reader_token && s_state->reader_box == box && s_state->reader_want == want &&
+        same(s_state->reader_path)) {
+        if (waited) {
+            s_reader_token = token;
+            s_state->reader_waited = true;
+        }
+        return true;
+    }
+    return false;
 }
 
 void media_cache_request(const std::string &path, uint8_t want, ImageSize box,
@@ -992,14 +1205,19 @@ void media_cache_request(const std::string &path, uint8_t want, ImageSize box,
     if (!s_running) return;
     {
         Lock lock;
-        PsramDeque<Request> &queue = s_state->queues[(int)priority];
+        const bool waited = priority != MetaPriority::Idle;
+        if ((want & (MetaWantThumbnail | MetaWantImage)) && box.valid() &&
+            join_running(path, want, box, token, waited)) {
+            return;
+        }
+        MetaDeque<Request> &queue = s_state->queues[(int)priority];
         for (const Request &pending : queue) {
             if (pending.want == want && pending.box == box &&
                 strcmp(pending.path.c_str(), path.c_str()) == 0) {
                 return;
             }
         }
-        queue.push_back({ PsramString(path.c_str()), want, box, token });
+        queue.push_back({ MetaString(path.c_str()), want, box, token });
     }
     xSemaphoreGive(s_wake);
 }
@@ -1011,8 +1229,10 @@ std::shared_ptr<const MediaEntry> media_cache_resolve(const std::string &path, u
         Lock lock;
         auto entry = find_meta(path);
         if (!entry) return nullptr;
-        if (!(want & MetaWantImage) || !entry->has_cover || !box.valid()) return entry;
-        return take_pixels({ entry->image_id, box }) ? entry : nullptr;
+        if (!(want & (MetaWantThumbnail | MetaWantImage)) || !entry->has_cover || !box.valid()) {
+            return entry;
+        }
+        return cached({ entry->image_id, box }, want & MetaWantThumbnail) ? entry : nullptr;
     };
 
     if (auto ready = satisfied()) return ready;
@@ -1037,7 +1257,7 @@ using KeepFn = bool (*)(const char *path, void *ctx);
 
 static void withdraw(uint32_t token, KeepFn keep, void *ctx) {
     if (!s_lock || !token) return;
-    auto kept = [&](const PsramString &path) { return keep && keep(path.c_str(), ctx); };
+    auto kept = [&](const MetaString &path) { return keep && keep(path.c_str(), ctx); };
     uint32_t dropped = 0;
     {
         Lock lock;
@@ -1051,11 +1271,31 @@ static void withdraw(uint32_t token, KeepFn keep, void *ctx) {
                 ++it;
                 continue;
             }
+            if (it->prefetch_token) {
+                it->token = it->prefetch_token;
+                it->waited = false;
+                ++it;
+                continue;
+            }
             it = s_state->decodes.erase(it);
             dropped++;
         }
-        if (s_reader_token == token && !kept(s_state->reader_path)) s_reader_cancel = true;
-        if (s_decoder_token == token && !kept(s_state->decoder_path)) s_decoder_cancel = true;
+        if (s_reader_token == token && !kept(s_state->reader_path)) {
+            if (s_state->reader_prefetch_token) {
+                s_reader_token = s_state->reader_prefetch_token;
+                s_state->reader_waited = false;
+            } else {
+                s_reader_cancel = true;
+            }
+        }
+        if (s_decoder_token == token && !kept(s_state->decoder_path)) {
+            if (s_state->decoder_prefetch_token) {
+                s_decoder_token = s_state->decoder_prefetch_token;
+                s_state->decoder_waited = false;
+            } else {
+                s_decoder_cancel = true;
+            }
+        }
     }
     while (dropped--) xSemaphoreGive(s_decode_room);
 }
@@ -1087,15 +1327,6 @@ void media_cache_forget(const std::string &mount_point) {
     }
 }
 
-void media_cache_invalidate_decoded() {
-    if (!s_lock) return;
-    Lock lock;
-    for (ImageStore *store : { &s_state->decoded, &s_state->view }) {
-        store->map.clear();
-        store->bytes = 0;
-    }
-}
-
 #ifdef CONFIG_HARNESS
 
 static bool harness_command(int argc, const char *const *argv, void *) {
@@ -1116,24 +1347,26 @@ static bool harness_command(int argc, const char *const *argv, void *) {
     }
     if (argc >= 2 && strcmp(argv[1], "drop") == 0) {
         Lock lock;
-        for (ImageStore *store : { &s_state->raw, &s_state->jpeg, &s_state->decoded,
-                                   &s_state->view }) {
-            store->map.clear();
-            store->bytes = 0;
-        }
+        s_state->thumbnails.clear();
+        s_state->pictures.clear();
+        s_state->staged = {};
         harness_reply("OK meta drop");
         return true;
     }
     if (argc >= 2 && strcmp(argv[1], "stats") == 0) {
         Lock lock;
+        const auto used = [](const CacheHeap &heap) {
+            return (unsigned)(heap.size() - heap.free_bytes());
+        };
         ESP_LOGI(TAG,
-                 "meta %u images %u raw %u/%u jpeg %u/%u decoded %u/%u view %u/%u psram %u/%u",
+                 "meta %u images %u thumbnails %u pictures %u psram %u/%u",
                  (unsigned)s_state->meta.size(), (unsigned)s_state->uses.size(),
-                 (unsigned)s_state->raw.map.size(), (unsigned)s_state->raw.bytes,
-                 (unsigned)s_state->jpeg.map.size(), (unsigned)s_state->jpeg.bytes,
-                 (unsigned)s_state->decoded.map.size(), (unsigned)s_state->decoded.bytes,
-                 (unsigned)s_state->view.map.size(), (unsigned)s_state->view.bytes, psram_free(),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+                 (unsigned)s_state->thumbnails.size(), (unsigned)s_state->pictures.size(),
+                 psram_free(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        ESP_LOGI(TAG, "heaps used: meta %u/%u thumbnail %u/%u picture %u/%u",
+                 used(s_meta_heap), (unsigned)s_meta_heap.size(), used(s_thumbnail_heap),
+                 (unsigned)s_thumbnail_heap.size(), used(s_picture_heap),
+                 (unsigned)s_picture_heap.size());
         ESP_LOGI(TAG, "stack left: reader %u decoder %u", stack_left(s_reader_task),
                  stack_left(s_decoder_task));
         return true;

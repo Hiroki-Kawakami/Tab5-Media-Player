@@ -24,7 +24,7 @@ submodule.
 - [`docs/images.md`](docs/images.md) — the image viewer: why it is a plain
   LVGL screen, the two decode paths and their memory, and the test pictures.
 - [`docs/metadata.md`](docs/metadata.md) — the background tags/cover-art/
-  thumbnail cache: the probe arena, image dedup, the budgets, and what stops
+  thumbnail cache: the probe arena, image dedup, the heaps, and what stops
   while the video player is open.
 - [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
   LVGL fonts, icon fonts and images from `app/resources/resources.json` at

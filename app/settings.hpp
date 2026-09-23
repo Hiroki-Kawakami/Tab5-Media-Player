@@ -42,3 +42,6 @@ void settings_set_slideshow_interval(int seconds);
 
 TransitionKind settings_slideshow_transition();
 void settings_set_slideshow_transition(TransitionKind kind);
+
+TransitionDirection settings_slideshow_direction();
+void settings_set_slideshow_direction(TransitionDirection direction);

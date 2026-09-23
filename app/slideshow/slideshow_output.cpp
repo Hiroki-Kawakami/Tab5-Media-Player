@@ -12,6 +12,7 @@
 #include "esp_cache.h"
 #endif
 
+#include <algorithm>
 #include <cstring>
 #include <initializer_list>
 
@@ -118,43 +119,92 @@ void SlideshowOutput::present(int index) {
     presented_[index] = ++presents_;
 }
 
-bool SlideshowOutput::place(const ImagePixels &pixels, Placement *out) const {
+bsp_size_t SlideshowOutput::screen() const {
     const bool swap = rotation_ == BSP_ROTATION_90 || rotation_ == BSP_ROTATION_270;
-    const int width = swap ? pixels.height : pixels.width;
-    const int height = swap ? pixels.width : pixels.height;
-    if (!pixels.data || !width || width > panel_.width || !height || height > panel_.height) {
+    return swap ? bsp_size_t{ panel_.height, panel_.width } : panel_;
+}
+
+bsp_rect_t SlideshowOutput::to_panel(bsp_rect_t rect) const {
+    const bsp_size_t size = screen();
+    const int x = rect.origin.x;
+    const int y = rect.origin.y;
+    const int w = rect.size.width;
+    const int h = rect.size.height;
+    switch (rotation_) {
+    case BSP_ROTATION_90: return { { y, size.width - x - w }, { h, w } };
+    case BSP_ROTATION_180: return { { size.width - x - w, size.height - y - h }, { w, h } };
+    case BSP_ROTATION_270: return { { size.height - y - h, x }, { h, w } };
+    default: return rect;
+    }
+}
+
+static bsp_rect_t intersect(bsp_rect_t a, bsp_rect_t b) {
+    const int left = std::max(a.origin.x, b.origin.x);
+    const int top = std::max(a.origin.y, b.origin.y);
+    const int right = std::min(a.origin.x + a.size.width, b.origin.x + b.size.width);
+    const int bottom = std::min(a.origin.y + a.size.height, b.origin.y + b.size.height);
+    if (right <= left || bottom <= top) return {};
+    return { { left, top }, { right - left, bottom - top } };
+}
+
+bool SlideshowOutput::place(const ImagePixels &pixels, Placement *out) const {
+    const bsp_size_t size = screen();
+    if (!pixels.data || !pixels.width || pixels.width > size.width || !pixels.height ||
+        pixels.height > size.height) {
         return false;
     }
     out->pixels = &pixels;
-    out->rect = { { (panel_.width - width) / 2, (panel_.height - height) / 2 }, { width, height } };
+    out->rect = { { (size.width - pixels.width) / 2, (size.height - pixels.height) / 2 },
+                  { pixels.width, pixels.height } };
     return true;
 }
 
-bool SlideshowOutput::compose(uint8_t *target, const Placement &placement) {
+bool SlideshowOutput::compose(uint8_t *frame, const Placement &placement) {
+    return draw_region(frame, placement, { { 0, 0 }, screen() });
+}
+
+bool SlideshowOutput::draw_region(uint8_t *frame, const Placement &placement,
+                                  bsp_rect_t region) {
     const ImagePixels *pixels = placement.pixels;
-    if (!target || !pixels) return false;
+    if (!frame || !pixels) return false;
+    region = intersect(region, { { 0, 0 }, screen() });
+    if (!region.size.width) return true;
 
-    const bsp_rect_t &rect = placement.rect;
-    const int right = rect.origin.x + rect.size.width;
-    const int bottom = rect.origin.y + rect.size.height;
-    fill_black(target, { { 0, 0 }, { panel_.width, rect.origin.y } });
-    fill_black(target, { { 0, bottom }, { panel_.width, panel_.height - bottom } });
-    fill_black(target, { { 0, rect.origin.y }, { rect.origin.x, rect.size.height } });
-    fill_black(target, { { right, rect.origin.y }, { panel_.width - right, rect.size.height } });
+    const bsp_rect_t image = intersect(region, placement.rect);
+    if (!image.size.width) {
+        fill_black(frame, to_panel(region));
+        return true;
+    }
+    const int region_right = region.origin.x + region.size.width;
+    const int region_bottom = region.origin.y + region.size.height;
+    const int image_right = image.origin.x + image.size.width;
+    const int image_bottom = image.origin.y + image.size.height;
+    const bsp_rect_t borders[] = {
+        { region.origin, { region.size.width, image.origin.y - region.origin.y } },
+        { { region.origin.x, image_bottom }, { region.size.width, region_bottom - image_bottom } },
+        { { region.origin.x, image.origin.y }, { image.origin.x - region.origin.x, image.size.height } },
+        { { image_right, image.origin.y }, { region_right - image_right, image.size.height } },
+    };
+    for (const bsp_rect_t &border : borders) {
+        if (border.size.width > 0 && border.size.height > 0) fill_black(frame, to_panel(border));
+    }
 
+    const bsp_rect_t out = to_panel(image);
     ppa_srm_oper_config_t op = {};
     op.in.buffer = pixels->data;
     op.in.pic_w = pixels->width;
     op.in.pic_h = pixels->height;
-    op.in.block_w = pixels->width;
-    op.in.block_h = pixels->height;
+    op.in.block_offset_x = image.origin.x - placement.rect.origin.x;
+    op.in.block_offset_y = image.origin.y - placement.rect.origin.y;
+    op.in.block_w = image.size.width;
+    op.in.block_h = image.size.height;
     op.in.srm_cm = pixels->rgb888 ? PPA_SRM_COLOR_MODE_RGB888 : PPA_SRM_COLOR_MODE_RGB565;
-    op.out.buffer = target;
+    op.out.buffer = frame;
     op.out.buffer_size = (uint32_t)frame_bytes();
     op.out.pic_w = panel_.width;
     op.out.pic_h = panel_.height;
-    op.out.block_offset_x = rect.origin.x;
-    op.out.block_offset_y = rect.origin.y;
+    op.out.block_offset_x = out.origin.x;
+    op.out.block_offset_y = out.origin.y;
     op.out.srm_cm = srm_mode_;
     op.rotation_angle = ppa_rotation(rotation_);
     op.scale_x = 1.0f;
@@ -162,7 +212,31 @@ bool SlideshowOutput::compose(uint8_t *target, const Placement &placement) {
     op.mode = PPA_TRANS_MODE_BLOCKING;
     const esp_err_t err = ppa_do_scale_rotate_mirror(srm_, &op);
     if (err == ESP_OK) return true;
-    ESP_LOGW(TAG, "compose: %s", esp_err_to_name(err));
+    ESP_LOGW(TAG, "draw: %s", esp_err_to_name(err));
+    return false;
+}
+
+bool SlideshowOutput::copy(uint8_t *out, const uint8_t *in) {
+    if (!out || !in) return false;
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = in;
+    op.in.pic_w = panel_.width;
+    op.in.pic_h = panel_.height;
+    op.in.block_w = panel_.width;
+    op.in.block_h = panel_.height;
+    op.in.srm_cm = srm_mode_;
+    op.out.buffer = out;
+    op.out.buffer_size = (uint32_t)frame_bytes();
+    op.out.pic_w = panel_.width;
+    op.out.pic_h = panel_.height;
+    op.out.srm_cm = srm_mode_;
+    op.rotation_angle = PPA_SRM_ROTATION_ANGLE_0;
+    op.scale_x = 1.0f;
+    op.scale_y = 1.0f;
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+    const esp_err_t err = ppa_do_scale_rotate_mirror(srm_, &op);
+    if (err == ESP_OK) return true;
+    ESP_LOGW(TAG, "copy: %s", esp_err_to_name(err));
     return false;
 }
 

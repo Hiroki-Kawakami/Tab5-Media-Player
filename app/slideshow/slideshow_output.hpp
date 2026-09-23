@@ -17,6 +17,8 @@ struct FrameDeleter {
 };
 using Frame = std::unique_ptr<uint8_t, FrameDeleter>;
 
+/* Rectangles here are in screen coordinates, the orientation the slideshow
+   is shown in; only the output maps them onto the panel. */
 struct Placement {
     const ImagePixels *pixels = nullptr;
     bsp_rect_t rect = {};
@@ -33,6 +35,7 @@ public:
 
     bsp_rotation_t rotation() const { return rotation_; }
     bsp_size_t panel() const { return panel_; }
+    bsp_size_t screen() const;
     bool rgb565() const { return bytes_per_pixel_ == 2; }
     uint8_t *framebuffer(int index) const;
     /* A panel-sized buffer in PSRAM that PPA can write. */
@@ -44,11 +47,15 @@ public:
 
     bool place(const ImagePixels &pixels, Placement *out) const;
     bool compose(uint8_t *frame, const Placement &placement);
+    /* Draws the part of the composed picture that falls inside `region`. */
+    bool draw_region(uint8_t *frame, const Placement &placement, bsp_rect_t region);
+    bool copy(uint8_t *out, const uint8_t *in);
     bool blend(uint8_t *out, const uint8_t *bg, const uint8_t *fg, uint8_t fg_alpha);
     void fill_black(uint8_t *frame);
 
 private:
     void fill_black(uint8_t *frame, bsp_rect_t area) const;
+    bsp_rect_t to_panel(bsp_rect_t rect) const;
     std::size_t frame_bytes() const;
 
     bsp_rotation_t rotation_ = BSP_ROTATION_0;

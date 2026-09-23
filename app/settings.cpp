@@ -162,6 +162,10 @@ Setting<"slidetrans", uint8_t, +[](int kind) -> uint8_t {
     return kind >= 0 && kind < kTransitionKinds ? kind : 0;
 }> s_slideshow_transition{(uint8_t)TransitionKind::Fade};
 
+Setting<"slidedir", uint8_t, +[](int direction) -> uint8_t {
+    return direction >= 0 && direction < kTransitionDirections ? direction : 0;
+}> s_slideshow_direction{(uint8_t)TransitionDirection::LeftToRight};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -172,6 +176,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_equalizer);
     fn(s_slideshow_interval);
     fn(s_slideshow_transition);
+    fn(s_slideshow_direction);
 }
 
 std::atomic<bool> s_headphone;
@@ -308,4 +313,12 @@ TransitionKind settings_slideshow_transition() {
 
 void settings_set_slideshow_transition(TransitionKind kind) {
     s_slideshow_transition.set((int)kind);
+}
+
+TransitionDirection settings_slideshow_direction() {
+    return (TransitionDirection)s_slideshow_direction.get();
+}
+
+void settings_set_slideshow_direction(TransitionDirection direction) {
+    s_slideshow_direction.set((int)direction);
 }

@@ -225,6 +225,18 @@ whatever a frame costs.
   the steps at the refresh rate and the fade visibly slowed. The RGB888 fade
   writes each frame once, close to the one before, and alternating two shows
   nothing.
+- **The wipe copies the screen into every framebuffer first**, while it is
+  being prepared, and then reveals the target a band at a time into the
+  framebuffer presented longest ago. Each framebuffer remembers how far it has
+  been revealed, so a frame draws only the band revealed since that
+  framebuffer's last turn, and the band is cut straight out of the picture's
+  pixels: nothing is composed ahead and no buffer beyond the three is needed.
+  Positions are worked out in screen coordinates, the orientation the viewer
+  sees, and mapped onto the panel only when drawn, so a direction means the
+  same thing whichever way the device is held.
+- **A direction belongs to the transition setting, not to the wipe.**
+  `transition_has_direction()` says which kinds use it, and the panel shows
+  the row only for those.
 - **The first picture is a cut**, not a fade from the LVGL screen underneath.
 
 ## What does not fit

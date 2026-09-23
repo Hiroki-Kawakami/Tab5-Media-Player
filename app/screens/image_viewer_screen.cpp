@@ -144,11 +144,13 @@ void ImageViewerScreen::buildPanels() {
     slideshow_ = portrait
         ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
         : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
-    image_slideshow_panel_build(slideshow_, settings_slideshow_interval(), [](uint32_t interval_s) {
-        settings_set_slideshow_interval((int)interval_s);
-        settings_commit();
-    }, settings_slideshow_transition(), [](TransitionKind kind) {
-        settings_set_slideshow_transition(kind);
+    const SlideshowPanelValues values = { (uint32_t)settings_slideshow_interval(),
+                                          settings_slideshow_transition(),
+                                          settings_slideshow_direction() };
+    image_slideshow_panel_build(slideshow_, values, [](const SlideshowPanelValues &changed) {
+        settings_set_slideshow_interval((int)changed.interval_s);
+        settings_set_slideshow_transition(changed.transition);
+        settings_set_slideshow_direction(changed.direction);
         settings_commit();
     }, [this] {
         lv_async_call([this] {
@@ -370,6 +372,7 @@ void ImageViewerScreen::startSlideshow() {
     SlideshowConfig config;
     config.interval_ms = (uint32_t)settings_slideshow_interval() * 1000;
     config.transition = settings_slideshow_transition();
+    config.direction = settings_slideshow_direction();
     slideshow_running_ = true;
     const bool started = slideshow_start(
         std::move(paths), playlist_->index(), box_, std::move(first), config,

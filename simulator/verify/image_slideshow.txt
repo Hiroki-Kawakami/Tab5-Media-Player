@@ -2,9 +2,10 @@
 # into the framebuffers, advances every 5 s and wraps, and a touch down ends it
 # with a moment of black, back to the viewer with its bars shown. The screen
 # keeps the orientation it started in until it ends. Pictures change with a
-# 1 s fade, and the interval counts from the end of it. The interval and the
-# transition are saved to NVS, so the script picks 5 s and Fade first, checks
-# 10 s last and puts 5 s back. The interval list opens scrolled to the selected
+# 1 s fade, and the interval counts from the end of it; a right-to-left wipe is
+# checked at the end. The interval, the transition and its direction are saved
+# to NVS, so the script picks 5 s and Fade first, checks 10 s and the wipe last
+# and puts 5 s, Fade and left-to-right back. The interval list opens scrolled to the selected
 # item, so it is dragged to the top first.
 settle
 tap 360 226
@@ -131,6 +132,34 @@ wait 250
 up
 settle
 tap 530 541
+settle
+tap 570 867
+settle
+tap 530 1014
+settle
+tap 530 942
+settle
+tap 530 1045
+settle
+capture slideshow_wipe_panel.jpg
+tap 360 1040
+wait 5450
+capture slideshow_wipe.jpg
+wait 1200
+settle
+capture slideshow_wipe_done.jpg
+tap 360 640
+wait 400
+settle
+tap 596 1240
+settle
+tap 530 942
+settle
+tap 530 1001
+settle
+tap 570 867
+settle
+tap 530 970
 settle
 tap 668 692
 settle

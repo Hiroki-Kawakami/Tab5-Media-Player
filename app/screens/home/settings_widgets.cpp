@@ -13,7 +13,7 @@ static constexpr int32_t kKnobSize = 28;
 static constexpr int32_t kSwitchWidth = 84;
 static constexpr int32_t kSwitchHeight = 48;
 static constexpr int32_t kSwitchKnobInset = 4;
-static constexpr int32_t kDropdownWidth = 200;
+static constexpr int32_t kDropdownWidth = 280;
 static constexpr uint32_t kSegmentTrackColor = 0xe0e0e0;
 static constexpr uint32_t kSegmentActiveColor = 0x2196f3;
 

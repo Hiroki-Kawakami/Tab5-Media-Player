@@ -10,8 +10,12 @@
 class SlideshowOutput;
 struct Placement;
 
-enum class TransitionKind : uint8_t { None, Fade };
-inline constexpr int kTransitionKinds = 2;
+enum class TransitionKind : uint8_t { None, Fade, Wipe };
+inline constexpr int kTransitionKinds = 3;
+
+/* The way a transition moves across the screen, as the viewer sees it. */
+enum class TransitionDirection : uint8_t { LeftToRight, RightToLeft, TopToBottom, BottomToTop };
+inline constexpr int kTransitionDirections = 4;
 
 enum class TransitionCurve : uint8_t { Linear };
 
@@ -27,5 +31,7 @@ public:
     virtual void finish(SlideshowOutput &output) = 0;
 };
 
-std::unique_ptr<Transition> transition_create(TransitionKind kind, const SlideshowOutput &output);
+std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDirection direction,
+                                              const SlideshowOutput &output);
+bool transition_has_direction(TransitionKind kind);
 float transition_ease(TransitionCurve curve, float t);

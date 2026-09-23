@@ -122,8 +122,9 @@ static bool play(Transition &transition) {
 static void run() {
     const std::size_t count = s_session.paths.size();
     const int64_t interval_us = (int64_t)s_session.config.interval_ms * 1000;
-    auto cut = transition_create(TransitionKind::None, s_output);
-    auto change = transition_create(s_session.config.transition, s_output);
+    auto cut = transition_create(TransitionKind::None, s_session.config.direction, s_output);
+    auto change = transition_create(s_session.config.transition, s_session.config.direction,
+                                    s_output);
     std::size_t target = s_session.index;
     int64_t due_us = esp_timer_get_time();
 

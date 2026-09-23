@@ -19,6 +19,7 @@ struct SlideshowConfig {
     /* Counts from when a transition has finished. */
     uint32_t interval_ms = 5000;
     TransitionKind transition = TransitionKind::None;
+    TransitionDirection direction = TransitionDirection::LeftToRight;
     TransitionCurve curve = TransitionCurve::Linear;
 };
 

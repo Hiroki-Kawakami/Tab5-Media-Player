@@ -1,5 +1,6 @@
 # Image slideshow: started from the viewer's slideshow panel, it draws straight
-# into the framebuffers, advances every 5 s and wraps, and a touch down ends it
+# into the framebuffers, starts from a moment of black that the first picture
+# fades in from, advances every 5 s and wraps, and a touch down ends it
 # with a moment of black, back to the viewer with its bars shown. The screen
 # keeps the orientation it started in until it ends. Pictures change with a
 # 1 s fade, and the interval counts from the end of it; a right-to-left wipe,
@@ -54,6 +55,9 @@ tap 530 970
 settle
 capture slideshow_panel.jpg
 tap 360 965
+wait 700
+capture slideshow_start.jpg
+wait 500
 settle
 capture slideshow_first.jpg
 wait 5500
@@ -74,6 +78,7 @@ settle
 tap 680 124
 settle
 tap 325 280
+wait 1200
 settle
 capture slideshow_landscape.jpg
 imu rot0
@@ -109,6 +114,7 @@ capture slideshow_interval_list.jpg
 tap 530 585
 settle
 tap 360 965
+wait 1200
 settle
 capture slideshow_interval_first.jpg
 wait 6000
@@ -160,7 +166,7 @@ tap 530 1045
 settle
 capture slideshow_wipe_panel.jpg
 tap 360 1040
-wait 5450
+wait 6650
 capture slideshow_wipe.jpg
 wait 1200
 settle
@@ -184,7 +190,7 @@ tap 530 1058
 settle
 capture slideshow_slide_in_panel.jpg
 tap 360 1040
-wait 5450
+wait 6650
 capture slideshow_slide_in.jpg
 wait 1200
 settle
@@ -207,7 +213,7 @@ settle
 tap 530 1102
 settle
 tap 360 1040
-wait 5450
+wait 6650
 capture slideshow_slide_out.jpg
 wait 1200
 settle
@@ -230,7 +236,7 @@ settle
 tap 530 1138
 settle
 tap 360 1040
-wait 5450
+wait 6650
 capture slideshow_push.jpg
 wait 1200
 settle

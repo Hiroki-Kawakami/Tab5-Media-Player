@@ -162,6 +162,13 @@ no LVGL display of its own either.
   display flushes framebuffer 0 when a pass is complete; left on a slideshow
   framebuffer, the first pass would land there and then switch to the stale
   framebuffer 0.
+- **The start is a moment of black**, from which the first picture comes in
+  with the chosen transition (a cut, for none), because the first picture is
+  the one the viewer already shows, at the same place: without it nothing
+  would show the slideshow had started. The black is presented before the
+  first picture is read, since a transition may read it into a framebuffer
+  that is not on screen, and it stands for `kBlackMs` or the decode, whichever
+  is longer.
 - **The end is a moment of black and then the bars**, rather than the last
   picture turning seamlessly into the viewer's, so that it is plain the
   slideshow has stopped.

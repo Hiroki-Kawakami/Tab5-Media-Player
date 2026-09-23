@@ -43,7 +43,6 @@ struct Session {
 
 static Session s_session;
 static SlideshowOutput s_output;
-static std::unique_ptr<Transition> s_cut;
 static std::unique_ptr<Transition> s_change;
 static bool s_running;
 static EventGroupHandle_t s_events;
@@ -121,20 +120,22 @@ static void run() {
     const std::size_t count = s_session.paths.size();
     const int64_t interval_us = (int64_t)s_session.config.interval_ms * 1000;
     std::size_t target = s_session.index;
-    int64_t due_us = esp_timer_get_time();
+    const int black = s_output.least_recent(s_output.shown());
+    s_output.fill_black(s_output.framebuffer(black));
+    s_output.present(black);
+    int64_t due_us = esp_timer_get_time() + (int64_t)kBlackMs * 1000;
 
     std::size_t misses = 0;
     while (!(s_session.shown && target == s_session.index) && misses < count) {
         request(target);
-        Transition &transition = s_session.shown ? *s_change : *s_cut;
-        uint8_t *buffer = transition.pixels_buffer(s_output);
+        uint8_t *buffer = s_change->pixels_buffer(s_output);
         ImageSize size;
         bool stop = false;
         const bool fetched = fetch(target, buffer, &size, &stop);
         if (stop) return;
         Placement to;
-        if (fetched && s_output.place(buffer, size, &to) && transition.prepare(s_output, to)) {
-            if (!sleep_until(due_us) || !play(transition)) return;
+        if (fetched && s_output.place(buffer, size, &to) && s_change->prepare(s_output, to)) {
+            if (!sleep_until(due_us) || !play(*s_change)) return;
             s_session.shown = true;
             s_session.index = target;
             misses = 0;
@@ -161,7 +162,6 @@ static void finish() {
 
 static void task_main(void *) {
     run();
-    s_cut.reset();
     s_change.reset();
     media_cache_unobserve(s_token);
     media_cache_cancel(s_token);
@@ -209,11 +209,8 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     }
     if (!s_events || !s_token) return false;
     if (!s_output.open(ui_orientation_current())) return false;
-    s_cut = transition_create(TransitionKind::None, config.direction, s_output);
     s_change = transition_create(config.transition, config.direction, s_output);
-    if (!s_cut || !s_change) {
-        s_cut.reset();
-        s_change.reset();
+    if (!s_change) {
         s_output.close();
         return false;
     }
@@ -227,7 +224,6 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
     if (spawn() != pdPASS) {
         ESP_LOGE(TAG, "no task");
         media_cache_unobserve(s_token);
-        s_cut.reset();
         s_change.reset();
         s_output.close();
         s_session = {};

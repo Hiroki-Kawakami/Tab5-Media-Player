@@ -52,8 +52,4 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSiz
                                                ImageNotes *notes = nullptr);
 bool image_encode(const ImagePixels &pixels, PsramVector<uint8_t> *out);
 
-/* Rescales decoded pixels to fit `box` with PPA, for a picture that has to be
-   shown at a new size before it can be decoded at that size. */
-std::shared_ptr<ImagePixels> image_scale(const ImagePixels &src, ImageSize box);
-
 void image_codec_close();

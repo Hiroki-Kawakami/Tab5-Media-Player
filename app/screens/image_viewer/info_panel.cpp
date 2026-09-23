@@ -142,7 +142,8 @@ static void build_exposure(lv_obj_t *contents, const ImageExif &exif) {
 }
 
 void image_info_panel_build(lv_obj_t *root, const std::string &name, const MediaEntry *entry,
-                            const ImagePixels *shown, std::function<void()> on_close) {
+                            const ImageSize *shown, bool rgb888,
+                            std::function<void()> on_close) {
     auto contents = player_panel_build(root, "Media Info", std::move(on_close));
     lv_obj_set_scroll_dir(contents, LV_DIR_VER);
     char text[64];
@@ -172,7 +173,7 @@ void image_info_panel_build(lv_obj_t *root, const std::string &name, const Media
     if (shown) {
         snprintf(text, sizeof(text), "%u x %u", (unsigned)shown->width, (unsigned)shown->height);
         panel_add_row(section, "Shown At", text);
-        panel_add_row(section, "Color", shown->rgb888 ? "24-bit" : "16-bit");
+        panel_add_row(section, "Color", rgb888 ? "24-bit" : "16-bit");
     }
     if (!exif) return;
     build_camera(contents, *exif);

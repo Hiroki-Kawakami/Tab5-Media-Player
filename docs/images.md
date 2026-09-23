@@ -8,8 +8,8 @@ of it.
 ## Why it is an ordinary screen
 
 `ImageViewerScreen` renders on the main display like `AudioPlayerScreen`, not
-on a display of its own like `VideoPlayerScreen`. The picture is a buffer of
-panel-format pixels in PSRAM behind an `lv_image`, so LVGL owns every pixel on
+on a display of its own like `VideoPlayerScreen`. The picture is panel-format
+pixels in a spare framebuffer behind an `lv_image`, so LVGL owns every pixel on
 the screen and the bars are plain objects on top of it — none of the video
 player's machinery applies (no shared SRAM handover, no presenter, no UI
 insets, no invalidation suppression). Rotation is `LV_EVENT_SIZE_CHANGED` on
@@ -105,8 +105,11 @@ priorities and when to give up on a request:
   from the queue and withdraws it if it is already being read or decoded. The
   prefetch token is deliberately not cancelled: the picture being swiped to is
   often the one the idle queue is decoding right then.
-- **The decoded pixels are held by the screen for as long as they are shown**,
-  and the cache never evicts an entry someone still holds.
+- **The picture lives in framebuffer 1 or 2, not in the cache.** LVGL draws
+  through framebuffer 0 only, so the other two are free while the viewer is
+  shown, and a screen-sized picture costs no allocation of its own. A new one
+  is copied out of the cache into the framebuffer not on screen and the two
+  swap, so a picture that is not there yet never destroys the one shown.
 - **The picture may be slightly smaller than the box.** PPA's scale is
   quantized, and a decode that can land close enough writes straight into its
   final buffer rather than through an intermediate the CPU then walks (see
@@ -158,14 +161,14 @@ no LVGL display of its own either.
   blits LVGL's chunks into whichever framebuffer is on screen, while the main
   display flushes framebuffer 0 when a pass is complete; left on a slideshow
   framebuffer, the first pass would land there and then switch to the stale
-  framebuffer 0. The simulator always draws into framebuffer 0, so it does not
-  show this.
+  framebuffer 0.
 - **The end is a moment of black and then the bars**, rather than the last
   picture turning seamlessly into the viewer's, so that it is plain the
   slideshow has stopped.
-- **The picture on screen is held until the next one replaces it**, and handed
-  to the viewer at the end. The cache never evicts an entry someone holds, so
-  the viewer shows it without a reload and stays warm for it afterwards.
+- **The picture on screen is held until the next one replaces it**, so the
+  cache still has it at the end. The slideshow has drawn over both of the
+  viewer's framebuffers by then, and the viewer copies it back out of the cache
+  at the box it was shown at.
 - **The orientation is fixed while it runs.** A no-op
   `ui_orientation_set_listener` keeps the main display from rotating, so the
   viewer's box is the box the pictures were decoded for. IMU tracking keeps

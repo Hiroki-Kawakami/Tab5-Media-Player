@@ -42,13 +42,16 @@ private:
     void prefetch();
     static void imageReady(const std::string &path);
     void showReady();
-    void showPixels(std::shared_ptr<const ImagePixels> pixels);
+    bool showCached();
+    bool showScaled();
+    void showFramebuffer(int index, ImageSize size);
+    void createImage();
     void setMessage(const std::string &message, bool failed);
     void updateTransport();
     void handlePress(lv_event_t *event);
     void handleMove(lv_event_t *event);
     void startSlideshow();
-    void endSlideshow(std::size_t index, std::shared_ptr<const ImagePixels> pixels);
+    void endSlideshow(std::size_t index);
 
     std::shared_ptr<Playlist> playlist_;
     UiMode mode_ = UiMode::Hidden;
@@ -60,7 +63,8 @@ private:
     uint32_t token_ = 0;
     uint32_t idle_token_ = 0;
 
-    std::shared_ptr<const ImagePixels> pixels_;
+    int shown_fb_ = -1;
+    ImageSize shown_size_;
     std::string shown_path_;
     lv_obj_t *stage_ = nullptr;
     lv_obj_t *image_ = nullptr;

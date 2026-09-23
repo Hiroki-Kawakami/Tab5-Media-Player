@@ -14,9 +14,14 @@
 #include "settings.hpp"
 #include "slideshow/slideshow.hpp"
 #include "bsp.h"
+#include "driver/ppa.h"
+#include "esp_log.h"
 #include "resources.h"
 
+#include <algorithm>
 #include <cstdlib>
+
+static const char *TAG = "image_viewer";
 
 static constexpr int32_t kBarHeight = 80;
 static constexpr int32_t kBarPadding = 8;
@@ -25,10 +30,31 @@ static constexpr int32_t kSwipeThreshold = 80;
 static constexpr int32_t kPortraitPanelHeight = 640;
 static constexpr int32_t kLandscapePanelWidth = 560;
 
+static constexpr uint32_t kScaleDenominator = 16;
+
 static constexpr uint32_t kBarColor = 0x101010;
 static constexpr uint32_t kMessageColor = 0xffb74d;
 
 static ImageViewerScreen *s_active;
+static ppa_client_handle_t s_srm;
+
+static bool panel_rgb888() {
+    return bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
+}
+
+static uint8_t *framebuffer(int index) {
+    return static_cast<uint8_t *>(bsp_display_get_frame_buffer(index));
+}
+
+static std::size_t framebuffer_bytes() {
+    const bsp_size_t size = bsp_display_get_size();
+    return (std::size_t)size.width * size.height * (panel_rgb888() ? 3 : 2);
+}
+
+/* LVGL draws through framebuffer 0 only, so 1 and 2 hold the picture. */
+static int spare_framebuffer(int shown) {
+    return shown == 1 ? 2 : 1;
+}
 
 static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
     lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
@@ -102,7 +128,7 @@ void ImageViewerScreen::buildUi() {
     lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
     lv_obj_update_layout(root_);
 
-    if (pixels_) showPixels(pixels_);
+    if (shown_fb_ >= 0) createImage();
 }
 
 void ImageViewerScreen::buildBottomBar(lv_obj_t *parent) {
@@ -177,7 +203,8 @@ void ImageViewerScreen::refreshInfo() {
 void ImageViewerScreen::populateInfo() {
     if (!info_) return;
     lv_obj_clean(info_);
-    image_info_panel_build(info_, name(), media_cache_lookup(path()).get(), pixels_.get(),
+    image_info_panel_build(info_, name(), media_cache_lookup(path()).get(),
+                           shown_fb_ >= 0 ? &shown_size_ : nullptr, panel_rgb888(),
                            [this] { requestMode(UiMode::Bars); });
     lv_obj_update_layout(info_);
 }
@@ -259,22 +286,74 @@ void ImageViewerScreen::setMessage(const std::string &message, bool failed) {
     lv_obj_set_flag(message_, LV_OBJ_FLAG_HIDDEN, message.empty());
 }
 
-void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
+void ImageViewerScreen::createImage() {
+    image_ = image_object_create(stage_, framebuffer(shown_fb_), shown_size_, panel_rgb888());
+    if (!image_) return;
+    lv_obj_remove_flag(image_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_to_index(image_, 0);
+}
+
+void ImageViewerScreen::showFramebuffer(int index, ImageSize size) {
     if (image_) {
         lv_obj_delete(image_);
         image_ = nullptr;
     }
-    pixels_ = std::move(pixels);
-    if (!pixels_) {
+    shown_fb_ = index;
+    shown_size_ = size;
+    if (index < 0) {
         shown_path_.clear();
         return;
     }
     shown_path_ = path();
-    image_ = image_object_create(stage_, pixels_);
-    if (image_) {
-        lv_obj_remove_flag(image_, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_move_to_index(image_, 0);
+    createImage();
+}
+
+bool ImageViewerScreen::showCached() {
+    const int spare = spare_framebuffer(shown_fb_);
+    ImageSize size;
+    if (!media_cache_read_image(path(), box_, framebuffer(spare), framebuffer_bytes(), &size)) {
+        return false;
     }
+    showFramebuffer(spare, size);
+    return true;
+}
+
+bool ImageViewerScreen::showScaled() {
+    if (!s_srm) return false;
+    const ImageSize src = shown_size_;
+    const uint32_t scale = std::min((uint32_t)box_.width * kScaleDenominator / src.width,
+                                    (uint32_t)box_.height * kScaleDenominator / src.height);
+    if (scale < 1 || scale > 16 * kScaleDenominator) return false;
+    const ImageSize size = { (int16_t)(src.width * scale / kScaleDenominator),
+                             (int16_t)(src.height * scale / kScaleDenominator) };
+    if (!size.valid()) return false;
+
+    const ppa_srm_color_mode_t mode =
+        panel_rgb888() ? PPA_SRM_COLOR_MODE_RGB888 : PPA_SRM_COLOR_MODE_RGB565;
+    const int spare = spare_framebuffer(shown_fb_);
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = framebuffer(shown_fb_);
+    op.in.pic_w = src.width;
+    op.in.pic_h = src.height;
+    op.in.block_w = src.width;
+    op.in.block_h = src.height;
+    op.in.srm_cm = mode;
+    op.out.buffer = framebuffer(spare);
+    op.out.buffer_size = (uint32_t)framebuffer_bytes();
+    op.out.pic_w = size.width;
+    op.out.pic_h = size.height;
+    op.out.srm_cm = mode;
+    op.scale_x = (float)scale / kScaleDenominator;
+    op.scale_y = op.scale_x;
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+    const esp_err_t err = ppa_do_scale_rotate_mirror(s_srm, &op);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ppa scale %dx%d -> %dx%d: %s", src.width, src.height, size.width,
+                 size.height, esp_err_to_name(err));
+        return false;
+    }
+    showFramebuffer(spare, size);
+    return true;
 }
 
 void ImageViewerScreen::load() {
@@ -282,9 +361,8 @@ void ImageViewerScreen::load() {
     updateTransport();
     const ImageSize previous = box_;
     box_ = { (int16_t)lv_obj_get_width(root_), (int16_t)lv_obj_get_height(root_) };
-    if (auto pixels = media_cache_image(path(), box_)) {
+    if (showCached()) {
         setMessage({}, false);
-        showPixels(std::move(pixels));
         refreshInfo();
         prefetch();
         return;
@@ -293,15 +371,10 @@ void ImageViewerScreen::load() {
     /* A rotation leaves the same picture on screen at the wrong size. Rescaling
        what is already decoded is a PPA blit, so it stands in until the size the
        screen now wants has been decoded. */
-    std::shared_ptr<const ImagePixels> placeholder;
-    if (pixels_ && shown_path_ == path() && !(previous == box_)) {
-        placeholder = image_scale(*pixels_, box_);
-    }
-    if (placeholder) {
+    if (shown_fb_ >= 0 && shown_path_ == path() && !(previous == box_) && showScaled()) {
         setMessage({}, false);
-        showPixels(std::move(placeholder));
     } else {
-        showPixels(nullptr);
+        showFramebuffer(-1, {});
         setMessage("Loading...\n" + name(), false);
     }
     refreshInfo();
@@ -336,9 +409,8 @@ static std::string describe(const MediaEntry &entry) {
 void ImageViewerScreen::showReady() {
     if (slideshow_running_) return;
     updateTransport();
-    if (auto pixels = media_cache_image(path(), box_)) {
+    if (showCached()) {
         setMessage({}, false);
-        showPixels(std::move(pixels));
         refreshInfo();
         prefetch();
         return;
@@ -367,7 +439,6 @@ void ImageViewerScreen::startSlideshow() {
     std::vector<std::string> paths;
     paths.reserve(playlist_->size());
     for (std::size_t i = 0; i < playlist_->size(); i++) paths.push_back(playlist_->at(i).path);
-    auto first = pixels_ && shown_path_ == path() ? pixels_ : nullptr;
 
     SlideshowConfig config;
     config.interval_ms = (uint32_t)settings_slideshow_interval() * 1000;
@@ -375,22 +446,24 @@ void ImageViewerScreen::startSlideshow() {
     config.direction = settings_slideshow_direction();
     slideshow_running_ = true;
     const bool started = slideshow_start(
-        std::move(paths), playlist_->index(), box_, std::move(first), config,
-        [this](std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
-            if (s_active == this && slideshow_running_) endSlideshow(index, std::move(pixels));
+        std::move(paths), playlist_->index(), box_, nullptr, config,
+        [this](std::size_t index, std::shared_ptr<const ImagePixels>) {
+            if (s_active == this && slideshow_running_) endSlideshow(index);
         });
     if (started) return;
     slideshow_running_ = false;
     load();
 }
 
-void ImageViewerScreen::endSlideshow(std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
+void ImageViewerScreen::endSlideshow(std::size_t index) {
     slideshow_running_ = false;
+    /* The slideshow has drawn over both picture framebuffers. */
+    showFramebuffer(-1, {});
     playlist_->select(index);
+    showCached();
     lv_obj_update_layout(root_);
     if ((lv_obj_get_width(root_) > lv_obj_get_height(root_)) != landscape_) buildUi();
     if (title_label_) lv_label_set_text(title_label_, name().c_str());
-    if (pixels) showPixels(std::move(pixels));
     load();
     setMode(UiMode::Bars);
 }
@@ -404,6 +477,16 @@ void ImageViewerScreen::onEnter() {
     if (!token_) {
         token_ = media_cache_token();
         idle_token_ = media_cache_token();
+    }
+    if (!s_srm) {
+        ppa_client_config_t client = {};
+        client.oper_type = PPA_OPERATION_SRM;
+        client.max_pending_trans_num = 1;
+        const esp_err_t err = ppa_register_client(&client, &s_srm);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "no ppa client: %s", esp_err_to_name(err));
+            s_srm = nullptr;
+        }
     }
     media_cache_observe(token_, imageReady);
     media_cache_idle_cancel();
@@ -419,5 +502,9 @@ void ImageViewerScreen::onExit() {
     media_cache_unobserve(token_);
     media_cache_cancel(token_);
     media_cache_cancel(idle_token_);
-    showPixels(nullptr);
+    showFramebuffer(-1, {});
+    if (s_srm) {
+        ppa_unregister_client(s_srm);
+        s_srm = nullptr;
+    }
 }

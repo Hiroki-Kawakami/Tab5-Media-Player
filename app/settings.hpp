@@ -8,6 +8,7 @@
 #include <string>
 #include "bsp.h"
 #include "lvgl.h"
+#include "playback/playlist.hpp"
 #include "slideshow/transition.hpp"
 
 inline constexpr int kMinDisplayBrightness = 1;
@@ -37,6 +38,18 @@ void settings_volume_observe(lv_obj_t *owner, std::function<void(int)> on_change
 
 bool settings_equalizer_enabled();
 void settings_set_equalizer_enabled(bool enabled);
+
+RepeatMode settings_audio_repeat();
+void settings_set_audio_repeat(RepeatMode mode);
+
+bool settings_audio_shuffle();
+void settings_set_audio_shuffle(bool enabled);
+
+RepeatMode settings_video_repeat();
+void settings_set_video_repeat(RepeatMode mode);
+
+bool settings_video_shuffle();
+void settings_set_video_shuffle(bool enabled);
 
 int settings_slideshow_interval();
 void settings_set_slideshow_interval(int seconds);

@@ -20,18 +20,25 @@ class Playlist {
 public:
     Playlist(std::vector<PlaylistItem> items, std::size_t index);
 
-    const PlaylistItem &current() const { return items_[index_]; }
+    const PlaylistItem &current() const { return items_[index()]; }
     const PlaylistItem &at(std::size_t index) const { return items_[index]; }
     std::size_t size() const { return items_.size(); }
-    std::size_t index() const { return index_; }
+    std::size_t index() const { return order_[position_]; }
 
     bool canStep(int delta, RepeatMode repeat) const;
     bool step(int delta, RepeatMode repeat);
+    /* The item `delta` steps away in play order, wrapping around. */
+    std::size_t neighbour(int delta) const;
     void select(std::size_t index);
+
+    bool shuffled() const { return shuffled_; }
+    void setShuffled(bool shuffled);
 
 private:
     std::vector<PlaylistItem> items_;
-    std::size_t index_ = 0;
+    std::vector<std::size_t> order_;
+    std::size_t position_ = 0;
+    bool shuffled_ = false;
 };
 
 /* The files of `kind` in a directory, by name, or the path itself when it is

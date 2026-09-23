@@ -88,6 +88,11 @@ static lv_obj_t *create_row(lv_obj_t *parent) {
     return row;
 }
 
+VideoPlayerScreen::VideoPlayerScreen(std::shared_ptr<Playlist> playlist)
+    : playlist_(std::move(playlist)), repeat_(settings_video_repeat()) {
+    playlist_->setShuffled(settings_video_shuffle());
+}
+
 void VideoPlayerScreen::build() {
     lv_obj_set_style_bg_color(root_, lv_color_black(), 0);
 }
@@ -141,7 +146,9 @@ void VideoPlayerScreen::closeOverlay() {
     title_label_ = nullptr;
     play_label_ = nullptr;
     next_button_ = nullptr;
+    repeat_button_ = nullptr;
     repeat_label_ = nullptr;
+    shuffle_button_ = nullptr;
     seek_ = nullptr;
     elapsed_label_ = nullptr;
     total_label_ = nullptr;
@@ -381,14 +388,14 @@ void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
         lv_obj_t *row = create_row(parent);
         lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
         lv_obj_set_style_pad_column(row, 0, 0);
-        lv_spacer_create(row, kPortraitSide, 1);
+        buildShuffle(create_side_box(row, kPortraitSide));
         lv_obj_t *transport = create_row(row);
         lv_obj_set_size(transport, kPortraitSlider, LV_SIZE_CONTENT);
         lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(transport, 16, 0);
-        buildTransport(transport, false);
-        buildTransport(create_side_box(row, kPortraitSide), true);
+        buildTransport(transport);
+        buildRepeat(create_side_box(row, kPortraitSide));
 
         buildVolumeRow(parent);
         return;
@@ -397,8 +404,7 @@ void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
     lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(parent, 16, 0);
-    buildTransport(parent, false);
-    buildTransport(parent, true);
+    buildTransport(parent);
 
     lv_obj_t *right = lv_container_create(parent, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_grow(right, 1);
@@ -410,22 +416,34 @@ void VideoPlayerScreen::buildBottomBar(lv_obj_t *parent, bool portrait) {
     buildVolumeRow(right);
 }
 
-void VideoPlayerScreen::buildTransport(lv_obj_t *parent, bool repeat_only) {
-    if (repeat_only) {
-        lv_obj_t *repeat = media_icon_button(parent, kIconButton, &icon_36, TABLER_REPEAT_OFF,
-                                             lv_color_white(), &repeat_label_);
-        lv_obj_add_event_fn(repeat, LV_EVENT_CLICKED, [this](lv_event_t *) {
-            switch (repeat_) {
-            case RepeatMode::Off: setRepeatMode(RepeatMode::All); break;
-            case RepeatMode::All: setRepeatMode(RepeatMode::One); break;
-            case RepeatMode::One: setRepeatMode(RepeatMode::Off); break;
-            }
-            player_set_loop(repeat_ == RepeatMode::One);
-        });
-        setRepeatMode(repeat_);
-        return;
-    }
+void VideoPlayerScreen::buildShuffle(lv_obj_t *parent) {
+    shuffle_button_ = media_toggle_button(parent, kIconButton, &icon_36, TABLER_ARROWS_SHUFFLE,
+                                          lv_color_white(), lv_color_hex(kBarColor));
+    lv_obj_add_event_fn(shuffle_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        setShuffle(!playlist_->shuffled());
+        settings_set_video_shuffle(playlist_->shuffled());
+        settings_commit();
+    });
+    setShuffle(playlist_->shuffled());
+}
 
+void VideoPlayerScreen::buildRepeat(lv_obj_t *parent) {
+    repeat_button_ = media_toggle_button(parent, kIconButton, &icon_36, TABLER_REPEAT,
+                                         lv_color_white(), lv_color_hex(kBarColor), &repeat_label_);
+    lv_obj_add_event_fn(repeat_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        switch (repeat_) {
+        case RepeatMode::Off: setRepeatMode(RepeatMode::All); break;
+        case RepeatMode::All: setRepeatMode(RepeatMode::One); break;
+        case RepeatMode::One: setRepeatMode(RepeatMode::Off); break;
+        }
+        player_set_loop(repeat_ == RepeatMode::One);
+        settings_set_video_repeat(repeat_);
+        settings_commit();
+    });
+    setRepeatMode(repeat_);
+}
+
+void VideoPlayerScreen::buildTransport(lv_obj_t *parent) {
     lv_obj_t *prev = media_icon_button(parent, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, lv_color_white());
     lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [this](lv_event_t *) {
         lv_display_trigger_activity(ui_);
@@ -586,6 +604,12 @@ void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
     const int32_t side = portrait ? kPortraitSide : kTimeWidth;
     lv_obj_set_style_pad_column(row, portrait ? 0 : kSeekGap, 0);
 
+    if (!portrait) {
+        buildShuffle(create_side_box(row, kTimeWidth));
+        buildRepeat(create_side_box(row, kTimeWidth));
+        lv_spacer_create(row, 0, 1, 1);
+    }
+
     lv_obj_t *mute = media_icon_button(create_side_box(row, side), kIconButton, &icon_36,
                                        TABLER_VOLUME, lv_color_white(), &volume_label_);
 
@@ -603,12 +627,15 @@ void VideoPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
 void VideoPlayerScreen::setRepeatMode(RepeatMode mode) {
     repeat_ = mode;
     updateTransport();
-    if (!repeat_label_) return;
-    switch (mode) {
-    case RepeatMode::Off: lv_label_set_text(repeat_label_, TABLER_REPEAT_OFF); break;
-    case RepeatMode::All: lv_label_set_text(repeat_label_, TABLER_REPEAT); break;
-    case RepeatMode::One: lv_label_set_text(repeat_label_, TABLER_REPEAT_ONCE); break;
-    }
+    if (!repeat_button_) return;
+    lv_label_set_text(repeat_label_, mode == RepeatMode::One ? TABLER_REPEAT_ONCE : TABLER_REPEAT);
+    lv_obj_set_state(repeat_button_, LV_STATE_CHECKED, mode != RepeatMode::Off);
+}
+
+void VideoPlayerScreen::setShuffle(bool shuffled) {
+    playlist_->setShuffled(shuffled);
+    updateTransport();
+    if (shuffle_button_) lv_obj_set_state(shuffle_button_, LV_STATE_CHECKED, shuffled);
 }
 
 void VideoPlayerScreen::setPlayIcon(bool playing) {

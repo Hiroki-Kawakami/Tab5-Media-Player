@@ -295,7 +295,6 @@ at the end and the restart on flush. What differs:
 - **No stored playlists.** The only source of a `Playlist` is a directory
   listing; `.m3u` and friends are not read, and there is no queue the user can
   edit.
-- **No shuffle.** The order is the browser's order.
 
 ## Reading: one buffer from the card to the decoder
 
@@ -795,6 +794,17 @@ what both screens are constructed with, so a screen has no path of its own —
   only one of the three the player knows about, because looping one file
   seamlessly is something only the reader can do (see [Looping](#looping)).
   The other two therefore never set the player's loop flag.
+- **Shuffle covers the whole list, not what follows the current file.** The
+  current file stays where playback is and every other file, earlier ones
+  included, is drawn after it — the same as turning shuffle on in any music
+  player. Turning it off carries on from the current file in the browser's
+  order. With repeat all, running off the end draws a new order, and the file
+  that just played is kept out of its first slot; running off the start with
+  the previous button goes to the end of the current order instead, since the
+  order before it is gone.
+- **Repeat and shuffle are settings, one pair for music and one for video**,
+  so a screen opens with the last choice made in that kind of screen. A screen
+  opened with shuffle on starts the tapped file and shuffles the rest.
 - **The previous button restarts the file if it is more than 3 s in**, and
   moves to the previous item otherwise, as every music player does. With
   nothing to move to it restarts either way. Restarting keeps playing, where

@@ -14,6 +14,9 @@ void media_format_time(char *text, std::size_t size, int64_t seconds);
 
 lv_obj_t *media_icon_button(lv_obj_t *parent, int32_t size, const lv_font_t *font, const char *icon,
                             lv_color_t foreground, lv_obj_t **label = nullptr);
+lv_obj_t *media_toggle_button(lv_obj_t *parent, int32_t size, const lv_font_t *font,
+                              const char *icon, lv_color_t foreground, lv_color_t background,
+                              lv_obj_t **label = nullptr);
 lv_obj_t *media_slider(lv_obj_t *parent, int32_t max, lv_color_t foreground, lv_color_t track);
 
 struct MediaTopBar {

@@ -7,6 +7,7 @@
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
+#include "settings.hpp"
 #include "resources.h"
 #include "bsp.h"
 #include "esp_timer.h"
@@ -88,6 +89,11 @@ static std::string format_tags(const MediaTags &tags) {
     return format_names(tags.artist, tags.album);
 }
 
+AudioPlayerScreen::AudioPlayerScreen(std::shared_ptr<Playlist> playlist)
+    : playlist_(std::move(playlist)), repeat_(settings_audio_repeat()) {
+    playlist_->setShuffled(settings_audio_shuffle());
+}
+
 void AudioPlayerScreen::build() {
     createNavigation(name().c_str(), LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
     lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
@@ -115,7 +121,9 @@ void AudioPlayerScreen::buildContents() {
     artwork_icon_ = nullptr;
     artwork_image_ = nullptr;
     title_label_ = nullptr;
+    repeat_button_ = nullptr;
     repeat_label_ = nullptr;
+    shuffle_button_ = nullptr;
     seek_ = nullptr;
     elapsed_label_ = nullptr;
     total_label_ = nullptr;
@@ -153,6 +161,7 @@ void AudioPlayerScreen::buildContents() {
 
     setPlayIcon(playing_);
     setRepeatMode(repeat_);
+    setShuffle(playlist_->shuffled());
     refresh();
 }
 
@@ -226,9 +235,8 @@ void AudioPlayerScreen::prefetchNeighbours() {
 
     const std::size_t count = playlist_->size();
     if (count < 2) return;
-    const std::size_t index = playlist_->index();
-    const std::size_t next = (index + 1) % count;
-    const std::size_t previous = (index + count - 1) % count;
+    const std::size_t next = playlist_->neighbour(1);
+    const std::size_t previous = playlist_->neighbour(-1);
 
     media_cache_request(playlist_->at(next).path, MetaWantInfo | MetaWantImage, kArtworkBox,
                         MetaPriority::Idle, token_);
@@ -309,7 +317,16 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
     const lv_color_t foreground = lv_color_hex(kForegroundColor);
     lv_obj_t *outer = create_row(parent, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_column(outer, 0, 0);
-    lv_spacer_create(outer, kTimeWidth, 1);
+
+    lv_obj_t *left = lv_container_create(outer, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(left, kTimeWidth, LV_SIZE_CONTENT);
+    shuffle_button_ = media_toggle_button(left, kIconButton, &icon_36, TABLER_ARROWS_SHUFFLE,
+                                          foreground, lv_color_white());
+    lv_obj_add_event_fn(shuffle_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
+        setShuffle(!playlist_->shuffled());
+        settings_set_audio_shuffle(playlist_->shuffled());
+        settings_commit();
+    });
 
     lv_obj_t *row = create_row(outer, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_flex_grow(row, 1);
@@ -341,15 +358,17 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
 
     lv_obj_t *side = lv_container_create(outer, LV_FLEX_FLOW_ROW);
     lv_obj_set_size(side, kTimeWidth, LV_SIZE_CONTENT);
-    lv_obj_t *repeat = media_icon_button(side, kIconButton, &icon_36, TABLER_REPEAT_OFF,
-                                         foreground, &repeat_label_);
-    lv_obj_add_event_fn(repeat, LV_EVENT_CLICKED, [this](lv_event_t *) {
+    repeat_button_ = media_toggle_button(side, kIconButton, &icon_36, TABLER_REPEAT, foreground,
+                                         lv_color_white(), &repeat_label_);
+    lv_obj_add_event_fn(repeat_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         switch (repeat_) {
         case RepeatMode::Off: setRepeatMode(RepeatMode::All); break;
         case RepeatMode::All: setRepeatMode(RepeatMode::One); break;
         case RepeatMode::One: setRepeatMode(RepeatMode::Off); break;
         }
         player_set_loop(repeat_ == RepeatMode::One);
+        settings_set_audio_repeat(repeat_);
+        settings_commit();
     });
 }
 
@@ -453,12 +472,15 @@ void AudioPlayerScreen::handleState() {
 void AudioPlayerScreen::setRepeatMode(RepeatMode mode) {
     repeat_ = mode;
     updateTransport();
-    if (!repeat_label_) return;
-    switch (mode) {
-    case RepeatMode::Off: lv_label_set_text(repeat_label_, TABLER_REPEAT_OFF); break;
-    case RepeatMode::All: lv_label_set_text(repeat_label_, TABLER_REPEAT); break;
-    case RepeatMode::One: lv_label_set_text(repeat_label_, TABLER_REPEAT_ONCE); break;
-    }
+    if (!repeat_button_) return;
+    lv_label_set_text(repeat_label_, mode == RepeatMode::One ? TABLER_REPEAT_ONCE : TABLER_REPEAT);
+    lv_obj_set_state(repeat_button_, LV_STATE_CHECKED, mode != RepeatMode::Off);
+}
+
+void AudioPlayerScreen::setShuffle(bool shuffled) {
+    playlist_->setShuffled(shuffled);
+    updateTransport();
+    if (shuffle_button_) lv_obj_set_state(shuffle_button_, LV_STATE_CHECKED, shuffled);
 }
 
 void AudioPlayerScreen::setPlayIcon(bool playing) {

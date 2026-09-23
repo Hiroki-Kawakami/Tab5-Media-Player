@@ -15,8 +15,7 @@
 
 class AudioPlayerScreen : public NavigationScreen {
 public:
-    explicit AudioPlayerScreen(std::shared_ptr<Playlist> playlist)
-        : playlist_(std::move(playlist)) {}
+    explicit AudioPlayerScreen(std::shared_ptr<Playlist> playlist);
     ~AudioPlayerScreen() override;
     void build() override;
     void onEnter() override;
@@ -48,6 +47,7 @@ private:
     void handleState();
     static void playerStateChanged();
     void setRepeatMode(RepeatMode mode);
+    void setShuffle(bool shuffled);
     void setPlayIcon(bool playing);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
     void refresh();
@@ -74,7 +74,9 @@ private:
     lv_obj_t *artwork_icon_ = nullptr;
     lv_obj_t *artwork_image_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
+    lv_obj_t *repeat_button_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;
+    lv_obj_t *shuffle_button_ = nullptr;
     lv_obj_t *seek_ = nullptr;
     lv_obj_t *elapsed_label_ = nullptr;
     lv_obj_t *total_label_ = nullptr;

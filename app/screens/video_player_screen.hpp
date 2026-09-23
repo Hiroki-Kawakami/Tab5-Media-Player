@@ -16,8 +16,7 @@ struct VideoInsets;
 
 class VideoPlayerScreen : public NavigationScreen {
 public:
-    explicit VideoPlayerScreen(std::shared_ptr<Playlist> playlist)
-        : playlist_(std::move(playlist)) {}
+    explicit VideoPlayerScreen(std::shared_ptr<Playlist> playlist);
     ~VideoPlayerScreen() override;
     void build() override;
     void onEnter() override;
@@ -40,7 +39,9 @@ private:
     void populateInfo();
     void buildTopBar(lv_obj_t *parent);
     void buildBottomBar(lv_obj_t *parent, bool portrait);
-    void buildTransport(lv_obj_t *parent, bool repeat_only);
+    void buildTransport(lv_obj_t *parent);
+    void buildShuffle(lv_obj_t *parent);
+    void buildRepeat(lv_obj_t *parent);
     void buildSeekRow(lv_obj_t *parent);
     void buildVolumeRow(lv_obj_t *parent);
     void openCurrent();
@@ -50,6 +51,7 @@ private:
     void handleState();
     static void playerStateChanged();
     void setRepeatMode(RepeatMode mode);
+    void setShuffle(bool shuffled);
     void setPlayIcon(bool playing);
     void setMessage(const std::string &message, bool force);
     void setTime(lv_obj_t *label, int64_t *shown_s, int64_t us);
@@ -79,7 +81,9 @@ private:
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *next_button_ = nullptr;
+    lv_obj_t *repeat_button_ = nullptr;
     lv_obj_t *repeat_label_ = nullptr;
+    lv_obj_t *shuffle_button_ = nullptr;
     lv_obj_t *seek_ = nullptr;
     lv_obj_t *elapsed_label_ = nullptr;
     lv_obj_t *total_label_ = nullptr;

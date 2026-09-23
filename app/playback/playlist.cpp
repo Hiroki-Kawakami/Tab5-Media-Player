@@ -5,33 +5,74 @@
 
 #include "playlist.hpp"
 #include "media/media_directory.hpp"
+#include "esp_timer.h"
 
+#include <algorithm>
+#include <numeric>
+#include <random>
 #include <sys/stat.h>
 
-Playlist::Playlist(std::vector<PlaylistItem> items, std::size_t index)
-    : items_(std::move(items)), index_(index) {
+static std::minstd_rand &random_engine() {
+    static std::minstd_rand engine((uint32_t)esp_timer_get_time());
+    return engine;
+}
+
+Playlist::Playlist(std::vector<PlaylistItem> items, std::size_t index) : items_(std::move(items)) {
     if (items_.empty()) items_.emplace_back();
-    if (index_ >= items_.size()) index_ = 0;
+    order_.resize(items_.size());
+    std::iota(order_.begin(), order_.end(), 0);
+    select(index);
 }
 
 bool Playlist::canStep(int delta, RepeatMode repeat) const {
     if (delta == 0) return false;
     if (repeat == RepeatMode::All) return true;
-    const long long target = (long long)index_ + delta;
+    const long long target = (long long)position_ + delta;
     return target >= 0 && target < (long long)items_.size();
 }
 
 bool Playlist::step(int delta, RepeatMode repeat) {
     if (!canStep(delta, repeat)) return false;
     const long long count = (long long)items_.size();
-    long long target = ((long long)index_ + delta) % count;
-    if (target < 0) target += count;
-    index_ = (std::size_t)target;
+    const long long target = (long long)position_ + delta;
+    if (shuffled_ && target >= count && count > 1) {
+        const std::size_t last = index();
+        std::shuffle(order_.begin(), order_.end(), random_engine());
+        if (order_[0] == last) {
+            std::uniform_int_distribution<std::size_t> pick(1, order_.size() - 1);
+            std::swap(order_[0], order_[pick(random_engine())]);
+        }
+    }
+    long long wrapped = target % count;
+    if (wrapped < 0) wrapped += count;
+    position_ = (std::size_t)wrapped;
     return true;
 }
 
+std::size_t Playlist::neighbour(int delta) const {
+    const long long count = (long long)items_.size();
+    long long target = ((long long)position_ + delta) % count;
+    if (target < 0) target += count;
+    return order_[(std::size_t)target];
+}
+
 void Playlist::select(std::size_t index) {
-    if (index < items_.size()) index_ = index;
+    if (index >= items_.size()) index = 0;
+    if (shuffled_) {
+        position_ = 0;
+        std::swap(order_[0], *std::find(order_.begin(), order_.end(), index));
+        std::shuffle(order_.begin() + 1, order_.end(), random_engine());
+    } else {
+        position_ = index;
+    }
+}
+
+void Playlist::setShuffled(bool shuffled) {
+    if (shuffled == shuffled_) return;
+    const std::size_t current = index();
+    shuffled_ = shuffled;
+    if (!shuffled) std::iota(order_.begin(), order_.end(), 0);
+    select(current);
 }
 
 std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind) {

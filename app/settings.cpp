@@ -154,6 +154,18 @@ Setting<"equalizer", uint8_t, +[](bool enabled) -> uint8_t {
     return enabled ? 1 : 0;
 }> s_equalizer{1};
 
+constexpr auto sanitize_repeat = +[](int mode) -> uint8_t {
+    return mode >= 0 && mode <= (int)RepeatMode::One ? mode : 0;
+};
+constexpr auto sanitize_flag = +[](bool enabled) -> uint8_t {
+    return enabled ? 1 : 0;
+};
+
+Setting<"audiorepeat", uint8_t, sanitize_repeat> s_audio_repeat{(uint8_t)RepeatMode::Off};
+Setting<"audioshuffle", uint8_t, sanitize_flag> s_audio_shuffle{0};
+Setting<"videorepeat", uint8_t, sanitize_repeat> s_video_repeat{(uint8_t)RepeatMode::Off};
+Setting<"videoshuffle", uint8_t, sanitize_flag> s_video_shuffle{0};
+
 Setting<"slideinterval", uint16_t, +[](int seconds) -> uint16_t {
     return std::clamp(seconds, kMinSlideshowInterval, kMaxSlideshowInterval);
 }> s_slideshow_interval{kMinSlideshowInterval};
@@ -180,6 +192,10 @@ void for_each_setting(Fn &&fn) {
     fn(s_speaker_volume);
     fn(s_headphone_volume);
     fn(s_equalizer);
+    fn(s_audio_repeat);
+    fn(s_audio_shuffle);
+    fn(s_video_repeat);
+    fn(s_video_shuffle);
     fn(s_slideshow_interval);
     fn(s_slideshow_transition);
     fn(s_slideshow_direction);
@@ -305,6 +321,38 @@ bool settings_equalizer_enabled() {
 void settings_set_equalizer_enabled(bool enabled) {
     if (!s_equalizer.set(enabled)) return;
     bsp_audio_set_eq_enabled(enabled);
+}
+
+RepeatMode settings_audio_repeat() {
+    return (RepeatMode)s_audio_repeat.get();
+}
+
+void settings_set_audio_repeat(RepeatMode mode) {
+    s_audio_repeat.set((int)mode);
+}
+
+bool settings_audio_shuffle() {
+    return s_audio_shuffle.get() != 0;
+}
+
+void settings_set_audio_shuffle(bool enabled) {
+    s_audio_shuffle.set(enabled);
+}
+
+RepeatMode settings_video_repeat() {
+    return (RepeatMode)s_video_repeat.get();
+}
+
+void settings_set_video_repeat(RepeatMode mode) {
+    s_video_repeat.set((int)mode);
+}
+
+bool settings_video_shuffle() {
+    return s_video_shuffle.get() != 0;
+}
+
+void settings_set_video_shuffle(bool enabled) {
+    s_video_shuffle.set(enabled);
 }
 
 int settings_slideshow_interval() {

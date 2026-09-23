@@ -40,6 +40,16 @@ lv_obj_t *media_icon_button(lv_obj_t *parent, int32_t size, const lv_font_t *fon
     return button;
 }
 
+lv_obj_t *media_toggle_button(lv_obj_t *parent, int32_t size, const lv_font_t *font,
+                              const char *icon, lv_color_t foreground, lv_color_t background,
+                              lv_obj_t **label) {
+    lv_obj_t *button = media_icon_button(parent, size, font, icon, foreground, label);
+    lv_obj_set_style_bg_color(button, foreground, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_STATE_CHECKED);
+    lv_obj_set_style_text_color(button, background, LV_STATE_CHECKED);
+    return button;
+}
+
 lv_obj_t *media_slider(lv_obj_t *parent, int32_t max, lv_color_t foreground, lv_color_t track) {
     lv_obj_t *slider = lv_slider_create(parent);
     lv_slider_set_range(slider, 0, max);

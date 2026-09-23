@@ -5,13 +5,35 @@
 
 #include "slideshow_panel.hpp"
 #include "screens/player_panel.hpp"
+#include "screens/home/settings_widgets.hpp"
 #include "widgets.hpp"
+
+#include <cstddef>
 
 static constexpr int32_t kStartButtonHeight = 72;
 
-void image_slideshow_panel_build(lv_obj_t *root, std::function<void()> on_start,
-                                 std::function<void()> on_close) {
+static constexpr uint32_t kIntervals[] = { 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800, 3600 };
+static constexpr const char *kIntervalOptions =
+    "5 sec\n10 sec\n20 sec\n30 sec\n1 min\n2 min\n5 min\n10 min\n15 min\n30 min\n1 hour";
+
+static uint32_t interval_index(uint32_t interval_s) {
+    for (std::size_t i = 0; i < std::size(kIntervals); i++) {
+        if (kIntervals[i] >= interval_s) return (uint32_t)i;
+    }
+    return (uint32_t)std::size(kIntervals) - 1;
+}
+
+void image_slideshow_panel_build(lv_obj_t *root, uint32_t interval_s,
+                                 std::function<void(uint32_t interval_s)> on_interval,
+                                 std::function<void()> on_start, std::function<void()> on_close) {
     auto contents = player_panel_build(root, "Slideshow", std::move(on_close));
+
+    auto section = lv_setting_section_create(contents, nullptr, &kPanelColors);
+    auto row = lv_setting_row_create(section, "Interval");
+    lv_setting_dropdown_create(row, kIntervalOptions, interval_index(interval_s),
+                               [on_interval](lv_obj_t *, uint32_t index) {
+        on_interval(kIntervals[index]);
+    }, &kPanelColors);
 
     auto start = lv_button_create(contents, LV_BUTTON_STYLE_PRIMARY);
     lv_obj_set_size(start, lv_pct(100), kStartButtonHeight);

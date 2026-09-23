@@ -11,6 +11,7 @@
 #include "screens/image_viewer/slideshow_panel.hpp"
 #include "screens/media_controls.hpp"
 #include "screens/video_player/settings_panel.hpp"
+#include "settings.hpp"
 #include "slideshow/slideshow.hpp"
 #include "bsp.h"
 #include "resources.h"
@@ -143,7 +144,10 @@ void ImageViewerScreen::buildPanels() {
     slideshow_ = portrait
         ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
         : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
-    image_slideshow_panel_build(slideshow_, [this] {
+    image_slideshow_panel_build(slideshow_, settings_slideshow_interval(), [](uint32_t interval_s) {
+        settings_set_slideshow_interval((int)interval_s);
+        settings_commit();
+    }, [this] {
         lv_async_call([this] {
             if (s_active == this) startSlideshow();
         });
@@ -363,6 +367,7 @@ void ImageViewerScreen::startSlideshow() {
     slideshow_running_ = true;
     const bool started = slideshow_start(
         std::move(paths), playlist_->index(), box_, std::move(first),
+        (uint32_t)settings_slideshow_interval() * 1000,
         [this](std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
             if (s_active == this && slideshow_running_) endSlideshow(index, std::move(pixels));
         });

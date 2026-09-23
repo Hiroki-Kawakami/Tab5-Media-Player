@@ -13,6 +13,7 @@ static constexpr int32_t kKnobSize = 28;
 static constexpr int32_t kSwitchWidth = 84;
 static constexpr int32_t kSwitchHeight = 48;
 static constexpr int32_t kSwitchKnobInset = 4;
+static constexpr int32_t kDropdownWidth = 200;
 static constexpr uint32_t kSegmentTrackColor = 0xe0e0e0;
 static constexpr uint32_t kSegmentActiveColor = 0x2196f3;
 
@@ -110,6 +111,38 @@ void lv_setting_segmented_set_active(lv_obj_t *segmented, int active) {
             button, lv_color_hex(on ? kSegmentActiveColor : kSegmentTrackColor), 0);
         lv_obj_set_style_text_color(button, on ? lv_color_white() : lv_color_black(), 0);
     }
+}
+
+lv_obj_t *lv_setting_dropdown_create(lv_obj_t *row, const char *options, uint32_t selected,
+                                     std::function<void(lv_obj_t *, uint32_t)> on_select,
+                                     const SettingColors *colors) {
+    auto dropdown = lv_dropdown_create(row);
+    lv_dropdown_set_options(dropdown, options);
+    lv_dropdown_set_selected(dropdown, selected);
+    lv_obj_set_width(dropdown, kDropdownWidth);
+    lv_obj_set_font_role(dropdown, LV_WIDGETS_FONT_BODY);
+    lv_obj_set_style_radius(dropdown, 12, 0);
+
+    auto list = lv_dropdown_get_list(dropdown);
+    lv_obj_set_font_role(list, LV_WIDGETS_FONT_BODY);
+    lv_obj_set_style_radius(list, 12, 0);
+    if (colors) {
+        for (lv_obj_t *obj : { dropdown, list }) {
+            lv_obj_set_style_bg_color(obj, lv_color_hex(colors->track), 0);
+            lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(obj, 0, 0);
+            lv_obj_set_style_text_color(obj, lv_color_white(), 0);
+        }
+        lv_obj_set_style_bg_color(list, lv_color_hex(colors->accent),
+                                  (lv_style_selector_t)LV_PART_SELECTED | LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(list, lv_color_hex(colors->accent),
+                                  (lv_style_selector_t)LV_PART_SELECTED | LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(list, lv_color_white(), LV_PART_SELECTED);
+    }
+    lv_obj_add_event_fn(dropdown, LV_EVENT_VALUE_CHANGED, [dropdown, on_select](lv_event_t *) {
+        on_select(dropdown, lv_dropdown_get_selected(dropdown));
+    });
+    return dropdown;
 }
 
 lv_obj_t *lv_setting_switch_create(lv_obj_t *row, bool checked,

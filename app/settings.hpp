@@ -11,6 +11,8 @@
 inline constexpr int kMinDisplayBrightness = 1;
 inline constexpr int kDefaultSpeakerVolume = 60;
 inline constexpr int kDefaultHeadphoneVolume = 40;
+inline constexpr int kMinSlideshowInterval = 5;
+inline constexpr int kMaxSlideshowInterval = 3600;
 
 void settings_init();
 void settings_apply();
@@ -33,3 +35,6 @@ void settings_volume_observe(lv_obj_t *owner, std::function<void(int)> on_change
 
 bool settings_equalizer_enabled();
 void settings_set_equalizer_enabled(bool enabled);
+
+int settings_slideshow_interval();
+void settings_set_slideshow_interval(int seconds);

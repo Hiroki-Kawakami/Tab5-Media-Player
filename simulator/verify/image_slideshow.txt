@@ -1,7 +1,9 @@
 # Image slideshow: started from the viewer's slideshow panel, it draws straight
 # into the framebuffers, advances every 5 s and wraps, and a touch down ends it
 # with a moment of black, back to the viewer with its bars shown. The screen
-# keeps the orientation it started in until it ends.
+# keeps the orientation it started in until it ends. The interval is saved to
+# NVS, so the script picks 5 s first, checks 10 s last and puts 5 s back. The
+# list opens scrolled to the selected item, so it is dragged to the top first.
 settle
 tap 360 226
 settle
@@ -14,7 +16,28 @@ tap 360 640
 settle
 tap 596 1240
 settle
-tap 360 780
+tap 570 792
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+tap 530 541
+settle
+capture slideshow_panel.jpg
+tap 360 890
 settle
 capture slideshow_first.jpg
 wait 5500
@@ -32,7 +55,7 @@ wait 900
 settle
 tap 680 124
 settle
-tap 140 280
+tap 250 280
 settle
 capture slideshow_landscape.jpg
 imu rot0
@@ -44,6 +67,65 @@ tap 360 640
 wait 400
 settle
 capture slideshow_landscape_stopped.jpg
+tap 596 1240
+settle
+tap 570 792
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+capture slideshow_interval_list.jpg
+tap 530 585
+settle
+tap 360 890
+settle
+capture slideshow_interval_first.jpg
+wait 6000
+settle
+capture slideshow_interval_held.jpg
+wait 5000
+settle
+capture slideshow_interval_next.jpg
+tap 360 640
+wait 400
+settle
+tap 596 1240
+settle
+tap 570 792
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+down 570 560
+wait 60
+move 570 660
+wait 60
+move 570 760
+wait 250
+up
+settle
+tap 530 541
+settle
+tap 668 692
+settle
 tap 40 40
 settle
 capture slideshow_back.jpg

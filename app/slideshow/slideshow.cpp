@@ -24,7 +24,6 @@
 
 static const char *TAG = "slideshow";
 
-static constexpr int64_t kIntervalUs = 5000000;
 static constexpr uint32_t kBlackMs = 200;
 static constexpr uint32_t kRetryMs = 1000;
 static constexpr uint32_t kStackBytes = 6144;
@@ -42,6 +41,7 @@ struct Session {
     ImageBox box;
     std::shared_ptr<const ImagePixels> shown;
     std::size_t index = 0;
+    int64_t interval_us = 0;
     SlideshowFinished on_finished;
 };
 
@@ -189,7 +189,7 @@ static void run() {
     int64_t due_us = esp_timer_get_time();
     if (s_session.shown && present(std::move(s_session.shown))) {
         target = next_of(target);
-        due_us += kIntervalUs;
+        due_us += s_session.interval_us;
     }
 
     std::size_t misses = 0;
@@ -202,7 +202,7 @@ static void run() {
         if (pixels && present(std::move(pixels))) {
             s_session.index = target;
             misses = 0;
-            due_us = esp_timer_get_time() + kIntervalUs;
+            due_us = esp_timer_get_time() + s_session.interval_us;
         } else {
             misses++;
         }
@@ -267,7 +267,8 @@ static BaseType_t spawn() {
 }
 
 bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageBox box,
-                     std::shared_ptr<const ImagePixels> first, SlideshowFinished on_finished) {
+                     std::shared_ptr<const ImagePixels> first, uint32_t interval_ms,
+                     SlideshowFinished on_finished) {
     if (s_running || index >= paths.size() || !box.valid()) return false;
     if (!s_events) s_events = xEventGroupCreate();
     if (!s_token) {
@@ -296,7 +297,7 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageBox
     s_bytes_per_pixel = bsp_pixel_format_bytes(format);
     s_fb_index = 0;
     s_session = { std::move(paths), ui_orientation_current(), box, std::move(first), index,
-                  std::move(on_finished) };
+                  (int64_t)interval_ms * 1000, std::move(on_finished) };
     xEventGroupClearBits(s_events, kStop | kReady);
 
     ui_orientation_set_listener([](bsp_rotation_t, void *) {}, nullptr);

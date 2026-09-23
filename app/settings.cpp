@@ -53,6 +53,16 @@ struct Codec<uint8_t> {
 };
 
 template <>
+struct Codec<uint16_t> {
+    static esp_err_t get(nvs_handle_t nvs, const char *key, uint16_t &value) {
+        return nvs_get_u16(nvs, key, &value);
+    }
+    static esp_err_t set(nvs_handle_t nvs, const char *key, uint16_t value) {
+        return nvs_set_u16(nvs, key, value);
+    }
+};
+
+template <>
 struct Codec<std::string> {
     static esp_err_t get(nvs_handle_t nvs, const char *key, std::string &value) {
         std::size_t size = 0;
@@ -144,6 +154,10 @@ Setting<"equalizer", uint8_t, +[](bool enabled) -> uint8_t {
     return enabled ? 1 : 0;
 }> s_equalizer{1};
 
+Setting<"slideinterval", uint16_t, +[](int seconds) -> uint16_t {
+    return std::clamp(seconds, kMinSlideshowInterval, kMaxSlideshowInterval);
+}> s_slideshow_interval{kMinSlideshowInterval};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -152,6 +166,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_speaker_volume);
     fn(s_headphone_volume);
     fn(s_equalizer);
+    fn(s_slideshow_interval);
 }
 
 std::atomic<bool> s_headphone;
@@ -272,4 +287,12 @@ bool settings_equalizer_enabled() {
 void settings_set_equalizer_enabled(bool enabled) {
     if (!s_equalizer.set(enabled)) return;
     bsp_audio_set_eq_enabled(enabled);
+}
+
+int settings_slideshow_interval() {
+    return s_slideshow_interval.get();
+}
+
+void settings_set_slideshow_interval(int seconds) {
+    s_slideshow_interval.set(seconds);
 }

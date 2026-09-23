@@ -158,6 +158,10 @@ Setting<"slideinterval", uint16_t, +[](int seconds) -> uint16_t {
     return std::clamp(seconds, kMinSlideshowInterval, kMaxSlideshowInterval);
 }> s_slideshow_interval{kMinSlideshowInterval};
 
+Setting<"slidetrans", uint8_t, +[](int kind) -> uint8_t {
+    return kind >= 0 && kind < kTransitionKinds ? kind : 0;
+}> s_slideshow_transition{(uint8_t)TransitionKind::Fade};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -167,6 +171,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_headphone_volume);
     fn(s_equalizer);
     fn(s_slideshow_interval);
+    fn(s_slideshow_transition);
 }
 
 std::atomic<bool> s_headphone;
@@ -295,4 +300,12 @@ int settings_slideshow_interval() {
 
 void settings_set_slideshow_interval(int seconds) {
     s_slideshow_interval.set(seconds);
+}
+
+TransitionKind settings_slideshow_transition() {
+    return (TransitionKind)s_slideshow_transition.get();
+}
+
+void settings_set_slideshow_transition(TransitionKind kind) {
+    s_slideshow_transition.set((int)kind);
 }

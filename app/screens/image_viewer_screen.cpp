@@ -147,6 +147,9 @@ void ImageViewerScreen::buildPanels() {
     image_slideshow_panel_build(slideshow_, settings_slideshow_interval(), [](uint32_t interval_s) {
         settings_set_slideshow_interval((int)interval_s);
         settings_commit();
+    }, settings_slideshow_transition(), [](TransitionKind kind) {
+        settings_set_slideshow_transition(kind);
+        settings_commit();
     }, [this] {
         lv_async_call([this] {
             if (s_active == this) startSlideshow();
@@ -364,10 +367,12 @@ void ImageViewerScreen::startSlideshow() {
     for (std::size_t i = 0; i < playlist_->size(); i++) paths.push_back(playlist_->at(i).path);
     auto first = pixels_ && shown_path_ == path() ? pixels_ : nullptr;
 
+    SlideshowConfig config;
+    config.interval_ms = (uint32_t)settings_slideshow_interval() * 1000;
+    config.transition = settings_slideshow_transition();
     slideshow_running_ = true;
     const bool started = slideshow_start(
-        std::move(paths), playlist_->index(), box_, std::move(first),
-        (uint32_t)settings_slideshow_interval() * 1000,
+        std::move(paths), playlist_->index(), box_, std::move(first), config,
         [this](std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
             if (s_active == this && slideshow_running_) endSlideshow(index, std::move(pixels));
         });

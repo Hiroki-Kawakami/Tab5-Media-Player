@@ -7,6 +7,7 @@
 #include <functional>
 #include "bsp.h"
 #include "lvgl.h"
+#include "slideshow/transition.hpp"
 
 inline constexpr int kMinDisplayBrightness = 1;
 inline constexpr int kDefaultSpeakerVolume = 60;
@@ -38,3 +39,6 @@ void settings_set_equalizer_enabled(bool enabled);
 
 int settings_slideshow_interval();
 void settings_set_slideshow_interval(int seconds);
+
+TransitionKind settings_slideshow_transition();
+void settings_set_slideshow_transition(TransitionKind kind);

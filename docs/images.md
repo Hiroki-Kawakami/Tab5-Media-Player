@@ -141,9 +141,9 @@ way — so the entry has to say so.
 `app/slideshow/` runs from the slideshow panel until the screen is touched. It
 does not draw through LVGL: the main display is hidden with
 `media_player_acquire_sram()` and the pictures go straight into the
-framebuffers with PPA, because the transitions to come are meant to be PPA
-blits between framebuffers. Nothing is laid over the pictures, so there is no
-LVGL display of its own either.
+framebuffers with PPA, because the transitions between pictures are PPA
+operations between framebuffers. Nothing is laid over the pictures, so there is
+no LVGL display of its own either.
 
 - **It has its own task, and the task owns the end.** The loop waits on an
   event group — stop, and "a cache request completed" from a `media_cache`
@@ -159,7 +159,7 @@ LVGL display of its own either.
   display flushes framebuffer 0 when a pass is complete; left on a slideshow
   framebuffer, the first pass would land there and then switch to the stale
   framebuffer 0. The simulator always draws into framebuffer 0, so it does not
-  show this. The pictures themselves use framebuffers 1 and 2.
+  show this.
 - **The end is a moment of black and then the bars**, rather than the last
   picture turning seamlessly into the viewer's, so that it is plain the
   slideshow has stopped.
@@ -177,10 +177,55 @@ LVGL display of its own either.
   stays an outside touch until the finger lifts, so it never reaches the
   viewer as a tap.
 - **Pictures come from `media_cache` at the viewer's box**, already fitted, so
-  PPA only rotates and places them. The next picture is requested when one is
-  shown, and the interval counts from when a picture is shown, so a slow
-  decode does not cut the next picture short. One that cannot be decoded is
-  skipped; if none in a whole lap can be shown, the last one stays up.
+  PPA only rotates and places them. The next picture is fetched and prepared
+  as soon as one is shown, and the interval counts from the end of the
+  transition, so neither a slow decode nor the transition cuts the time a
+  picture stands still. One that cannot be decoded is skipped; if none in a
+  whole lap can be shown, the last one stays up.
+
+### Transitions
+
+`app/slideshow/transition.*` holds one class per kind, and
+`slideshow_output.*` the framebuffers and the PPA operations they draw with.
+The output never decides which framebuffer is used for what — each transition
+does, because the right choice differs: one that slides the pictures needs the
+old one intact, a fade does not. The task only keeps time: it turns the elapsed
+time into a progress through the curve, calls `step()` as often as PPA allows,
+and calls `finish()` once the duration is up, so a transition lasts the same
+whatever a frame costs.
+
+- **The fade depends on the panel format**, because the cheap way to fade goes
+  wrong at RGB565 and the right way costs memory, which is short: every
+  megabyte of PSRAM comes off the largest picture that can be decoded.
+  - **At RGB888 the target is laid over the frame on screen**, with the alpha
+    that moves it from the previous progress to the current one. The old
+    picture may then be overwritten, so the target is composed into one
+    framebuffer, the frames alternate between the other two, and the last step
+    presents the composed target itself, which also clears the rounding the
+    repeated blends accumulate.
+  - **At RGB565 the two pictures are mixed afresh every frame.** Laying the
+    target over the previous frame with a small alpha truncates each step back
+    to 5 bits of red and blue and 6 of green, so on the device, which takes many
+    small steps, red and blue stop moving while green still does and the whole
+    fade turns green (the simulator blends too slowly to take steps that
+    small). Each frame instead composes the old picture from its pixels and
+    blends the target over it in place, and the target lives in a 1.8 MB PSRAM
+    frame of its own for the length of the slideshow.
+- **PPA blend cannot rotate**, so the target is composed — rotated, centred and
+  its borders blacked — before the fade starts. Blending only the picture's
+  rectangle would leave the old picture standing wherever the new one's black
+  border is.
+- **Nothing waits for a presented framebuffer to reach the panel.** The DPI
+  panel picks up a flushed framebuffer only when the frame it is sending ends,
+  so a write into the one presented just before can land while it is still on
+  the glass. The RGB565 fade writes each frame three times (borders, old
+  picture, blend), which flickered at the edges when two framebuffers
+  alternated, so it cycles through all three, writing the one presented longest
+  ago. Waiting for the switch in the BSP instead fixed the flicker but capped
+  the steps at the refresh rate and the fade visibly slowed. The RGB888 fade
+  writes each frame once, close to the one before, and alternating two shows
+  nothing.
+- **The first picture is a cut**, not a fade from the LVGL screen underneath.
 
 ## What does not fit
 

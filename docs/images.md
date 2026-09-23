@@ -244,9 +244,9 @@ whatever a frame costs.
   old picture still on screen, shifted by how far the edge moved, out of the
   framebuffer on screen into the next one, and draws the target only into the
   band that framebuffer has not had yet. Between them they cover the whole
-  screen. The wipe, the slide-in and the slide-out are one class with two
-  switches — whether the target moves and whether the old picture does — and
-  a push, with both moving, needs no more than setting both.
+  screen. The wipe, the slide-in, the slide-out and the push are one class
+  with two switches — whether the target moves and whether the old picture
+  does; the push sets both.
 - **A direction belongs to the transition setting, not to one transition.**
   `transition_has_direction()` says which kinds use it, and the panel shows
   the row only for those.

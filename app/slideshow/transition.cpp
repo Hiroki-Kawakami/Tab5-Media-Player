@@ -215,6 +215,8 @@ std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDir
         return std::make_unique<Sweep>(direction, true, false);
     case TransitionKind::SlideOut:
         return std::make_unique<Sweep>(direction, false, true);
+    case TransitionKind::Push:
+        return std::make_unique<Sweep>(direction, true, true);
     default:
         return std::make_unique<Cut>();
     }
@@ -222,7 +224,7 @@ std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDir
 
 bool transition_has_direction(TransitionKind kind) {
     return kind == TransitionKind::Wipe || kind == TransitionKind::SlideIn ||
-           kind == TransitionKind::SlideOut;
+           kind == TransitionKind::SlideOut || kind == TransitionKind::Push;
 }
 
 float transition_ease(TransitionCurve, float t) {

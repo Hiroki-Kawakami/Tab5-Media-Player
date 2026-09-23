@@ -26,6 +26,7 @@ public:
 
     bool canStep(int delta, RepeatMode repeat) const;
     bool step(int delta, RepeatMode repeat);
+    void select(std::size_t index);
 
 private:
     std::vector<PlaylistItem> items_;

@@ -29,7 +29,7 @@ travel passes `kSwipeThreshold` and exceeds the vertical one — waiting for the
 release made a deliberate swipe feel like it had been missed. The same press
 becomes a tap only if no swipe was recognised.
 
-## The two panels
+## The panels
 
 Media Info and Settings are the video player's panels reused: the same dark
 shell (`app/screens/player_panel.*`, which also holds the row helpers both info
@@ -135,6 +135,52 @@ the kind are most of the explanation when the answer is "too large to decode".
 A completion for the current file that carries no pixels is not a failure by
 itself — after a rotation the request for the previous box completes the same
 way — so the entry has to say so.
+
+## Slideshow
+
+`app/slideshow/` runs from the slideshow panel until the screen is touched. It
+does not draw through LVGL: the main display is hidden with
+`media_player_acquire_sram()` and the pictures go straight into the
+framebuffers with PPA, because the transitions to come are meant to be PPA
+blits between framebuffers. Nothing is laid over the pictures, so there is no
+LVGL display of its own either.
+
+- **It has its own task, and the task owns the end.** The loop waits on an
+  event group — stop, and "a cache request completed" from a `media_cache`
+  observer — rather than being driven by LVGL timers, so what is added later
+  (music) has one place to live. Stopping only sets the bit: the task blacks
+  out framebuffer 0, presents it, holds it for `kBlackMs`, and then hands over
+  to the LVGL thread with `lv_async_call`, which restores the viewer and shows
+  the main display again. Nothing ever waits for the task, since a wait on the
+  LVGL thread would deadlock against the task taking the LVGL lock. The event
+  group outlives the task, so a touch arriving as it exits is harmless.
+- **Framebuffer 0 is presented before LVGL comes back.** On the device the BSP
+  blits LVGL's chunks into whichever framebuffer is on screen, while the main
+  display flushes framebuffer 0 when a pass is complete; left on a slideshow
+  framebuffer, the first pass would land there and then switch to the stale
+  framebuffer 0. The simulator always draws into framebuffer 0, so it does not
+  show this. The pictures themselves use framebuffers 1 and 2.
+- **The end is a moment of black and then the bars**, rather than the last
+  picture turning seamlessly into the viewer's, so that it is plain the
+  slideshow has stopped.
+- **The picture on screen is held until the next one replaces it**, and handed
+  to the viewer at the end. The cache never evicts an entry someone holds, so
+  the viewer shows it without a reload and stays warm for it afterwards.
+- **The orientation is fixed while it runs.** A no-op
+  `ui_orientation_set_listener` keeps the main display from rotating, so the
+  viewer's box is the box the pictures were decoded for. IMU tracking keeps
+  running underneath, and removing the listener rotates the main display to
+  the latest orientation at once; the held picture then stands in, rescaled,
+  while the new box is decoded.
+- **A touch down ends it**, through `set_outside_touch_callback`: with the main
+  display hidden every touch is outside all displays. The rest of that touch
+  stays an outside touch until the finger lifts, so it never reaches the
+  viewer as a tap.
+- **Pictures come from `media_cache` at the viewer's box**, already fitted, so
+  PPA only rotates and places them. The next picture is requested when one is
+  shown, and the interval counts from when a picture is shown, so a slow
+  decode does not cut the next picture short. One that cannot be decoded is
+  skipped; if none in a whole lap can be shown, the last one stays up.
 
 ## What does not fit
 

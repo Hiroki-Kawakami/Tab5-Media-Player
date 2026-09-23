@@ -8,8 +8,10 @@
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
 #include "screens/image_viewer/info_panel.hpp"
+#include "screens/image_viewer/slideshow_panel.hpp"
 #include "screens/media_controls.hpp"
 #include "screens/video_player/settings_panel.hpp"
+#include "slideshow/slideshow.hpp"
 #include "bsp.h"
 #include "resources.h"
 
@@ -94,6 +96,7 @@ void ImageViewerScreen::buildUi() {
 
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
+    lv_obj_set_flag(slideshow_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Slideshow);
     lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
     lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
     lv_obj_update_layout(root_);
@@ -117,6 +120,11 @@ void ImageViewerScreen::buildBottomBar(lv_obj_t *parent) {
 
     lv_spacer_create(parent, 1, 1, 1);
 
+    slideshow_button_ = media_icon_button(parent, kIconButton, &icon_36, TABLER_SLIDESHOW,
+                                          lv_color_white());
+    lv_obj_add_event_fn(slideshow_button_, LV_EVENT_CLICKED,
+                        [this](lv_event_t *) { requestMode(UiMode::Slideshow); });
+
     panel_button_ = media_icon_button(parent, kIconButton, &icon_36,
                                       TABLER_ADJUSTMENTS_HORIZONTAL, lv_color_white());
     lv_obj_add_event_fn(panel_button_, LV_EVENT_CLICKED,
@@ -132,6 +140,15 @@ void ImageViewerScreen::buildBottomBar(lv_obj_t *parent) {
 
 void ImageViewerScreen::buildPanels() {
     const bool portrait = !landscape_;
+    slideshow_ = portrait
+        ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    image_slideshow_panel_build(slideshow_, [this] {
+        lv_async_call([this] {
+            if (s_active == this) startSlideshow();
+        });
+    }, [this] { requestMode(UiMode::Bars); });
+
     settings_ = portrait
         ? create_bar(root_, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
         : create_bar(root_, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
@@ -180,6 +197,7 @@ void ImageViewerScreen::setMode(UiMode mode) {
     if (mode == UiMode::Settings) lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
+    lv_obj_set_flag(slideshow_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Slideshow);
     lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Settings);
     lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Info);
 }
@@ -211,7 +229,7 @@ void ImageViewerScreen::handleMove(lv_event_t *event) {
 
 void ImageViewerScreen::requestAdvance(int delta) {
     lv_async_call([this, delta] {
-        if (s_active != this) return;
+        if (s_active != this || slideshow_running_) return;
         if (!playlist_->step(delta, RepeatMode::Off)) return;
         media_cache_cancel(token_);
         if (title_label_) lv_label_set_text(title_label_, name().c_str());
@@ -251,6 +269,7 @@ void ImageViewerScreen::showPixels(std::shared_ptr<const ImagePixels> pixels) {
 }
 
 void ImageViewerScreen::load() {
+    if (slideshow_running_) return;
     updateTransport();
     const ImageBox previous = box_;
     box_ = { (int16_t)lv_obj_get_width(root_), (int16_t)lv_obj_get_height(root_) };
@@ -306,6 +325,7 @@ static std::string describe(const MediaEntry &entry) {
 }
 
 void ImageViewerScreen::showReady() {
+    if (slideshow_running_) return;
     updateTransport();
     if (auto pixels = media_cache_image(path(), box_)) {
         setMessage({}, false);
@@ -330,6 +350,38 @@ void ImageViewerScreen::showReady() {
     setMessage(name() + "\n" + (what.empty() ? "" : what + "\n") + reason, true);
 }
 
+void ImageViewerScreen::startSlideshow() {
+    if (slideshow_running_) return;
+    media_cache_cancel(token_);
+    media_cache_cancel(idle_token_);
+
+    std::vector<std::string> paths;
+    paths.reserve(playlist_->size());
+    for (std::size_t i = 0; i < playlist_->size(); i++) paths.push_back(playlist_->at(i).path);
+    auto first = pixels_ && shown_path_ == path() ? pixels_ : nullptr;
+
+    slideshow_running_ = true;
+    const bool started = slideshow_start(
+        std::move(paths), playlist_->index(), box_, std::move(first),
+        [this](std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
+            if (s_active == this && slideshow_running_) endSlideshow(index, std::move(pixels));
+        });
+    if (started) return;
+    slideshow_running_ = false;
+    load();
+}
+
+void ImageViewerScreen::endSlideshow(std::size_t index, std::shared_ptr<const ImagePixels> pixels) {
+    slideshow_running_ = false;
+    playlist_->select(index);
+    lv_obj_update_layout(root_);
+    if ((lv_obj_get_width(root_) > lv_obj_get_height(root_)) != landscape_) buildUi();
+    if (title_label_) lv_label_set_text(title_label_, name().c_str());
+    if (pixels) showPixels(std::move(pixels));
+    load();
+    setMode(UiMode::Bars);
+}
+
 void ImageViewerScreen::eject(const std::string &mount_point) {
     if (s_active && path_is_under(s_active->path(), mount_point)) s_active->back();
 }
@@ -346,6 +398,10 @@ void ImageViewerScreen::onEnter() {
 }
 
 void ImageViewerScreen::onExit() {
+    if (slideshow_running_) {
+        slideshow_running_ = false;
+        slideshow_stop();
+    }
     if (s_active == this) s_active = nullptr;
     media_cache_unobserve(token_);
     media_cache_cancel(token_);

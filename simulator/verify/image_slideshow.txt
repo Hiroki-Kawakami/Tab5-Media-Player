@@ -1,0 +1,49 @@
+# Image slideshow: started from the viewer's slideshow panel, it draws straight
+# into the framebuffers, advances every 5 s and wraps, and a touch down ends it
+# with a moment of black, back to the viewer with its bars shown. The screen
+# keeps the orientation it started in until it ends.
+settle
+tap 360 226
+settle
+tap 360 404
+settle
+tap 360 164
+meta drain
+settle
+tap 360 640
+settle
+tap 596 1240
+settle
+tap 360 780
+settle
+capture slideshow_first.jpg
+wait 5500
+settle
+capture slideshow_second.jpg
+wait 5000
+settle
+capture slideshow_third.jpg
+tap 360 640
+wait 400
+settle
+capture slideshow_stopped.jpg
+imu rot90
+wait 900
+settle
+tap 680 124
+settle
+tap 140 280
+settle
+capture slideshow_landscape.jpg
+imu rot0
+wait 900
+wait 5000
+settle
+capture slideshow_landscape_held.jpg
+tap 360 640
+wait 400
+settle
+capture slideshow_landscape_stopped.jpg
+tap 40 40
+settle
+capture slideshow_back.jpg

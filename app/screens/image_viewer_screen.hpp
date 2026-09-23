@@ -9,6 +9,7 @@
 #include "screen_manager.hpp"
 #include "widgets.hpp"
 
+#include <cstddef>
 #include <memory>
 #include <string>
 
@@ -23,7 +24,7 @@ public:
     static void eject(const std::string &mount_point);
 
 private:
-    enum class UiMode { Hidden, Bars, Settings, Info };
+    enum class UiMode { Hidden, Bars, Slideshow, Settings, Info };
 
     const std::string &name() const { return playlist_->current().name; }
     const std::string &path() const { return playlist_->current().path; }
@@ -46,11 +47,14 @@ private:
     void updateTransport();
     void handlePress(lv_event_t *event);
     void handleMove(lv_event_t *event);
+    void startSlideshow();
+    void endSlideshow(std::size_t index, std::shared_ptr<const ImagePixels> pixels);
 
     std::shared_ptr<Playlist> playlist_;
     UiMode mode_ = UiMode::Hidden;
     bool landscape_ = false;
     bool swiped_ = false;
+    bool slideshow_running_ = false;
     lv_point_t press_ = {};
     ImageBox box_;
     uint32_t token_ = 0;
@@ -63,10 +67,12 @@ private:
     lv_obj_t *message_ = nullptr;
     lv_obj_t *top_bar_ = nullptr;
     lv_obj_t *bottom_bar_ = nullptr;
+    lv_obj_t *slideshow_ = nullptr;
     lv_obj_t *settings_ = nullptr;
     lv_obj_t *info_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
     lv_obj_t *info_button_ = nullptr;
+    lv_obj_t *slideshow_button_ = nullptr;
     lv_obj_t *panel_button_ = nullptr;
     lv_obj_t *prev_button_ = nullptr;
     lv_obj_t *next_button_ = nullptr;

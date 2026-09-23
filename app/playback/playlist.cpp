@@ -26,3 +26,7 @@ bool Playlist::step(int delta, RepeatMode repeat) {
     index_ = (std::size_t)target;
     return true;
 }
+
+void Playlist::select(std::size_t index) {
+    if (index < items_.size()) index_ = index;
+}

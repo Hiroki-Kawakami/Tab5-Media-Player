@@ -62,7 +62,7 @@ private:
     RepeatMode repeat_ = RepeatMode::Off;
 
     std::shared_ptr<const MediaEntry> meta_;
-    std::shared_ptr<const ImagePixels> cover_;
+    ImageSize cover_size_;
     uint32_t token_ = 0;
     int64_t prefetch_after_us_ = 0;
     bool prefetched_ = false;

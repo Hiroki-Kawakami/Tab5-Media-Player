@@ -202,6 +202,12 @@ entry references the id any more), never touches an entry the UI still holds a
 slot is always safe — the pixels live until the LVGL object that shows them is
 deleted.
 
+Only thumbnails are handed out as a `shared_ptr`. The artwork and the image
+viewer's picture are copied out with `media_cache_read_image()` into a buffer
+the screen owns — framebuffer 1 or 2, which LVGL never draws through — so the
+cache never lends a buffer large enough to split PSRAM for as long as a screen
+keeps it.
+
 Probe failures are cached as well. Without that, a broken file is reopened on
 every pass of the browser.
 

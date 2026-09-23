@@ -8,6 +8,7 @@
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
 #include "resources.h"
+#include "bsp.h"
 #include "esp_timer.h"
 
 #include <cstdio>
@@ -27,6 +28,8 @@ static constexpr int32_t kIconButton = 72;
 static constexpr int32_t kArtworkSide = 552;
 static constexpr ImageSize kArtworkBox = { kArtworkSide, kArtworkSide };
 static constexpr int32_t kArtworkRadius = 24;
+/* LVGL draws through framebuffer 0 only. */
+static constexpr int kArtworkFramebuffer = 1;
 
 static constexpr uint32_t kForegroundColor = 0x101010;
 static constexpr uint32_t kTrackColor = 0xd0d0d0;
@@ -183,13 +186,18 @@ void AudioPlayerScreen::resetArtwork() {
 
 void AudioPlayerScreen::applyArtwork() {
     if (!artwork_ || artwork_image_) return;
-    const ImageSize box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
-    if (!cover_) cover_ = media_cache_image(path(), box);
-    if (!cover_) return;
+    auto *buffer = static_cast<uint8_t *>(bsp_display_get_frame_buffer(kArtworkFramebuffer));
+    const bool rgb888 = bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
+    if (!cover_size_.valid()) {
+        const ImageSize box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
+        const bsp_size_t panel = bsp_display_get_size();
+        const std::size_t bytes = (std::size_t)panel.width * panel.height * (rgb888 ? 3 : 2);
+        if (!media_cache_read_image(path(), box, buffer, bytes, &cover_size_)) return;
+    }
 
-    artwork_image_ = image_object_create(artwork_, cover_);
+    artwork_image_ = image_object_create(artwork_, buffer, cover_size_, rgb888);
     if (!artwork_image_) {
-        cover_ = {};
+        cover_size_ = {};
         return;
     }
     if (artwork_icon_) {
@@ -365,7 +373,7 @@ void AudioPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
 void AudioPlayerScreen::openCurrent() {
     awaiting_start_ = true;
     scrubbing_ = false;
-    cover_ = {};
+    cover_size_ = {};
     meta_ = nullptr;
     resetArtwork();
     requestMeta();

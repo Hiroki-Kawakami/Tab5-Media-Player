@@ -37,7 +37,7 @@ bool Playlist::step(int delta, RepeatMode repeat) {
     const long long target = (long long)position_ + delta;
     if (shuffled_ && target >= count && count > 1) {
         const std::size_t last = index();
-        std::shuffle(order_.begin(), order_.end(), random_engine());
+        shuffleAll();
         if (order_[0] == last) {
             std::uniform_int_distribution<std::size_t> pick(1, order_.size() - 1);
             std::swap(order_[0], order_[pick(random_engine())]);
@@ -73,6 +73,12 @@ void Playlist::setShuffled(bool shuffled) {
     shuffled_ = shuffled;
     if (!shuffled) std::iota(order_.begin(), order_.end(), 0);
     select(current);
+}
+
+void Playlist::shuffleAll() {
+    shuffled_ = true;
+    std::shuffle(order_.begin(), order_.end(), random_engine());
+    position_ = 0;
 }
 
 std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind) {

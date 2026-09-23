@@ -193,6 +193,11 @@ no LVGL display of its own either.
   transition, so neither a slow decode nor the transition cuts the time a
   picture stands still. One that cannot be decoded is skipped; if none in a
   whole lap can be shown, the last one stays up.
+- **The pictures are a `Playlist`**, so Shuffle follows the audio screen's
+  rules: the picture on screen when the slideshow starts comes first, the
+  rest are shuffled after it, and each lap is a new order. The index handed
+  back at the end is the picture's place in the viewer's list, not in the
+  shuffled order.
 
 ### Music
 
@@ -206,6 +211,10 @@ file or a directory, with `BgmPickerScreen`.
   itself and steps the list: `Finished` moves on, `Failed` skips (at most once
   round the list in a row, so a directory of unplayable files goes quiet), and
   a single file loops in the player rather than being opened again.
+- **Shuffle draws the first track too.** The audio screen keeps the tapped
+  file first, but the slideshow has no tapped file, so with Shuffle on the
+  whole list is shuffled before the first track opens. Each lap after that is
+  a new order, as with repeat all on the audio screen.
 - **Only the path is saved.** The list is read when the slideshow starts, with
   `playlist_items_at()`, since the files may have changed since it was chosen.
   Directories below it are not played.

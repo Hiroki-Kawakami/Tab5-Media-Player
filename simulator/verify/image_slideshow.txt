@@ -41,17 +41,17 @@ up
 settle
 tap 530 541
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 970
+tap 530 1043
 settle
 capture slideshow_panel.jpg
 tap 360 1220
@@ -148,21 +148,21 @@ up
 settle
 tap 530 541
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 1014
+tap 530 1087
 settle
-tap 530 942
+tap 530 1015
 settle
-tap 530 1045
+tap 530 1118
 settle
 capture slideshow_wipe_panel.jpg
 tap 360 1220
@@ -176,17 +176,17 @@ wait 400
 settle
 tap 596 1240
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 1058
+tap 530 1131
 settle
 capture slideshow_slide_in_panel.jpg
 tap 360 1220
@@ -200,17 +200,17 @@ wait 400
 settle
 tap 596 1240
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 1102
+tap 530 1175
 settle
 tap 360 1220
 wait 6650
@@ -223,17 +223,17 @@ wait 400
 settle
 tap 596 1240
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 1138
+tap 530 1211
 settle
 tap 360 1220
 wait 6650
@@ -246,21 +246,21 @@ wait 400
 settle
 tap 596 1240
 settle
-tap 530 942
+tap 530 1015
 settle
-tap 530 1001
+tap 530 1074
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 970
+tap 530 1043
 settle
 tap 668 692
 settle

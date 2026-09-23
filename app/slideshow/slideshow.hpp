@@ -20,6 +20,8 @@ struct SlideshowConfig {
     TransitionKind transition = TransitionKind::None;
     TransitionDirection direction = TransitionDirection::LeftToRight;
     TransitionCurve curve = TransitionCurve::Linear;
+    bool shuffle = false;
+    bool bgm_shuffle = false;
 };
 
 using SlideshowFinished = std::function<void(std::size_t index)>;
@@ -28,7 +30,7 @@ using SlideshowFinished = std::function<void(std::size_t index)>;
    and plays `bgm` in a loop through the player meanwhile. `on_finished` runs
    on the LVGL thread just before the display is shown again, with the index
    of the picture that was on screen. */
-bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
+bool slideshow_start(std::vector<PlaylistItem> pictures, std::size_t index, ImageSize box,
                      const SlideshowConfig &config, std::vector<PlaylistItem> bgm,
                      SlideshowFinished on_finished);
 /* Returns at once; the end runs as it does after a touch. */

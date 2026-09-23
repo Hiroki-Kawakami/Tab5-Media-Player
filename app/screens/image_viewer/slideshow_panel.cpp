@@ -45,7 +45,7 @@ struct PanelState {
     lv_obj_t *direction_row = nullptr;
     lv_obj_t *bgm_switch = nullptr;
     lv_obj_t *source_value = nullptr;
-    lv_obj_t *bgm_rows[5] = {};
+    lv_obj_t *bgm_rows[7] = {};
 
     void show_direction() const {
         const bool hidden = !transition_has_direction(values.transition);
@@ -77,6 +77,13 @@ void image_slideshow_panel_build(lv_obj_t *root, const SlideshowPanelValues &val
     lv_setting_dropdown_create(row, kIntervalOptions, interval_index(values.interval_s),
                                [state, on_change](lv_obj_t *, uint32_t index) {
         state->values.interval_s = kIntervals[index];
+        on_change(state->values);
+    }, &kPanelColors);
+
+    lv_setting_separator_create(section, &kPanelColors);
+    row = lv_setting_row_create(section, "Shuffle");
+    lv_setting_switch_create(row, values.shuffle, [state, on_change](lv_obj_t *, bool enabled) {
+        state->values.shuffle = enabled;
         on_change(state->values);
     }, &kPanelColors);
 
@@ -125,9 +132,17 @@ void image_slideshow_panel_build(lv_obj_t *root, const SlideshowPanelValues &val
     lv_label_set_text(arrow, LV_SYMBOL_RIGHT);
 
     state->bgm_rows[2] = lv_setting_separator_create(section, &kPanelColors);
+    row = lv_setting_row_create(section, "Shuffle");
+    state->bgm_rows[3] = row;
+    lv_setting_switch_create(row, values.bgm_shuffle, [state, on_change](lv_obj_t *, bool enabled) {
+        state->values.bgm_shuffle = enabled;
+        on_change(state->values);
+    }, &kPanelColors);
+
+    state->bgm_rows[4] = lv_setting_separator_create(section, &kPanelColors);
     const PlayerVolumeRows volume = player_volume_rows_build(section);
-    state->bgm_rows[3] = volume.row;
-    state->bgm_rows[4] = lv_obj_get_parent(volume.slider);
+    state->bgm_rows[5] = volume.row;
+    state->bgm_rows[6] = lv_obj_get_parent(volume.slider);
     state->show_bgm();
 
     lv_obj_add_event_fn(root, LV_EVENT_REFRESH, [state](lv_event_t *event) {

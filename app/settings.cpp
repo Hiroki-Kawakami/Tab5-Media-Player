@@ -170,6 +170,8 @@ Setting<"slideinterval", uint16_t, +[](int seconds) -> uint16_t {
     return std::clamp(seconds, kMinSlideshowInterval, kMaxSlideshowInterval);
 }> s_slideshow_interval{kMinSlideshowInterval};
 
+Setting<"slideshuffle", uint8_t, sanitize_flag> s_slideshow_shuffle{0};
+
 Setting<"slidetrans", uint8_t, +[](int kind) -> uint8_t {
     return kind >= 0 && kind < kTransitionKinds ? kind : 0;
 }> s_slideshow_transition{(uint8_t)TransitionKind::Fade};
@@ -181,6 +183,8 @@ Setting<"slidedir", uint8_t, +[](int direction) -> uint8_t {
 Setting<"slidebgm", uint8_t, +[](bool enabled) -> uint8_t {
     return enabled ? 1 : 0;
 }> s_slideshow_bgm{0};
+
+Setting<"slidebgmshuf", uint8_t, sanitize_flag> s_slideshow_bgm_shuffle{0};
 
 Setting<"slidebgmpath", std::string> s_slideshow_bgm_path{std::string()};
 
@@ -197,9 +201,11 @@ void for_each_setting(Fn &&fn) {
     fn(s_video_repeat);
     fn(s_video_shuffle);
     fn(s_slideshow_interval);
+    fn(s_slideshow_shuffle);
     fn(s_slideshow_transition);
     fn(s_slideshow_direction);
     fn(s_slideshow_bgm);
+    fn(s_slideshow_bgm_shuffle);
     fn(s_slideshow_bgm_path);
 }
 
@@ -363,6 +369,14 @@ void settings_set_slideshow_interval(int seconds) {
     s_slideshow_interval.set(seconds);
 }
 
+bool settings_slideshow_shuffle() {
+    return s_slideshow_shuffle.get() != 0;
+}
+
+void settings_set_slideshow_shuffle(bool enabled) {
+    s_slideshow_shuffle.set(enabled);
+}
+
 TransitionKind settings_slideshow_transition() {
     return (TransitionKind)s_slideshow_transition.get();
 }
@@ -385,6 +399,14 @@ bool settings_slideshow_bgm() {
 
 void settings_set_slideshow_bgm(bool enabled) {
     s_slideshow_bgm.set(enabled);
+}
+
+bool settings_slideshow_bgm_shuffle() {
+    return s_slideshow_bgm_shuffle.get() != 0;
+}
+
+void settings_set_slideshow_bgm_shuffle(bool enabled) {
+    s_slideshow_bgm_shuffle.set(enabled);
 }
 
 const std::string &settings_slideshow_bgm_path() {

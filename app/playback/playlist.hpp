@@ -33,6 +33,8 @@ public:
 
     bool shuffled() const { return shuffled_; }
     void setShuffled(bool shuffled);
+    /* Shuffles every item, the current one included, and moves to the first. */
+    void shuffleAll();
 
 private:
     std::vector<PlaylistItem> items_;

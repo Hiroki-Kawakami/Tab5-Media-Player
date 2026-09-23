@@ -59,9 +59,10 @@ static int spare_framebuffer(int shown) {
 }
 
 static SlideshowPanelValues slideshow_values() {
-    return { (uint32_t)settings_slideshow_interval(), settings_slideshow_transition(),
+    return { (uint32_t)settings_slideshow_interval(), settings_slideshow_shuffle(),
+             settings_slideshow_transition(),
              settings_slideshow_direction(), settings_slideshow_bgm(),
-             settings_slideshow_bgm_path() };
+             settings_slideshow_bgm_shuffle(), settings_slideshow_bgm_path() };
 }
 
 static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_align_t align) {
@@ -181,9 +182,11 @@ void ImageViewerScreen::buildPanels() {
     image_slideshow_panel_build(slideshow_, slideshow_values(),
                                 [](const SlideshowPanelValues &changed) {
         settings_set_slideshow_interval((int)changed.interval_s);
+        settings_set_slideshow_shuffle(changed.shuffle);
         settings_set_slideshow_transition(changed.transition);
         settings_set_slideshow_direction(changed.direction);
         settings_set_slideshow_bgm(changed.bgm);
+        settings_set_slideshow_bgm_shuffle(changed.bgm_shuffle);
         settings_commit();
     }, [this] { chooseBgm(); }, [this] {
         lv_async_call([this] {
@@ -454,21 +457,23 @@ void ImageViewerScreen::startSlideshow() {
     media_cache_cancel(token_);
     media_cache_cancel(idle_token_);
 
-    std::vector<std::string> paths;
-    paths.reserve(playlist_->size());
-    for (std::size_t i = 0; i < playlist_->size(); i++) paths.push_back(playlist_->at(i).path);
+    std::vector<PlaylistItem> pictures;
+    pictures.reserve(playlist_->size());
+    for (std::size_t i = 0; i < playlist_->size(); i++) pictures.push_back(playlist_->at(i));
 
     SlideshowConfig config;
     config.interval_ms = (uint32_t)settings_slideshow_interval() * 1000;
     config.transition = settings_slideshow_transition();
     config.direction = settings_slideshow_direction();
+    config.shuffle = settings_slideshow_shuffle();
+    config.bgm_shuffle = settings_slideshow_bgm_shuffle();
     std::vector<PlaylistItem> bgm;
     if (settings_slideshow_bgm()) {
         bgm = playlist_items_at(settings_slideshow_bgm_path(), MediaKind::Audio);
     }
     slideshow_running_ = true;
     const bool started = slideshow_start(
-        std::move(paths), playlist_->index(), box_, config, std::move(bgm),
+        std::move(pictures), playlist_->index(), box_, config, std::move(bgm),
         [this](std::size_t index) {
             if (s_active == this && slideshow_running_) endSlideshow(index);
         });

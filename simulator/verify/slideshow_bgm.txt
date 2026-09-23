@@ -22,20 +22,20 @@ tap 360 640
 settle
 tap 596 1240
 settle
-tap 570 867
+tap 570 940
 settle
-down 530 920
+down 530 993
 wait 60
-move 530 1020
+move 530 1093
 wait 60
-move 530 1120
+move 530 1193
 wait 250
 up
 settle
-tap 530 970
+tap 530 1043
 settle
 capture bgm_panel_off.jpg
-tap 630 1028
+tap 630 1101
 settle
 down 360 1150
 wait 60
@@ -46,7 +46,7 @@ wait 250
 up
 settle
 capture bgm_panel_on.jpg
-tap 360 1005
+tap 360 932
 settle
 capture bgm_picker_start.jpg
 tap 60 60
@@ -83,7 +83,7 @@ move 360 850
 wait 250
 up
 settle
-tap 360 1005
+tap 360 932
 settle
 tap 360 560
 settle
@@ -103,12 +103,12 @@ move 360 850
 wait 250
 up
 settle
-tap 360 1005
+tap 360 932
 settle
 tap 180 1220
 settle
 capture bgm_panel_cancelled.jpg
-tap 630 932
+tap 630 859
 settle
 capture bgm_panel_restored.jpg
 tap 668 692

@@ -54,6 +54,9 @@ void settings_set_video_shuffle(bool enabled);
 int settings_slideshow_interval();
 void settings_set_slideshow_interval(int seconds);
 
+bool settings_slideshow_shuffle();
+void settings_set_slideshow_shuffle(bool enabled);
+
 TransitionKind settings_slideshow_transition();
 void settings_set_slideshow_transition(TransitionKind kind);
 
@@ -62,6 +65,9 @@ void settings_set_slideshow_direction(TransitionDirection direction);
 
 bool settings_slideshow_bgm();
 void settings_set_slideshow_bgm(bool enabled);
+
+bool settings_slideshow_bgm_shuffle();
+void settings_set_slideshow_bgm_shuffle(bool enabled);
 
 const std::string &settings_slideshow_bgm_path();
 void settings_set_slideshow_bgm_path(const std::string &path);

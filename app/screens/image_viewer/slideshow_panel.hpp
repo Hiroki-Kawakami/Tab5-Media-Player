@@ -12,9 +12,11 @@
 
 struct SlideshowPanelValues {
     uint32_t interval_s;
+    bool shuffle;
     TransitionKind transition;
     TransitionDirection direction;
     bool bgm;
+    bool bgm_shuffle;
     std::string bgm_path;
 };
 

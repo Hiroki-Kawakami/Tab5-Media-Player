@@ -18,6 +18,8 @@
 #include "freertos/task.h"
 #include "lvgl.hpp"
 
+#include <optional>
+
 static const char *TAG = "slideshow";
 
 static constexpr uint32_t kBlackMs = 200;
@@ -33,7 +35,7 @@ static constexpr EventBits_t kTrack = 1u << 2;
 namespace {
 
 struct Session {
-    std::vector<std::string> paths;
+    std::optional<Playlist> pictures;
     ImageSize box;
     bool shown = false;
     std::size_t index = 0;
@@ -123,23 +125,20 @@ static bool sleep_until(int64_t due_us) {
     }
 }
 
-static std::size_t next_of(std::size_t index) {
-    return (index + 1) % s_session.paths.size();
-}
-
-static void request(std::size_t index) {
+static void request() {
     constexpr uint8_t want = MetaWantInfo | MetaWantImage;
-    media_cache_request(s_session.paths[index], want, s_session.box, MetaPriority::Blocking,
+    const Playlist &pictures = *s_session.pictures;
+    media_cache_request(pictures.current().path, want, s_session.box, MetaPriority::Blocking,
                         s_token);
     media_cache_idle_cancel();
-    const std::size_t after = next_of(index);
-    if (after == index) return;
-    media_cache_request(s_session.paths[after], want, s_session.box, MetaPriority::Idle,
+    const std::size_t after = pictures.neighbour(1);
+    if (after == pictures.index()) return;
+    media_cache_request(pictures.at(after).path, want, s_session.box, MetaPriority::Idle,
                         s_idle_token);
 }
 
-static bool fetch(std::size_t index, uint8_t *buffer, ImageSize *size, bool *stop) {
-    const std::string &path = s_session.paths[index];
+static bool fetch(uint8_t *buffer, ImageSize *size, bool *stop) {
+    const std::string &path = s_session.pictures->current().path;
     for (;;) {
         if (media_cache_read_image(path, s_session.box, buffer, s_output.frame_bytes(), size)) {
             return true;
@@ -151,7 +150,7 @@ static bool fetch(std::size_t index, uint8_t *buffer, ImageSize *size, bool *sto
             *stop = true;
             return false;
         }
-        if (!bits) request(index);
+        if (!bits) request();
     }
 }
 
@@ -179,33 +178,33 @@ static bool play(Transition &transition) {
 
 static void run() {
     bgm_start();
-    const std::size_t count = s_session.paths.size();
+    Playlist &pictures = *s_session.pictures;
+    const std::size_t count = pictures.size();
     const int64_t interval_us = (int64_t)s_session.config.interval_ms * 1000;
-    std::size_t target = s_session.index;
     const int black = s_output.least_recent(s_output.shown());
     s_output.fill_black(s_output.framebuffer(black));
     s_output.present(black);
     int64_t due_us = esp_timer_get_time() + (int64_t)kBlackMs * 1000;
 
     std::size_t misses = 0;
-    while (!(s_session.shown && target == s_session.index) && misses < count) {
-        request(target);
+    while (!(s_session.shown && pictures.index() == s_session.index) && misses < count) {
+        request();
         uint8_t *buffer = s_change->pixels_buffer(s_output);
         ImageSize size;
         bool stop = false;
-        const bool fetched = fetch(target, buffer, &size, &stop);
+        const bool fetched = fetch(buffer, &size, &stop);
         if (stop) return;
         Placement to;
         if (fetched && s_output.place(buffer, size, &to) && s_change->prepare(s_output, to)) {
             if (!sleep_until(due_us) || !play(*s_change)) return;
             s_session.shown = true;
-            s_session.index = target;
+            s_session.index = pictures.index();
             misses = 0;
             due_us = esp_timer_get_time() + interval_us;
         } else {
             misses++;
         }
-        target = next_of(target);
+        pictures.step(1, RepeatMode::All);
     }
     while (!(wait(portMAX_DELAY) & kStop)) {
     }
@@ -262,10 +261,10 @@ static BaseType_t spawn() {
 #endif
 }
 
-bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSize box,
+bool slideshow_start(std::vector<PlaylistItem> pictures, std::size_t index, ImageSize box,
                      const SlideshowConfig &config, std::vector<PlaylistItem> bgm,
                      SlideshowFinished on_finished) {
-    if (s_running || index >= paths.size() || !box.valid()) return false;
+    if (s_running || index >= pictures.size() || !box.valid()) return false;
     if (!s_events) s_events = xEventGroupCreate();
     if (!s_token) {
         s_token = media_cache_token();
@@ -279,8 +278,13 @@ bool slideshow_start(std::vector<std::string> paths, std::size_t index, ImageSiz
         return false;
     }
 
-    s_session = { std::move(paths), box, false, index, config, std::move(on_finished) };
-    if (!bgm.empty()) s_bgm = new Bgm{ Playlist(std::move(bgm), 0) };
+    s_session = { Playlist(std::move(pictures), index), box, false, index, config,
+                  std::move(on_finished) };
+    s_session.pictures->setShuffled(config.shuffle);
+    if (!bgm.empty()) {
+        s_bgm = new Bgm{ Playlist(std::move(bgm), 0) };
+        if (config.bgm_shuffle) s_bgm->playlist.shuffleAll();
+    }
     xEventGroupClearBits(s_events, kStop | kReady);
 
     ui_orientation_set_listener([](bsp_rotation_t, void *) {}, nullptr);

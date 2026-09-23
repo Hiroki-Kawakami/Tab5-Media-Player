@@ -101,9 +101,11 @@ private:
     Placement to_;
 };
 
-class Wipe : public Transition {
+/* A wipe reveals the target where it stands; a slide-in moves it in from the
+   edge over the old picture, which stays where it is. */
+class Sweep : public Transition {
 public:
-    explicit Wipe(TransitionDirection direction) : direction_(direction) {}
+    Sweep(TransitionDirection direction, bool moving) : direction_(direction), moving_(moving) {}
 
     int64_t duration_us() const override { return kDurationUs; }
 
@@ -155,10 +157,24 @@ private:
         }
     }
 
+    Placement placed(const SlideshowOutput &output, int extent) const {
+        Placement placement = to_;
+        if (!moving_) return placement;
+        const int offset = length(output) - extent;
+        switch (direction_) {
+        case TransitionDirection::RightToLeft: placement.rect.origin.x += offset; break;
+        case TransitionDirection::TopToBottom: placement.rect.origin.y -= offset; break;
+        case TransitionDirection::BottomToTop: placement.rect.origin.y += offset; break;
+        default: placement.rect.origin.x -= offset; break;
+        }
+        return placement;
+    }
+
     bool reveal(SlideshowOutput &output, int extent) {
         const int out = output.least_recent(output.shown());
-        if (extent > drawn_[out] &&
-            !output.draw_region(output.framebuffer(out), to_, band(output, drawn_[out], extent))) {
+        const int from = moving_ ? 0 : drawn_[out];
+        if (extent > from && !output.draw_region(output.framebuffer(out), placed(output, extent),
+                                                 band(output, from, extent))) {
             return false;
         }
         drawn_[out] = std::max(drawn_[out], extent);
@@ -167,6 +183,7 @@ private:
     }
 
     TransitionDirection direction_;
+    bool moving_;
     Placement to_;
     int drawn_[SlideshowOutput::kFramebuffers] = {};
     bool copied_ = false;
@@ -180,14 +197,16 @@ std::unique_ptr<Transition> transition_create(TransitionKind kind, TransitionDir
         if (output.rgb565()) return std::make_unique<MixingFade>();
         return std::make_unique<AccumulatingFade>();
     case TransitionKind::Wipe:
-        return std::make_unique<Wipe>(direction);
+        return std::make_unique<Sweep>(direction, false);
+    case TransitionKind::SlideIn:
+        return std::make_unique<Sweep>(direction, true);
     default:
         return std::make_unique<Cut>();
     }
 }
 
 bool transition_has_direction(TransitionKind kind) {
-    return kind == TransitionKind::Wipe;
+    return kind == TransitionKind::Wipe || kind == TransitionKind::SlideIn;
 }
 
 float transition_ease(TransitionCurve, float t) {

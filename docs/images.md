@@ -234,7 +234,12 @@ whatever a frame costs.
   Positions are worked out in screen coordinates, the orientation the viewer
   sees, and mapped onto the panel only when drawn, so a direction means the
   same thing whichever way the device is held.
-- **A direction belongs to the transition setting, not to the wipe.**
+- **The slide-in is the wipe with the target moving.** It moves in from the
+  edge over the old picture, which stays put, so the framebuffers start from
+  the same copy of the screen; but the target is somewhere else every frame, so
+  each frame redraws all of it that is on screen rather than a band. The
+  target's black border travels with it and covers the old picture too.
+- **A direction belongs to the transition setting, not to one transition.**
   `transition_has_direction()` says which kinds use it, and the panel shows
   the row only for those.
 - **The first picture is a cut**, not a fade from the LVGL screen underneath.

@@ -39,6 +39,7 @@ void player_set_state(PlayerState state, const std::string &error = {});
 bool player_take_slot(QueueHandle_t queue, int *slot);
 int64_t player_media_clock_us();
 void player_audio_stop();
+void player_reached_end();
 
 void video_pacing_start();
 bool video_pacing_codec_supported(CodecId codec);

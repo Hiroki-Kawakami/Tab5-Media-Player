@@ -129,7 +129,8 @@ static void reader_task(void *) {
                     player_set_state(PlayerState::Failed, player_core.demuxer->error());
                     break;
                 }
-                if (!player_core.loop || !produced || !player_core.demuxer->seek(0, nullptr)) {
+                if (!player_core.loop || !s_audio_only || !produced ||
+                    !player_core.demuxer->seek(0, nullptr)) {
                     player_core.reader_eof = true;
                     break;
                 }
@@ -455,9 +456,18 @@ static void handle_seek(int64_t position_us) {
     }
 }
 
+void player_reached_end() {
+    player_audio_stop();
+    if (player_core.loop && rewind_to(0)) {
+        handle_play();
+        return;
+    }
+    player_set_state(PlayerState::Finished);
+}
+
 static void handle_loop(bool loop) {
     player_core.loop = loop;
-    if (!loop || !player_core.demuxer || !player_core.demuxer->isOpen()) return;
+    if (!loop || !s_audio_only || !player_core.demuxer || !player_core.demuxer->isOpen()) return;
     if (player_core.state != PlayerState::Playing && player_core.state != PlayerState::Paused) {
         return;
     }

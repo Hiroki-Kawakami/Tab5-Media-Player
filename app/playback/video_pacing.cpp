@@ -5,7 +5,6 @@
 
 #include "player_internal.hpp"
 #include "video/video_presenter.hpp"
-#include "audio/audio_out.hpp"
 #include "h264_dec.h"
 #include "mpeg2_dec.h"
 #include "esp_timer.h"
@@ -234,10 +233,9 @@ void video_pacing_step() {
     if (!s_have_pending) {
         const bool drained = player_core.reader_eof;
         if (xQueueReceive(s_ready, &s_pending_slot, pdMS_TO_TICKS(20)) != pdTRUE) {
-            if (!player_core.loop && drained) {
+            if (drained) {
                 video_presenter_drain();
-                player_audio_stop();
-                player_set_state(PlayerState::Finished);
+                player_reached_end();
             }
             return;
         }
@@ -254,18 +252,10 @@ void video_pacing_step() {
             std::min(s_max_pts_us - pts, player_core.interval_us * kMaxReorderFrames);
     }
     if (before(pts, player_core.origin_pts_us)) {
-        if (!player_core.loop) {
-            s_have_pending = false;
-            if (interframe_codec()) submit(s_pending_slot, false, 0);
-            slot_release(s_pending_slot);
-            return;
-        }
-        player_core.origin_us += player_core.next_us - player_core.origin_pts_us;
-        player_core.origin_pts_us = pts;
-        s_skip_until_us = INT64_MIN;
-        player_core.audio_origin_us =
-            (uint64_t)((int64_t)audio_out_position_us() -
-                       (esp_timer_get_time() - player_core.origin_us));
+        s_have_pending = false;
+        if (interframe_codec()) submit(s_pending_slot, false, 0);
+        slot_release(s_pending_slot);
+        return;
     }
     const int64_t due = pts - player_core.origin_pts_us;
     const int64_t now = player_media_clock_us();

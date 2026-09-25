@@ -592,7 +592,7 @@ void player_start(const media_arena_t &arena) {
     xTaskCreate(notify_task, "player_notify", 3072, nullptr, 2, nullptr);
 #endif
     xTaskCreate(reader_task, "media_reader", 4096, nullptr, 4, nullptr);
-    xTaskCreate(player_task, "player", 6144, nullptr, 5, nullptr);
+    xTaskCreate(player_task, "player", 8192, nullptr, 5, nullptr);
 }
 
 void player_observe_state(void (*on_change)()) { s_state_observer.store(on_change); }

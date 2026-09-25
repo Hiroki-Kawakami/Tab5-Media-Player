@@ -4,7 +4,8 @@
 import init, { MjpegWorker, Mpeg2Worker } from "../wasm/tab5conv.js";
 
 export type EncoderRequest =
-  | { type: "analyze"; id: number; pixels: ArrayBuffer; yuv: boolean; width: number; height: number }
+  | { type: "analyze"; id: number; pixels: ArrayBuffer; yuv: boolean; width: number; height: number; coefficients: boolean }
+  | { type: "discard"; id: number }
   | { type: "encode"; id: number; quality: number; minQuality: number; maxFrame: number; optimal: boolean }
   | { type: "mpeg2"; id: number; config: Float64Array; gop: number; yuv: ArrayBuffer | null };
 
@@ -16,7 +17,7 @@ export interface Pictures {
 }
 
 export type EncoderReply =
-  | { type: "model"; id: number; ms: number; words: Uint32Array }
+  | { type: "model"; id: number; ms: number; words: Uint32Array; coefficients?: Int16Array }
   | { type: "encoded"; id: number; ms: number; data: Uint8Array; quality: number; fits: boolean }
   | ({ type: "pictures"; id: number; ms: number } & Pictures)
   | { type: "error"; id: number; kind: EncoderRequest["type"]; message: string };
@@ -28,6 +29,10 @@ let mpeg2: Mpeg2Worker | null = null;
 self.onmessage = async (event: MessageEvent<EncoderRequest>) => {
   await ready;
   const m = event.data;
+  if (m.type === "discard") {
+    mjpeg?.discard(m.id);
+    return;
+  }
   const post = (reply: EncoderReply, transfer: Transferable[]) => self.postMessage(reply, { transfer });
   const start = performance.now();
   const ms = () => performance.now() - start;
@@ -38,7 +43,12 @@ self.onmessage = async (event: MessageEvent<EncoderRequest>) => {
       const words = m.yuv
         ? mjpeg.analyzeYuv(m.id, pixels, m.width, m.height)
         : mjpeg.analyze(m.id, pixels, m.width, m.height);
-      post({ type: "model", id: m.id, ms: ms(), words }, [words.buffer]);
+      if (m.coefficients) {
+        const coefficients = mjpeg.coefficients(m.id);
+        post({ type: "model", id: m.id, ms: ms(), words, coefficients }, [words.buffer, coefficients.buffer]);
+      } else {
+        post({ type: "model", id: m.id, ms: ms(), words }, [words.buffer]);
+      }
     } else if (m.type === "encode") {
       mjpeg ??= new MjpegWorker();
       const frame = mjpeg.encode(m.id, m.quality, m.minQuality, m.maxFrame, m.optimal);

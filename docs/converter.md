@@ -120,9 +120,11 @@ to the origin private file system and then downloaded.
   it runs late (see [H.264](#h264)); `small` already converts in the browser
   at several times real time. MPEG-2 has its own
   encoder, see [below](#the-browsers-mpeg-2-encoder). MJPEG uses the CLI's
-  encoder and rate control (`core/src/mjpeg.rs` holds the loop both use). Only size models travel
-  between workers; each frame's coefficients stay in the worker that will
-  encode it.
+  encoder and rate control (`core/src/mjpeg.rs` holds the loop both use). Size models travel
+  between workers, and with `dedup` a copy of each frame's coefficients goes
+  to the engine for the comparison (about 5% slower in `npm run bench`). The
+  worker keeps its own for encoding and drops them when the engine reports
+  the frame as a repeat.
 - **Frames are taken as YUV, not drawn to a canvas.** `scale.worker.ts`
   gets each `VideoFrame`, copies its planes out with `copyTo` (I420, NV12,
   I422 and I444), and `core/src/yuv.rs` scales, rotates, crops and
@@ -489,12 +491,25 @@ ffmpeg (decode, fps, scale; raw video + audio in one Matroska stream)
   effect. A plain `jpeg` entry reaches `VLC_CODEC_MJPG` and avcodec instead.
   QuickTime, ffmpeg and the player read either.
 - **.mkv output still goes through a muxing ffmpeg**, since the built-in muxer
-  only writes MP4. That path keeps the older shape: raw frames in, JPEG frames
-  out to `ffmpeg -f mjpeg -framerate R -i pipe:0`.
-- **The output is always constant frame rate.** The demuxed raw frames are
-  timed from the target rate (`mjpeg::ticks`), shared with the browser version
-  so both write the same sample table. The `fps` filter is therefore always
-  applied, at the input's own rate if nothing lowers it.
+  only writes MP4. It is fed a live Matroska stream
+  (`core/container/mkvstream.rs`), not bare JPEGs with `-f mjpeg -framerate R`,
+  because only a container carries each frame's time and duration.
+- **Frames are timed on the target rate.** `mjpeg::ticks` gives each frame's
+  start from its input index, shared with the browser version so both write
+  the same sample table; a stored frame lasts until the next one. The `fps`
+  filter is therefore always applied, at the input's own rate if nothing
+  lowers it.
+- **Unchanged frames are not stored** (`dedup=yes`, the default). The rate
+  controller compares each frame's coefficients with the last stored frame's
+  before the frame enters the lookahead. Each difference is divided by the
+  quantiser step at the target `quality`, and a block has changed when the
+  sum of squares exceeds 4 (one coefficient two steps off): noise under the
+  quantisation passes, a 2x2-pixel dot or a 3-level brightness shift does
+  not. The comparison is against the last stored frame, not the previous
+  one, so a slow fade cannot creep through below the threshold. A repeat
+  lengthens the stored frame instead. At least one frame is stored every
+  2 s, since a seek lands on the frame on screen at the target and reads
+  from there. The buffer model drains by each frame's duration.
 - **AAC/MP3 encoder priming survives.** When ffmpeg encodes, the delay comes
   back as Matroska `CodecDelay`; when the audio is copied, it is read from the
   source's `elst` (`AudioTrack::priming`). Either way it becomes the audio

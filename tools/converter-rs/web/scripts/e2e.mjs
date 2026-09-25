@@ -20,18 +20,19 @@ const check = (ok, what) => {
 };
 
 function interleaveLag(file) {
-  const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,pos", "-of", "compact", file]).toString();
+  const out = execFileSync("ffprobe", ["-v", "error", "-show_entries", "packet=stream_index,pts_time,duration_time,pos", "-of", "compact", file]).toString();
   const packets = out
     .trim()
     .split("\n")
     .map((line) => Object.fromEntries(line.split("|").slice(1).map((kv) => kv.split("="))))
-    .map((p) => ({ stream: Number(p.stream_index), time: Number(p.pts_time), pos: Number(p.pos) }))
+    .map((p) => ({ stream: Number(p.stream_index), start: Number(p.pts_time), end: Number(p.pts_time) + (Number(p.duration_time) || 0), pos: Number(p.pos) }))
     .sort((a, b) => a.pos - b.pos);
   const last = [null, null];
   let worst = 0;
   for (const p of packets) {
-    last[p.stream] = p.time;
-    if (last[0] !== null && last[1] !== null) worst = Math.max(worst, Math.abs(last[1] - last[0]));
+    last[p.stream] = p;
+    const [a, b] = last;
+    if (a && b) worst = Math.max(worst, a.start - b.end, b.start - a.end);
   }
   return worst;
 }
@@ -52,6 +53,7 @@ const inputs = {
   "long.mkv": ["-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=20", "-f", "lavfi", "-i", "sine=r=44100:d=20", ...tag709, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "libmp3lame"],
   "untagged.mp4": ["-f", "lavfi", "-i", "testsrc2=s=1280x720:r=30:d=2", "-f", "lavfi", "-i", "sine=r=48000:d=2", "-c:v", "libx264", "-c:a", "aac"],
   "low.mov": ["-f", "lavfi", "-i", "testsrc2=s=720x480:r=24:d=2", "-f", "lavfi", "-i", "sine=r=8000:d=2", "-aspect", "16:9", "-colorspace", "smpte170m", "-c:v", "libx264", "-c:a", "aac"],
+  "slides.mp4": ["-f", "lavfi", "-i", "testsrc2=s=640x360:r=1:d=5", "-f", "lavfi", "-i", "sine=r=48000:d=5", "-vf", "fps=30", "-c:v", "libx264", "-qp", "0", "-c:a", "aac"],
 };
 for (const [name, args] of Object.entries(inputs)) ffmpeg(...args, join(dir, name));
 ffmpeg("-display_rotation", "90", "-i", join(dir, "low.mov"), "-c", "copy", join(dir, "rotated.mov"));
@@ -184,6 +186,8 @@ try {
     return { ours, theirs };
   };
   for (const input of files) compare(input, "out", [], "mjpeg");
+  const slides = probe(join(dir, "out", "slides.tab5.mp4"), "-select_streams", "v:0", "-show_entries", "stream=nb_frames");
+  check(slides === "5", `mjpeg slides: unchanged frames are not stored (${slides} frames)`);
   for (const input of mpeg2Files) {
     const { ours, theirs } = compare(input, "mpeg2", ["--preset", "small"], "mpeg2");
     const bytes = (f) => Number(probe(f, "-select_streams", "v:0", "-show_entries", "stream=bit_rate"));

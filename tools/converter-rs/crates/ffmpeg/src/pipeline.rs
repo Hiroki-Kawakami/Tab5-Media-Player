@@ -19,6 +19,7 @@ use tab5conv_core::audio::{AudioAction, AudioPlan};
 use tab5conv_core::container::demux::{self, Codec};
 use tab5conv_core::container::interleave::{Interleaver, Sample};
 use tab5conv_core::container::io::Stream;
+use tab5conv_core::container::mkvstream::MkvVideoStream;
 use tab5conv_core::container::mux::{Mp4Muxer, MuxCodec, MuxKind, MuxTrack};
 use tab5conv_core::framerate::Rate;
 use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, SizeModel};
@@ -64,12 +65,16 @@ struct Analyzed {
 
 struct Decided {
     index: usize,
-    coefficients: Coefficients,
+    frame: usize,
+    span: usize,
+    coefficients: Arc<Coefficients>,
     decision: Decision,
 }
 
 struct Done {
     index: usize,
+    frame: usize,
+    span: usize,
     encoded: Encoded,
     decision: Decision,
 }
@@ -242,11 +247,10 @@ fn mux_stream(
         interleaver: Interleaver::new(if has_audio { 2 } else { 1 }, MAX_INTERLEAVE_BYTES),
         queue: has_audio.then_some(queue),
         rate: encode.rate,
-        frames: 0,
     };
     let stats = pump(
         reader,
-        &mut |encoded| output.frame(encoded),
+        &mut |encoded, frame, span| output.frame(encoded, frame, span),
         encode,
         monitor,
         monitor.is_none(),
@@ -299,31 +303,33 @@ impl AudioQueue {
     }
 }
 
+fn micros(ticks: u64) -> u64 {
+    (ticks as u128 * 1_000_000 / mjpeg::TIMESCALE as u128) as u64
+}
+
 struct Output<'a> {
     muxer: Mp4Muxer<File>,
     interleaver: Interleaver,
     queue: Option<&'a AudioQueue>,
     rate: Rate,
-    frames: u64,
 }
 
 impl Output<'_> {
-    fn frame(&mut self, encoded: Encoded) -> Result<()> {
+    fn frame(&mut self, encoded: Encoded, frame: usize, span: usize) -> Result<()> {
         let (start, end) = (
-            mjpeg::ticks(self.rate, self.frames),
-            mjpeg::ticks(self.rate, self.frames + 1),
+            mjpeg::ticks(self.rate, frame as u64),
+            mjpeg::ticks(self.rate, (frame + span) as u64),
         );
         self.interleaver.push(
             VIDEO_TRACK,
             Sample {
-                time: (start as i128 * 1_000_000 / mjpeg::TIMESCALE as i128) as i64,
+                time: micros(start) as i64,
                 data: encoded.data,
                 duration: (end - start) as u32,
                 key: true,
                 offset: 0,
             },
         );
-        self.frames += 1;
         self.drain_audio();
         self.write_ready()
     }
@@ -376,7 +382,24 @@ fn with_ffmpeg_mux(job: &Job, mux: &[OsString], monitor: Option<&Monitor>) -> Re
     let decode_log = decoder.stderr.take().map(Log::capture);
     let mux_log = muxer.stderr.take().map(Log::capture);
     let mut source = decoder.stdout.take().context("decoder has no stdout")?;
-    let mut sink = muxer.stdin.take().context("muxer has no stdin")?;
+    let sink = muxer.stdin.take().context("muxer has no stdin")?;
+    let picture = job.picture;
+    let frame_ns =
+        (1_000_000_000u128 * picture.rate.den() as u128 / picture.rate.num() as u128) as u64;
+    let mut stream =
+        match MkvVideoStream::new(sink, "V_MJPEG", picture.width, picture.height, frame_ns)
+            .context("writing to ffmpeg (mux)")
+        {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = decoder.kill();
+                let _ = muxer.kill();
+                let _ = decoder.wait();
+                let _ = muxer.wait();
+                return Err(err);
+            }
+        };
+    let rate = encode.rate;
     let frame_bytes = Frame::bytes(encode.width, encode.height);
     let reader = move |raw: SyncSender<(usize, Vec<u8>)>| -> Result<()> {
         let mut index = 0;
@@ -395,16 +418,20 @@ fn with_ffmpeg_mux(job: &Job, mux: &[OsString], monitor: Option<&Monitor>) -> Re
             index += 1;
         }
     };
+    let us = |frame: usize| micros(mjpeg::ticks(rate, frame as u64));
     let result = pump(
         reader,
-        &mut |encoded: Encoded| {
-            sink.write_all(&encoded.data)
+        &mut |encoded: Encoded, frame, span| {
+            let start = us(frame);
+            stream
+                .write(&encoded.data, start, us(frame + span) - start)
                 .context("writing to ffmpeg (mux)")
         },
         &encode,
         monitor,
         false,
     );
+    let mut sink = stream.into_inner();
     let result = result.and_then(|stats| {
         sink.flush().context("writing to ffmpeg (mux)")?;
         Ok(stats)
@@ -459,7 +486,7 @@ fn next<T>(queue: &Queue<T>) -> Option<T> {
 
 fn pump(
     reader: impl FnOnce(SyncSender<(usize, Vec<u8>)>) -> Result<()> + Send,
-    write: &mut dyn FnMut(Encoded) -> Result<()>,
+    write: &mut dyn FnMut(Encoded, usize, usize) -> Result<()>,
     job: &Encode,
     monitor: Option<&Monitor>,
     stats: bool,
@@ -510,6 +537,8 @@ fn pump(
                         jpeg::encode(&decided.coefficients, decided.decision.quality, &limits);
                     let done = Done {
                         index: decided.index,
+                        frame: decided.frame,
+                        span: decided.span,
                         encoded,
                         decision: decided.decision,
                     };
@@ -542,8 +571,11 @@ fn control(
     while !finished || !scheduler.is_empty() {
         match analyzed.recv() {
             Ok(frame) => {
-                coefficients.insert(frame.index, frame.coefficients);
-                scheduler.push(frame.index, frame.model);
+                let shared = Arc::new(frame.coefficients);
+                coefficients.insert(frame.index, Arc::clone(&shared));
+                for repeated in scheduler.push(frame.index, frame.model, Some(shared)) {
+                    coefficients.remove(&repeated);
+                }
             }
             Err(_) => finished = true,
         }
@@ -553,7 +585,9 @@ fn control(
         while let Some(d) = scheduler.decide(finished) {
             let out = Decided {
                 index: d.index,
-                coefficients: coefficients.remove(&d.index).expect("analyzed frame"),
+                frame: d.frame,
+                span: d.span,
+                coefficients: coefficients.remove(&d.frame).expect("analyzed frame"),
                 decision: d.decision,
             };
             if decided.send(out).is_err() {
@@ -566,7 +600,7 @@ fn control(
 fn write_in_order(
     done: Receiver<Done>,
     feedback: Sender<Feedback>,
-    write: &mut dyn FnMut(Encoded) -> Result<()>,
+    write: &mut dyn FnMut(Encoded, usize, usize) -> Result<()>,
     job: &Encode,
     monitor: Option<&Monitor>,
     stats: bool,
@@ -574,26 +608,25 @@ fn write_in_order(
     let mut tally = Tally::new(&job.settings, job.fps);
     let mut order = Reorder::default();
     let mut progress = Progress::new(job.fps, stats);
-    let mut written = 0;
     for frame in done {
         order.push(frame.index, frame);
         while let Some(frame) = order.pop() {
-            let f = tally.record(frame.index, &frame.encoded, &frame.decision)?;
+            let f = tally.record(frame.frame, frame.span, &frame.encoded, &frame.decision)?;
             let quality = frame.decision.quality;
             let bytes = frame.encoded.data.len();
-            write(frame.encoded)?;
+            let end = frame.frame + frame.span;
+            write(frame.encoded, frame.frame, frame.span)?;
             let _ = feedback.send(f);
-            written += 1;
-            progress.frame(written, bytes, quality);
+            progress.frame(end, bytes, quality);
             if let Some(monitor) = monitor {
                 if monitor.cancel.load(Ordering::Relaxed) {
                     return Err(Cancelled.into());
                 }
-                (monitor.progress)(written as f64 / job.fps);
+                (monitor.progress)(end as f64 / job.fps);
             }
         }
     }
-    progress.finish(written);
+    progress.finish();
     Ok(tally.finish())
 }
 
@@ -604,6 +637,7 @@ struct Progress {
     shown: Instant,
     bytes: u64,
     quality: u8,
+    frames: usize,
 }
 
 impl Progress {
@@ -616,12 +650,14 @@ impl Progress {
             shown: now,
             bytes: 0,
             quality: 0,
+            frames: 0,
         }
     }
 
-    fn frame(&mut self, written: u64, bytes: usize, quality: u8) {
+    fn frame(&mut self, frames: usize, bytes: usize, quality: u8) {
         self.bytes += bytes as u64;
         self.quality = quality;
+        self.frames = frames;
         if !self.enabled {
             return;
         }
@@ -630,16 +666,17 @@ impl Progress {
             return;
         }
         self.shown = now;
-        self.show(written, quality);
+        self.show();
     }
 
-    fn show(&self, written: u64, quality: u8) {
+    fn show(&self) {
+        let (frames, quality) = (self.frames, self.quality);
         let elapsed = self.started.elapsed().as_secs_f64().max(1e-9);
-        let time = written as f64 / self.fps;
+        let time = frames as f64 / self.fps;
         let (minutes, seconds) = ((time as u64) / 60, time % 60.0);
         eprint!(
-            "\rframe={written:5} fps={:5.1} q={quality:3} size={:7}KiB time={:02}:{:02}:{seconds:05.2} speed={:5.2}x",
-            written as f64 / elapsed,
+            "\rframe={frames:5} fps={:5.1} q={quality:3} size={:7}KiB time={:02}:{:02}:{seconds:05.2} speed={:5.2}x",
+            frames as f64 / elapsed,
             self.bytes / 1024,
             minutes / 60,
             minutes % 60,
@@ -647,9 +684,9 @@ impl Progress {
         );
     }
 
-    fn finish(&self, written: u64) {
-        if self.enabled && written > 0 {
-            self.show(written, self.quality);
+    fn finish(&self) {
+        if self.enabled && self.frames > 0 {
+            self.show();
             eprintln!();
         }
     }

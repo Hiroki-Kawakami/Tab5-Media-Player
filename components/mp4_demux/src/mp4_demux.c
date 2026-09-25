@@ -892,8 +892,18 @@ static uint16_t rotation_of(const track_t *track) {
 
 static int64_t frame_interval_us(const track_t *track) {
     uint32_t best = 0;
-    for (uint32_t run = 1; run < track->stts.count; run++) {
-        if (run_count(&track->stts, run) > run_count(&track->stts, best)) best = run;
+    if (track->codec == MP4_VIDEO_CODEC_MJPEG) {
+        // A still picture is stored once with a long duration, so the most
+        // common delta can be the length of a still rather than a frame.
+        for (uint32_t run = 1; run < track->stts.count; run++) {
+            const uint32_t value = run_value(&track->stts, run);
+            const uint32_t shortest = run_value(&track->stts, best);
+            if (value && (!shortest || value < shortest)) best = run;
+        }
+    } else {
+        for (uint32_t run = 1; run < track->stts.count; run++) {
+            if (run_count(&track->stts, run) > run_count(&track->stts, best)) best = run;
+        }
     }
     return ts_to_us(run_value(&track->stts, best), track->timescale);
 }
@@ -1157,8 +1167,7 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
         landed = cursor_pts_us(video, &demux->video_cursor);
         if (landed < 0) landed = 0;
     } else {
-        const int64_t interval = demux->info.video.frame_interval_us;
-        const uint32_t sample = sample_at_us(video, pts_us - interval / 2, true);
+        const uint32_t sample = sample_at_us(video, pts_us, false);
         cursor_seek(video, &demux->video_cursor, sample);
         if (!demux->video_cursor.valid) return false;
         landed = pts_us;

@@ -50,8 +50,7 @@ mpeg2  MPEG-2 video, Main profile, progressive 4:2:0 (mpeg2video; the browser
   hq=B                yes or no (default yes): rate-distortion decisions, a
                       slower encode (-mbd rd -trellis 1 -intra_vlc 1)
 
-mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rate
-       (default)
+mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0 (default)
   quality=N           1-100 (default 75)
   minquality=N        lowest quality rate control may use (default 30)
   bitrate=R           video bitrate to stay under, e.g. 12M (default 24M);
@@ -62,6 +61,10 @@ mjpeg  Motion JPEG (built-in encoder), baseline 4:2:0, always constant frame rat
                       1048576, the player's limit); a frame over it is
                       re-quantised at a lower quality
   huffman=H           optimal (per-frame tables, default) or standard
+  dedup=B             yes (default) or no: a frame that differs from the last
+                      stored one by less than the quantisation at quality is
+                      not stored, and the stored one is shown for longer (at
+                      least one frame every 2 seconds is stored)
   rotate=D            turn the picture D degrees counter-clockwise before
                       storing it: 0, 90 (default), 180, 270, -90, -180, -270
   rotatewhen=W        landscape (default), portrait or always: which outputs

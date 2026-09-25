@@ -44,6 +44,7 @@ static int64_t s_reorder_lead_us;
 static int64_t s_max_pts_us = INT64_MIN;
 
 static bool s_want_poster;
+static bool s_seek_frame;
 static bool s_have_pending;
 static int s_pending_slot;
 static int s_repaint_slot = -1;
@@ -84,6 +85,14 @@ static void forget_repaint() {
 
 static bool before(int64_t pts_us, int64_t mark_us) {
     return pts_us + player_core.interval_us / 2 < mark_us;
+}
+
+// An MJPEG seek lands on the frame on screen at the target, which can start
+// well before it.
+static void take_seek_frame(int slot) {
+    if (!s_seek_frame) return;
+    s_seek_frame = false;
+    s_video[slot].pts_us = std::max(s_video[slot].pts_us, player_core.next_us);
 }
 
 static void submit(int slot, bool present, int64_t due_us) {
@@ -192,11 +201,13 @@ void video_pacing_stop() {
 void video_pacing_reset_timeline() {
     s_reorder_lead_us = 0;
     s_max_pts_us = INT64_MIN;
+    s_seek_frame = false;
 }
 
 void video_pacing_rewound() {
     cancel_skip();
     s_max_pts_us = INT64_MIN;
+    s_seek_frame = player_core.video_codec == CodecId::Mjpeg;
 }
 
 bool video_pacing_backlog() {
@@ -222,6 +233,7 @@ void video_pacing_step_poster() {
     if (xQueueReceive(s_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) return;
     slot_acquire(slot);
     keep_for_repaint(slot);
+    take_seek_frame(slot);
     if (!before(s_video[slot].pts_us, player_core.next_us)) {
         show(slot);
         video_presenter_drain();
@@ -241,6 +253,7 @@ void video_pacing_step() {
         }
         slot_acquire(s_pending_slot);
         keep_for_repaint(s_pending_slot);
+        take_seek_frame(s_pending_slot);
         s_have_pending = true;
     }
 
@@ -279,7 +292,8 @@ void video_pacing_step() {
     const int64_t due_at = lead ? esp_timer_get_time() + (due - now) : 0;
 
     s_have_pending = false;
-    const bool last = pts + player_core.interval_us >= player_core.duration_us;
+    const bool last = pts + player_core.interval_us >= player_core.duration_us ||
+                      (player_core.reader_eof && uxQueueMessagesWaiting(s_ready) == 0);
     const bool resuming = s_skip_to_keyframe;
     cancel_skip();
     if (!last && now > due + player_core.interval_us) {

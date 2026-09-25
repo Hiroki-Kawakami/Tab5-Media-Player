@@ -21,6 +21,7 @@ pub struct RateControl {
     max_frame: f32,
     fullness: f32,
     calibration: f32,
+    span: usize,
 }
 
 impl RateControl {
@@ -33,25 +34,30 @@ impl RateControl {
             max_frame: settings.max_frame as f32,
             fullness: 0.0,
             calibration: 1.0,
+            span: 1,
         }
     }
 
-    fn fits(&self, window: &[&SizeModel], quality: u8) -> bool {
+    fn fits(&self, window: &[(&SizeModel, usize)], quality: u8) -> bool {
         let mut fullness = self.fullness;
-        for (i, model) in window.iter().enumerate() {
+        let mut previous = self.span;
+        for (i, &(model, span)) in window.iter().enumerate() {
             let bytes = model.bytes(quality) * self.calibration;
             if i == 0 && bytes > self.max_frame {
                 return false;
             }
-            fullness = (fullness - self.drain).max(0.0) + bytes;
+            fullness = (fullness - self.drain * previous as f32).max(0.0) + bytes;
             if fullness > self.buffer {
                 return false;
             }
+            previous = span;
         }
         true
     }
 
-    pub fn decide(&self, window: &[&SizeModel]) -> Decision {
+    /// `window` pairs each upcoming frame with the number of frame intervals
+    /// it stays on screen.
+    pub fn decide(&self, window: &[(&SizeModel, usize)]) -> Decision {
         let quality = if self.fits(window, self.quality) {
             self.quality
         } else {
@@ -70,7 +76,7 @@ impl RateControl {
             }
             best
         };
-        let raw_estimate = window[0].bytes(quality);
+        let raw_estimate = window[0].0.bytes(quality);
         Decision {
             quality,
             estimate: raw_estimate * self.calibration,
@@ -78,8 +84,10 @@ impl RateControl {
         }
     }
 
-    pub fn commit(&mut self, estimate: f32) {
-        self.fullness = ((self.fullness - self.drain).max(0.0) + estimate).min(self.buffer);
+    pub fn commit(&mut self, estimate: f32, span: usize) {
+        self.fullness =
+            ((self.fullness - self.drain * self.span as f32).max(0.0) + estimate).min(self.buffer);
+        self.span = span;
     }
 
     pub fn feedback(&mut self, estimate: f32, raw_estimate: f32, actual: usize, calibrate: bool) {
@@ -99,6 +107,7 @@ pub struct Bucket {
     fullness: f64,
     pub peak: f64,
     pub overflows: usize,
+    span: usize,
 }
 
 impl Bucket {
@@ -109,11 +118,13 @@ impl Bucket {
             fullness: 0.0,
             peak: 0.0,
             overflows: 0,
+            span: 1,
         }
     }
 
-    pub fn add(&mut self, bytes: usize) {
-        self.fullness = (self.fullness - self.drain).max(0.0) + bytes as f64;
+    pub fn add(&mut self, bytes: usize, span: usize) {
+        self.fullness = (self.fullness - self.drain * self.span as f64).max(0.0) + bytes as f64;
+        self.span = span;
         self.peak = self.peak.max(self.fullness);
         if self.fullness > self.buffer {
             self.overflows += 1;
@@ -134,6 +145,7 @@ mod tests {
             buffer: 100_000,
             max_frame: 1 << 20,
             huffman: HuffmanMode::Optimal,
+            dedup: true,
         }
     }
 
@@ -150,7 +162,7 @@ mod tests {
     fn keeps_quality_when_the_bitrate_allows_it() {
         let rc = RateControl::new(&settings(1_000_000_000), 30.0);
         let m = model(40);
-        let window: Vec<&SizeModel> = std::iter::repeat_n(&m, 30).collect();
+        let window: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&m, 1), 30).collect();
         assert_eq!(rc.decide(&window).quality, 80);
     }
 
@@ -160,14 +172,14 @@ mod tests {
         let per_frame_at_80 = m.bytes(80);
         let bitrate = (per_frame_at_80 * 0.5 * 8.0 * 30.0) as u64;
         let mut rc = RateControl::new(&settings(bitrate), 30.0);
-        let window: Vec<&SizeModel> = std::iter::repeat_n(&m, 30).collect();
+        let window: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&m, 1), 30).collect();
         let decision = rc.decide(&window);
         assert!(decision.quality < 80 && decision.quality >= 30);
         let mut bucket = Bucket::new(&settings(bitrate), 30.0);
         for _ in 0..90 {
             let d = rc.decide(&window);
-            rc.commit(d.estimate);
-            bucket.add(d.estimate as usize);
+            rc.commit(d.estimate, 1);
+            bucket.add(d.estimate as usize, 1);
         }
         assert_eq!(bucket.overflows, 0);
     }
@@ -178,23 +190,46 @@ mod tests {
         let light = model(4);
         let bitrate = (light.bytes(80) * 4.0 * 8.0 * 30.0) as u64;
         let mut rc = RateControl::new(&settings(bitrate), 30.0);
-        let heavy_window: Vec<&SizeModel> = std::iter::repeat_n(&heavy, 30).collect();
+        let heavy_window: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&heavy, 1), 30).collect();
         for _ in 0..60 {
             let d = rc.decide(&heavy_window);
             assert_eq!(d.quality, 30);
-            rc.commit(d.estimate);
+            rc.commit(d.estimate, 1);
         }
-        let light_window: Vec<&SizeModel> = std::iter::repeat_n(&light, 30).collect();
+        let light_window: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&light, 1), 30).collect();
         let mut recovered = None;
         for i in 0..30 {
             let d = rc.decide(&light_window);
-            rc.commit(d.estimate);
+            rc.commit(d.estimate, 1);
             if d.quality == 80 {
                 recovered = Some(i);
                 break;
             }
         }
         assert!(recovered.is_some_and(|i| i < 15), "{recovered:?}");
+    }
+
+    #[test]
+    fn frames_shown_longer_drain_more() {
+        let m = model(400);
+        let bytes = m.bytes(80);
+        let rc = RateControl::new(
+            &MjpegSettings {
+                buffer: (bytes * 4.0) as usize,
+                ..settings((bytes * 0.5 * 8.0 * 30.0) as u64)
+            },
+            30.0,
+        );
+        let every_frame: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&m, 1), 30).collect();
+        assert!(rc.decide(&every_frame).quality < 80);
+        let every_third: Vec<(&SizeModel, usize)> = std::iter::repeat_n((&m, 3), 10).collect();
+        assert_eq!(rc.decide(&every_third).quality, 80);
+
+        let mut bucket = Bucket::new(&settings(8 * 30 * 1000), 30.0);
+        for _ in 0..10 {
+            bucket.add(30_000, 30);
+        }
+        assert_eq!(bucket.overflows, 0);
     }
 
     #[test]
@@ -210,11 +245,11 @@ mod tests {
     fn bucket_counts_overflows() {
         let mut bucket = Bucket::new(&settings(8 * 30 * 1000), 30.0);
         for _ in 0..10 {
-            bucket.add(1000);
+            bucket.add(1000, 1);
         }
         assert_eq!(bucket.overflows, 0);
         for _ in 0..10 {
-            bucket.add(30_000);
+            bucket.add(30_000, 1);
         }
         assert!(bucket.overflows > 0);
         assert!(bucket.peak > 100_000.0);

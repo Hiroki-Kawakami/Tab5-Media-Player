@@ -124,8 +124,10 @@ type Track = (task: Promise<void>) => void;
 class MjpegPipeline implements VideoPipeline {
   private emitted = 0;
   private written = 0;
+  private released = 0;
   private encoding = 0;
   private readonly limits: { minQuality: number; maxFrame: number; optimal: boolean };
+  private readonly dedup: boolean;
   private readonly inflightLimit: number;
 
   constructor(
@@ -138,8 +140,9 @@ class MjpegPipeline implements VideoPipeline {
     private readonly tasks: Set<Promise<void>>,
     private readonly progress: (written: number) => void,
   ) {
-    const [minQuality, maxFrame, optimal] = job.limits();
+    const [minQuality, maxFrame, optimal, dedup] = job.limits();
     this.limits = { minQuality, maxFrame, optimal: optimal === 1 };
+    this.dedup = dedup === 1;
     this.inflightLimit = Math.ceil(fps) + 4 * pool.size;
   }
 
@@ -153,6 +156,7 @@ class MjpegPipeline implements VideoPipeline {
       this.track(
         this.pool.encode(index, quality, this.limits).then((frame) => {
           this.encoding -= 1;
+          this.released += 1;
           this.written = this.job.addFrame(index, frame.data, frame.quality, frame.fits);
           this.progress(this.written);
         }),
@@ -163,22 +167,27 @@ class MjpegPipeline implements VideoPipeline {
   emit(picture: Picture) {
     const index = this.emitted++;
     this.track(
-      this.pool.analyze(index, picture.data, picture.kind === "yuv", this.width, this.height).then((words) => {
-        this.job.pushModel(index, words);
-        this.dispatch(false);
-      }),
+      this.pool
+        .analyze(index, picture.data, picture.kind === "yuv", this.width, this.height, this.dedup)
+        .then(({ words, coefficients }) => {
+          for (const repeated of this.job.pushModel(index, words, coefficients)) {
+            this.pool.discard(repeated);
+            this.released += 1;
+          }
+          this.dispatch(false);
+        }),
     );
   }
 
   ready(): boolean {
-    return this.emitted - this.written < this.inflightLimit;
+    return this.emitted - this.released < this.inflightLimit;
   }
 
   async finish(check: () => void) {
-    while (this.written < this.emitted) {
-      await until(() => this.tasks.size === 0 || this.written >= this.emitted, check);
+    while (this.released < this.emitted) {
+      await until(() => this.tasks.size === 0 || this.released >= this.emitted, check);
       this.dispatch(true);
-      if (this.encoding === 0 && this.tasks.size === 0 && this.written < this.emitted) {
+      if (this.encoding === 0 && this.tasks.size === 0 && this.released < this.emitted) {
         throw new Error("frames were left unencoded");
       }
     }

@@ -2,9 +2,10 @@
 // Copyright (c) 2026 Hiroki Kawakami
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
-use js_sys::{Function, Uint8Array};
+use js_sys::{Function, Int16Array, Uint8Array};
 use serde::Serialize;
 use tab5conv_core::audio::{AudioAction, Codec as AudioCodec};
 use tab5conv_core::container::demux::{self, Codec, Demuxer, TrackKind};
@@ -14,8 +15,7 @@ use tab5conv_core::container::mux::{Mp4Muxer, MuxCodec, MuxKind, MuxTrack};
 use tab5conv_core::framerate::{FrameSelector, Rate};
 use tab5conv_core::jpeg::{self, Coefficients, Encoded, Frame, HuffmanMode, Limits, SizeModel};
 use tab5conv_core::media::MediaInfo;
-use tab5conv_core::mjpeg::{self, Reorder, Scheduler, Tally};
-use tab5conv_core::ratecontrol::Decision;
+use tab5conv_core::mjpeg::{self, Decided, Reorder, Scheduler, Tally};
 use tab5conv_core::resample::Resampler;
 use tab5conv_core::thumbnail::{Cover, Thumbnail};
 use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
@@ -486,6 +486,18 @@ impl MjpegWorker {
         model.to_words()
     }
 
+    pub fn coefficients(&self, id: u32) -> Result<Int16Array, JsError> {
+        let coefficients = self
+            .frames
+            .get(&id)
+            .ok_or_else(|| JsError::new(&format!("frame {id} was not analysed")))?;
+        Ok(Int16Array::from(coefficients.as_i16()))
+    }
+
+    pub fn discard(&mut self, id: u32) {
+        self.frames.remove(&id);
+    }
+
     pub fn encode(
         &mut self,
         id: u32,
@@ -526,8 +538,9 @@ struct MjpegJob {
     scheduler: Scheduler,
     tally: Tally,
     settings: MjpegSettings,
-    decisions: HashMap<usize, Decision>,
-    order: Reorder<Encoded>,
+    size: (usize, usize),
+    decisions: HashMap<usize, Decided>,
+    order: Reorder<(Decided, Encoded)>,
 }
 
 enum VideoJob {
@@ -577,6 +590,7 @@ fn video_job(info: &demux::Info, planned: &Planned) -> anyhow::Result<VideoJob> 
             scheduler: Scheduler::new(settings, fps),
             tally: Tally::new(settings, fps),
             settings: *settings,
+            size: (p.width as usize, p.height as usize),
             decisions: HashMap::new(),
             order: Reorder::default(),
         })),
@@ -809,6 +823,7 @@ impl Job {
             settings.min_quality as u32,
             settings.max_frame as u32,
             u32::from(settings.huffman == HuffmanMode::Optimal),
+            u32::from(settings.dedup),
         ])
     }
 
@@ -851,11 +866,30 @@ impl Job {
         self.selector.finish(end_us as i64) as u32
     }
 
+    /// Returns the frames found to repeat the last stored one; they are not
+    /// encoded.
     #[wasm_bindgen(js_name = pushModel)]
-    pub fn push_model(&mut self, index: u32, words: &[u32]) -> Result<(), JsError> {
+    pub fn push_model(
+        &mut self,
+        index: u32,
+        words: &[u32],
+        coefficients: Option<Int16Array>,
+    ) -> Result<Vec<u32>, JsError> {
         let model = SizeModel::from_words(words).ok_or_else(|| JsError::new("bad size model"))?;
-        self.mjpeg()?.scheduler.push(index as usize, model);
-        Ok(())
+        let job = self.mjpeg()?;
+        let coefficients = match coefficients {
+            Some(array) => {
+                let mut c = Coefficients::zeroed(job.size.0, job.size.1);
+                if array.length() as usize != c.as_i16().len() {
+                    return Err(JsError::new("coefficients have the wrong size"));
+                }
+                array.copy_to(c.as_i16_mut());
+                Some(Arc::new(c))
+            }
+            None => None,
+        };
+        let repeated = job.scheduler.push(index as usize, model, coefficients);
+        Ok(repeated.into_iter().map(|f| f as u32).collect())
     }
 
     #[wasm_bindgen(js_name = nextDecision)]
@@ -864,13 +898,14 @@ impl Job {
         let Some(decided) = job.scheduler.decide(finished) else {
             return Ok(None);
         };
-        job.decisions.insert(decided.index, decided.decision);
+        job.decisions.insert(decided.frame, decided);
         Ok(Some(DecisionOut {
-            index: decided.index as u32,
+            index: decided.frame as u32,
             quality: decided.decision.quality,
         }))
     }
 
+    /// Returns how many input frames the written frames cover.
     #[wasm_bindgen(js_name = addFrame)]
     pub fn add_frame(
         &mut self,
@@ -880,32 +915,34 @@ impl Job {
         fits: bool,
     ) -> Result<u32, JsError> {
         let rate = self.rate;
-        let mut encoded_count = self.encoded;
         let VideoJob::Mjpeg(job) = &mut self.video else {
             return Err(JsError::new("not an MJPEG job"));
         };
+        let decided = job
+            .decisions
+            .remove(&(index as usize))
+            .ok_or_else(|| JsError::new(&format!("frame {index} has no decision")))?;
         job.order.push(
-            index as usize,
-            Encoded {
-                data,
-                quality,
-                fits,
-            },
+            decided.index,
+            (
+                decided,
+                Encoded {
+                    data,
+                    quality,
+                    fits,
+                },
+            ),
         );
-        while let Some(encoded) = job.order.pop() {
-            let index = encoded_count as usize;
-            let decision = job
-                .decisions
-                .remove(&index)
-                .ok_or_else(|| JsError::new(&format!("frame {index} has no decision")))?;
+        while let Some((decided, encoded)) = job.order.pop() {
             let feedback = job
                 .tally
-                .record(index, &encoded, &decision)
+                .record(decided.frame, decided.span, &encoded, &decided.decision)
                 .map_err(js_error)?;
             job.scheduler.feedback(&feedback);
+            let end_frame = (decided.frame + decided.span) as u64;
             let (start, end) = (
-                mjpeg::ticks(rate, encoded_count),
-                mjpeg::ticks(rate, encoded_count + 1),
+                mjpeg::ticks(rate, decided.frame as u64),
+                mjpeg::ticks(rate, end_frame),
             );
             self.interleaver.push(
                 VIDEO_TRACK,
@@ -917,9 +954,8 @@ impl Job {
                     offset: 0,
                 },
             );
-            encoded_count += 1;
+            self.encoded = end_frame;
         }
-        self.encoded = encoded_count;
         self.write_ready().map_err(js_error)?;
         Ok(self.encoded as u32)
     }

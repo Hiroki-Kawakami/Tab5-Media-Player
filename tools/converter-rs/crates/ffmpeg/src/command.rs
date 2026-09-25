@@ -101,9 +101,7 @@ impl Job<'_> {
         if let Some(rotation) = picture.rotation.and_then(|r| r.display_rotation) {
             mux.extend(["-display_rotation".into(), rotation.to_string().into()]);
         }
-        mux.extend(strings(["-f", "mjpeg", "-framerate"]));
-        mux.push(picture.rate.to_string().into());
-        mux.extend(strings(["-i", "pipe:0", "-i"]));
+        mux.extend(strings(["-f", "matroska", "-i", "pipe:0", "-i"]));
         mux.push(self.input.into());
         mux.extend(strings(["-map", "0:v", "-c:v", "copy"]));
         self.tail(&mut mux, 1);

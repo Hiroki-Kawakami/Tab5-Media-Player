@@ -16,6 +16,7 @@ use crate::num;
 const MAX_AC: i16 = 1023;
 const COEFFICIENT_SCALE: f32 = 8.0;
 const MCU_BLOCKS: usize = 6;
+const SIMILAR_ENERGY: f32 = 4.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum HuffmanMode {
@@ -60,6 +61,62 @@ pub struct Coefficients {
     width: usize,
     height: usize,
     blocks: Vec<[i16; 64]>,
+}
+
+impl Coefficients {
+    pub fn as_i16(&self) -> &[i16] {
+        self.blocks.as_flattened()
+    }
+
+    pub fn zeroed(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            blocks: vec![[0; 64]; width.div_ceil(16) * height.div_ceil(16) * MCU_BLOCKS],
+        }
+    }
+
+    pub fn as_i16_mut(&mut self) -> &mut [i16] {
+        self.blocks.as_flattened_mut()
+    }
+}
+
+pub struct Similarity {
+    weights: [[f32; 64]; 2],
+}
+
+impl Similarity {
+    pub fn for_quality(quality: u8) -> Self {
+        let tables = QuantTables::for_quality(quality);
+        let weights = |table: [u8; 64]| {
+            table.map(|q| {
+                let step = q as f32 * COEFFICIENT_SCALE;
+                1.0 / (step * step)
+            })
+        };
+        Self {
+            weights: [weights(tables.luma), weights(tables.chroma)],
+        }
+    }
+
+    pub fn similar(&self, a: &Coefficients, b: &Coefficients) -> bool {
+        if (a.width, a.height) != (b.width, b.height) {
+            return false;
+        }
+        a.blocks
+            .iter()
+            .zip(&b.blocks)
+            .enumerate()
+            .all(|(i, (x, y))| {
+                let weights = &self.weights[usize::from(i % MCU_BLOCKS >= 4)];
+                let mut energy = 0f32;
+                for n in 0..64 {
+                    let d = (x[n] as i32 - y[n] as i32) as f32;
+                    energy += d * d * weights[n];
+                }
+                energy <= SIMILAR_ENERGY
+            })
+    }
 }
 
 pub struct Encoded {
@@ -590,6 +647,73 @@ mod tests {
         let e = encode_at(256, 128, settings(80, 40, 100, HuffmanMode::Optimal));
         assert!(!e.fits);
         assert_eq!(e.quality, 40);
+    }
+
+    fn coefficients_of(data: &[u8], width: usize, height: usize) -> Coefficients {
+        analyze(&Frame::from_yuv420p(data, width, height)).0
+    }
+
+    #[test]
+    fn similarity_ignores_noise_but_not_small_changes() {
+        let (w, h) = (256, 128);
+        let data = frame_data(w, h);
+        let base = coefficients_of(&data, w, h);
+        let similar = Similarity::for_quality(75);
+        assert!(similar.similar(&base, &coefficients_of(&data, w, h)));
+
+        let mut noisy = data.clone();
+        for (i, px) in noisy.iter_mut().enumerate() {
+            let step = [0i16, 1, -1][(i * 7919 + i / 13) % 3];
+            *px = (*px as i16 + step).clamp(0, 255) as u8;
+        }
+        assert!(similar.similar(&base, &coefficients_of(&noisy, w, h)));
+
+        let mut dot = data.clone();
+        for y in 60..62 {
+            for x in 100..102 {
+                dot[y * w + x] = dot[y * w + x].wrapping_add(80);
+            }
+        }
+        assert!(!similar.similar(&base, &coefficients_of(&dot, w, h)));
+
+        let brighter: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| if i < w * h { p.saturating_add(3) } else { p })
+            .collect();
+        assert!(!similar.similar(&base, &coefficients_of(&brighter, w, h)));
+        assert!(!similar.similar(&base, &coefficients_of(&frame_data(w, 64), w, 64)));
+    }
+
+    #[test]
+    fn similarity_follows_quality() {
+        let (w, h) = (256, 128);
+        let data = frame_data(w, h);
+        let shifted: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| if i < w * h { p.saturating_add(3) } else { p })
+            .collect();
+        let (a, b) = (
+            coefficients_of(&data, w, h),
+            coefficients_of(&shifted, w, h),
+        );
+        assert!(!Similarity::for_quality(90).similar(&a, &b));
+        assert!(Similarity::for_quality(20).similar(&a, &b));
+    }
+
+    #[test]
+    fn coefficients_round_trip_as_i16() {
+        let data = frame_data(50, 30);
+        let c = coefficients_of(&data, 50, 30);
+        let mut back = Coefficients::zeroed(50, 30);
+        back.as_i16_mut().copy_from_slice(c.as_i16());
+        assert!(Similarity::for_quality(100).similar(&c, &back));
+        assert_eq!(back.as_i16(), c.as_i16());
+        assert_ne!(
+            Coefficients::zeroed(50, 48).as_i16().len(),
+            c.as_i16().len()
+        );
     }
 
     #[test]

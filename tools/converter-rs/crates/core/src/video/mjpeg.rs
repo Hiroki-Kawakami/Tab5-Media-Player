@@ -8,15 +8,16 @@ use super::{Color, PictureSpec, VideoCodec, VideoPlan};
 use crate::jpeg::{HuffmanMode, Limits};
 use crate::media;
 use crate::size::Constraints;
-use crate::spec::{Spec, int_in, one_of, quantity};
+use crate::spec::{Spec, int_in, one_of, quantity, yes_no};
 
-pub const KEYS: [&str; 9] = [
+pub const KEYS: [&str; 10] = [
     "quality",
     "minquality",
     "bitrate",
     "buffer",
     "maxframe",
     "huffman",
+    "dedup",
     rotation::KEYS[0],
     rotation::KEYS[1],
     rotation::KEYS[2],
@@ -45,6 +46,7 @@ pub struct Settings {
     pub buffer: usize,
     pub max_frame: usize,
     pub huffman: HuffmanMode,
+    pub dedup: bool,
 }
 
 impl Settings {
@@ -93,6 +95,7 @@ impl Mjpeg {
             Some("standard") => HuffmanMode::Standard,
             _ => HuffmanMode::Optimal,
         };
+        let dedup = spec.take("dedup", yes_no)?.unwrap_or(true);
         let rotation = RotationSpec::take(spec)?;
         Ok(Self {
             picture,
@@ -104,6 +107,7 @@ impl Mjpeg {
                 buffer,
                 max_frame,
                 huffman,
+                dedup,
             },
         })
     }
@@ -124,10 +128,15 @@ impl Mjpeg {
             HuffmanMode::Optimal => "optimal",
             HuffmanMode::Standard => "standard",
         };
+        let repeats = if s.dedup {
+            ", unchanged frames merged"
+        } else {
+            ""
+        };
         Ok(VideoPlan {
             index: video.index,
             label: format!(
-                "MJPEG {}, quality {} (down to {}) within {} Mbit/s over a {} buffer, frames up to {}, {huffman} Huffman",
+                "MJPEG {}, quality {} (down to {}) within {} Mbit/s over a {} buffer, frames up to {}, {huffman} Huffman{repeats}",
                 picture.label,
                 s.quality,
                 s.min_quality,
@@ -190,6 +199,7 @@ mod tests {
         assert_eq!(s.huffman, HuffmanMode::Optimal);
         assert_eq!(s.bitrate, 24_000_000);
         assert_eq!(s.buffer, 1 << 20);
+        assert!(s.dedup);
     }
 
     #[test]
@@ -208,6 +218,7 @@ mod tests {
         let (_, s) = plan("mjpeg,bitrate=8M,buffer=512k");
         assert_eq!(s.bitrate, 8_000_000);
         assert_eq!(s.buffer, 512_000);
+        assert!(!plan("mjpeg,dedup=no").1.dedup);
     }
 
     #[test]
@@ -252,6 +263,7 @@ mod tests {
         assert!(parse("mjpeg,maxframe=1048576").is_ok());
         assert!(parse("mjpeg,quality=50,minquality=60").is_err());
         assert!(parse("mjpeg,huffman=fast").is_err());
+        assert!(parse("mjpeg,dedup=off").is_err());
         assert!(parse("mjpeg,crf=20").is_err());
         assert!(parse("mjpeg,bitrate=0").is_err());
         assert!(parse("mjpeg,buffer=fast").is_err());

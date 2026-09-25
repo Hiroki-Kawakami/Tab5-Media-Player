@@ -6,7 +6,7 @@ import type { ScaleReply, ScaleRequest } from "./scale.worker";
 
 type Pending = { resolve: (reply: EncoderReply) => void; reject: (err: Error) => void };
 
-const KINDS: Record<Exclude<EncoderReply["type"], "error">, EncoderRequest["type"]> = {
+const KINDS: Record<Exclude<EncoderReply["type"], "error">, Exclude<EncoderRequest["type"], "discard">> = {
   model: "analyze",
   encoded: "encode",
   pictures: "mpeg2",
@@ -40,17 +40,33 @@ export class EncoderPool {
     return this.workers.length;
   }
 
-  private send(worker: number, request: EncoderRequest, transfer: Transferable[]): Promise<EncoderReply> {
+  private send(
+    worker: number,
+    request: Exclude<EncoderRequest, { type: "discard" }>,
+    transfer: Transferable[],
+  ): Promise<EncoderReply> {
     return new Promise((resolve, reject) => {
       this.pending.set(`${request.type}:${request.id}`, { resolve, reject });
       this.workers[worker % this.workers.length].postMessage(request, transfer);
     });
   }
 
-  async analyze(id: number, pixels: ArrayBuffer, yuv: boolean, width: number, height: number): Promise<Uint32Array> {
-    const reply = await this.send(id, { type: "analyze", id, pixels, yuv, width, height }, [pixels]);
+  async analyze(
+    id: number,
+    pixels: ArrayBuffer,
+    yuv: boolean,
+    width: number,
+    height: number,
+    coefficients: boolean,
+  ): Promise<{ words: Uint32Array; coefficients?: Int16Array }> {
+    const reply = await this.send(id, { type: "analyze", id, pixels, yuv, width, height, coefficients }, [pixels]);
     if (reply.type !== "model") throw new Error("unexpected encoder reply");
-    return reply.words;
+    return reply;
+  }
+
+  discard(id: number): void {
+    const request: EncoderRequest = { type: "discard", id };
+    this.workers[id % this.workers.length].postMessage(request);
   }
 
   async encode(

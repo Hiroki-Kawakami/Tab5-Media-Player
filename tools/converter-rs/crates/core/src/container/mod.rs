@@ -7,6 +7,7 @@ mod h264;
 pub mod interleave;
 pub mod io;
 mod mkv;
+pub mod mkvstream;
 mod mp4;
 pub mod mux;
 

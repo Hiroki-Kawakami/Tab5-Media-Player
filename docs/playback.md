@@ -411,9 +411,12 @@ element starts without tracking the hierarchy.
   cluster. Without them only `seek(0)` works (restart and loop). A seek jumps to
   the last cue at or before the target. The index is decimated past 60000
   entries.
-  - MJPEG skips blocks earlier than half an interval before the target, since
-    any frame can be shown. ffmpeg starts a cluster for every MJPEG frame, so
-    the index keeps one entry per cluster.
+  - MJPEG lands on the block on screen at the target, which starts up to 2 s
+    before it when the converter merged unchanged frames: from the cue it
+    reads block headers up to the first video block past the target and goes
+    back to the last one before it. Audio blocks before the target are
+    skipped. ffmpeg starts a cluster for every MJPEG frame, so the index keeps
+    one entry per cluster.
   - H.264 must start at a keyframe, so nothing near the target is skipped:
     blocks before the cue's own time are dropped (a cluster can hold more than
     one cued keyframe, so cues are not merged per cluster) and so are video
@@ -455,15 +458,17 @@ rebuilds it by walking the runs, which are few.
 - **Timing.** pts is dts + ctts − the first edit's `media_time`, plus any
   leading empty edits. ffmpeg's AAC edit skips 1024 priming samples, so the
   first audio packet has a negative pts. Later edits are ignored with a warning.
-  The frame interval is the most common `stts` delta; the length is `mvhd`'s,
-  or the video `mdhd`'s without it.
+  The frame interval is the most common `stts` delta, or for MJPEG the
+  shortest one: a converted slideshow stores each still once, and its long
+  delta can be the most common. The length is `mvhd`'s, or the video `mdhd`'s
+  without it.
 - **Rotation** is `-atan2(b, a)` of the `tkhd` matrix, as in ffmpeg's
   `av_display_rotation_get`, which is the same counter-clockwise angle as the
   MKV roll: an ffmpeg `-display_rotation 90` file shows the same as
   `rotated.mkv` in all four UI rotations.
 - **Seeking** uses `stss`. H.264 lands on the last sync sample at or before the
-  target and reports its pts; MJPEG starts at the first frame after half an
-  interval before the target. Audio starts at its first sample at or after where
+  target and reports its pts; MJPEG lands on the sample on screen at the target
+  and reports the target. Audio starts at its first sample at or after where
   the video landed.
 
 **Packets come out in timestamp order, not file order.** Cameras, phones and
@@ -662,7 +667,12 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
   `origin + (pts - origin_pts)`, so one slow frame does not delay the rest. A
   frame more than one interval late is handled by the late-frame rules in
   [H.264 playback](#h264-playback); for MJPEG it is dropped, except the last
-  frame, which is always shown.
+  frame (the one reaching the duration, or the last one queued once the
+  reader is at the end), which is always shown.
+- **The first MJPEG frame after a seek is taken as the target's**: its pts is
+  raised to where the seek landed, so it is shown at once and not dropped as
+  being before the origin. The demuxers land on the frame on screen at the
+  target, which can start well before it.
 - **The clock is wall time, corrected only downwards by audio.** `bsp_audio_write`
   blocks when the device buffer is full, so the written position runs ahead of
   what is audible by one buffer. Slaving video to it would show a burst of

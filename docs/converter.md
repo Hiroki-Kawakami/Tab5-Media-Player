@@ -198,6 +198,11 @@ to the origin private file system and then downloaded.
   they must match exactly. lld is not put on `PATH` (it could change other
   builds in the shell); `CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER` points
   at its `wasm-ld` instead.
+- **GitHub Pages is built without nix** (`.github/workflows/pages.yml`):
+  the dev shell pulls in ESP-IDF through `esp-devkit`. The workflow pins
+  rustc and `wasm-bindgen` itself, so bump them there together with the
+  flake. `base: "./"` in `vite.config.ts` is what lets the build run under
+  the repository's sub-path.
 - **`npm run e2e` uses the installed Google Chrome** through
   `playwright-core`; Playwright's own Chromium has no H.264 or AAC. It
   serves `dist/`, so run `npm run build` first. It converts the inputs with

@@ -1,11 +1,14 @@
 # Tab5-Media-Player
 
+Open Video, Audio and Image files on M5Stack Tab5 (ESP32-P4).
+
 ## Supported Media Formats
 
 ### Video
 
 Convert videos in your browser with the
 [converter](https://hiroki-kawakami.github.io/Tab5-Media-Player/).
+The converter works only in Chrome and Chromium-based browsers.  
 The command-line version, `tab5conv`, is on the
 [`converter-latest`](https://github.com/Hiroki-Kawakami/Tab5-Media-Player/releases/tag/converter-latest)
 release; it needs `ffmpeg` and `ffprobe` on `PATH`.
@@ -31,8 +34,6 @@ For the fastest display, use baseline JPEG no larger than the screen in the
 orientation you view it (720x1280 portrait, 1280x720 landscape).
 
 ## Development
-
-Play video files on M5Stack Tab5 (ESP32-P4).
 
 Clone with the required submodule:
 

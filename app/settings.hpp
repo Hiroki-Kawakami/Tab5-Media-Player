@@ -28,8 +28,9 @@ bsp_pixel_format_t settings_display_pixel_format();
 esp_err_t settings_set_display_pixel_format(bsp_pixel_format_t format);
 
 bool settings_rotation_locked();
-bsp_rotation_t settings_locked_rotation();
 void settings_set_rotation_lock(bool locked);
+bsp_rotation_t settings_rotation();
+void settings_set_rotation(bsp_rotation_t rotation);
 
 bool settings_volume_is_headphone();
 int settings_volume();

@@ -129,9 +129,11 @@ only thing the lock buys over ignoring the callback. `settings.cpp` owns the
 state and `settings_set_rotation_lock` is the single entry point, so a second
 place to toggle it only has to call that; `ui_orientation` keeps a copy to drop
 callbacks that are already in flight when tracking stops. One NVS byte carries
-both halves (0 unlocked, otherwise the rotation plus one). The saved rotation is
-applied in `ui_orientation_start` before Home is created, so a locked boot lays
-Home out once instead of rotating it afterwards.
+the rotation and a lock bit. Unlocked, a rotation is written only after the UI
+has held it for 5 s, so turning the tablet around does not write NVS on every
+step. The saved rotation is applied in `ui_orientation_start` before Home is
+created, so a boot lays Home out once instead of rotating it afterwards; if the
+IMU then reports a different pose, that pose wins.
 
 ## Player overlay
 

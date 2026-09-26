@@ -472,7 +472,10 @@ void ImageViewerScreen::startSlideshow() {
     config.bgm_shuffle = settings_slideshow_bgm_shuffle();
     std::vector<PlaylistItem> bgm;
     if (settings_slideshow_bgm()) {
-        bgm = playlist_items_at(settings_slideshow_bgm_path(), MediaKind::Audio);
+        const std::string &bgm_path = settings_slideshow_bgm_path();
+        if (path_is_under(bgm_path, kUsbMountPoint)) media_player_mount_usb();
+        else if (path_is_under(bgm_path, kSdMountPoint)) media_player_mount_sd();
+        bgm = playlist_items_at(bgm_path, MediaKind::Audio);
     }
     slideshow_running_ = true;
     const bool started = slideshow_start(

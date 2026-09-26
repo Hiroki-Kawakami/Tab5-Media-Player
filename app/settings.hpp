@@ -63,6 +63,9 @@ void settings_set_slideshow_transition(TransitionKind kind);
 TransitionDirection settings_slideshow_direction();
 void settings_set_slideshow_direction(TransitionDirection direction);
 
+bool settings_slideshow_hold_to_exit();
+void settings_set_slideshow_hold_to_exit(bool enabled);
+
 bool settings_slideshow_bgm();
 void settings_set_slideshow_bgm(bool enabled);
 

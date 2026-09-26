@@ -180,6 +180,8 @@ Setting<"slidedir", uint8_t, +[](int direction) -> uint8_t {
     return direction >= 0 && direction < kTransitionDirections ? direction : 0;
 }> s_slideshow_direction{(uint8_t)TransitionDirection::LeftToRight};
 
+Setting<"slidehold", uint8_t, sanitize_flag> s_slideshow_hold_to_exit{0};
+
 Setting<"slidebgm", uint8_t, +[](bool enabled) -> uint8_t {
     return enabled ? 1 : 0;
 }> s_slideshow_bgm{0};
@@ -204,6 +206,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_slideshow_shuffle);
     fn(s_slideshow_transition);
     fn(s_slideshow_direction);
+    fn(s_slideshow_hold_to_exit);
     fn(s_slideshow_bgm);
     fn(s_slideshow_bgm_shuffle);
     fn(s_slideshow_bgm_path);
@@ -391,6 +394,14 @@ TransitionDirection settings_slideshow_direction() {
 
 void settings_set_slideshow_direction(TransitionDirection direction) {
     s_slideshow_direction.set((int)direction);
+}
+
+bool settings_slideshow_hold_to_exit() {
+    return s_slideshow_hold_to_exit.get() != 0;
+}
+
+void settings_set_slideshow_hold_to_exit(bool enabled) {
+    s_slideshow_hold_to_exit.set(enabled);
 }
 
 bool settings_slideshow_bgm() {

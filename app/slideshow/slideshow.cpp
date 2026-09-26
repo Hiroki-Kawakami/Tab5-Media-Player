@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "lvgl.hpp"
 
 #include <optional>
@@ -27,6 +28,7 @@ static constexpr uint32_t kRetryMs = 1000;
 static constexpr uint32_t kStackBytes = 6144;
 static constexpr UBaseType_t kPriority = 3;
 static constexpr BaseType_t kCore = 1;
+static constexpr uint32_t kHoldMs = 1000;
 
 static constexpr EventBits_t kStop = 1u << 0;
 static constexpr EventBits_t kReady = 1u << 1;
@@ -56,6 +58,8 @@ static SlideshowOutput s_output;
 static std::unique_ptr<Transition> s_change;
 static bool s_running;
 static EventGroupHandle_t s_events;
+static TimerHandle_t s_hold;
+static bool s_held;
 static uint32_t s_token;
 static uint32_t s_idle_token;
 static Bgm *s_bgm;
@@ -212,6 +216,7 @@ static void run() {
 
 static void finish() {
     display_manager.set_outside_touch_callback(nullptr);
+    xTimerStop(s_hold, 0);
     ui_orientation_set_listener(nullptr, nullptr);
     SlideshowFinished on_finished = std::move(s_session.on_finished);
     const std::size_t index = s_session.index;
@@ -247,8 +252,22 @@ static void image_ready(const std::string &) {
     xEventGroupSetBits(s_events, kReady);
 }
 
+static void held(TimerHandle_t) {
+    xEventGroupSetBits(s_events, kStop);
+}
+
 static void touched(const bsp_touch_point_t *, int count, void *) {
-    if (count > 0) xEventGroupSetBits(s_events, kStop);
+    if (!s_session.config.hold_to_exit) {
+        if (count > 0) xEventGroupSetBits(s_events, kStop);
+        return;
+    }
+    if (count > 0 && !s_held) {
+        s_held = true;
+        xTimerReset(s_hold, 0);
+    } else if (count == 0) {
+        s_held = false;
+        xTimerStop(s_hold, 0);
+    }
 }
 
 static BaseType_t spawn() {
@@ -266,11 +285,12 @@ bool slideshow_start(std::vector<PlaylistItem> pictures, std::size_t index, Imag
                      SlideshowFinished on_finished) {
     if (s_running || index >= pictures.size() || !box.valid()) return false;
     if (!s_events) s_events = xEventGroupCreate();
+    if (!s_hold) s_hold = xTimerCreate("slidehold", pdMS_TO_TICKS(kHoldMs), pdFALSE, nullptr, held);
     if (!s_token) {
         s_token = media_cache_token();
         s_idle_token = media_cache_token();
     }
-    if (!s_events || !s_token) return false;
+    if (!s_events || !s_hold || !s_token) return false;
     if (!s_output.open(ui_orientation_current())) return false;
     s_change = transition_create(config.transition, config.direction, s_output);
     if (!s_change) {
@@ -302,6 +322,7 @@ bool slideshow_start(std::vector<PlaylistItem> pictures, std::size_t index, Imag
         media_player_release_sram();
         return false;
     }
+    s_held = false;
     display_manager.set_outside_touch_callback(touched);
     s_running = true;
     return true;

@@ -21,6 +21,7 @@ struct SlideshowConfig {
     TransitionDirection direction = TransitionDirection::LeftToRight;
     TransitionCurve curve = TransitionCurve::Linear;
     bool shuffle = false;
+    bool hold_to_exit = false;
     bool bgm_shuffle = false;
 };
 

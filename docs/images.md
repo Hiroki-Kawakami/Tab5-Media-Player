@@ -186,7 +186,9 @@ no LVGL display of its own either.
 - **A touch down ends it**, through `set_outside_touch_callback`: with the main
   display hidden every touch is outside all displays. The rest of that touch
   stays an outside touch until the finger lifts, so it never reaches the
-  viewer as a tap.
+  viewer as a tap. With *Hold to Exit* on, the touch down starts a one-shot
+  FreeRTOS timer instead and the lift stops it: a finger held still need not
+  report again, so the callback alone cannot tell when the hold is long enough.
 - **Pictures come from `media_cache` at the viewer's box**, already fitted, so
   PPA only rotates and places them. The next picture is fetched and prepared
   as soon as one is shown, and the interval counts from the end of the

@@ -105,6 +105,13 @@ void image_slideshow_panel_build(lv_obj_t *root, const SlideshowPanelValues &val
     }, &kPanelColors);
     state->show_direction();
 
+    lv_setting_separator_create(section, &kPanelColors);
+    row = lv_setting_row_create(section, "Hold to Exit");
+    lv_setting_switch_create(row, values.hold_to_exit, [state, on_change](lv_obj_t *, bool enabled) {
+        state->values.hold_to_exit = enabled;
+        on_change(state->values);
+    }, &kPanelColors);
+
     section = lv_setting_section_create(contents, "BGM", &kPanelColors);
     row = lv_setting_row_create(section, "Play Music");
     state->bgm_switch = lv_setting_switch_create(row, values.bgm,

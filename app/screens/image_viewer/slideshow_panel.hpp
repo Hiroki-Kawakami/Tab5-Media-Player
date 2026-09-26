@@ -15,6 +15,7 @@ struct SlideshowPanelValues {
     bool shuffle;
     TransitionKind transition;
     TransitionDirection direction;
+    bool hold_to_exit;
     bool bgm;
     bool bgm_shuffle;
     std::string bgm_path;

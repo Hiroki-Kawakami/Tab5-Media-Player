@@ -61,7 +61,8 @@ static int spare_framebuffer(int shown) {
 static SlideshowPanelValues slideshow_values() {
     return { (uint32_t)settings_slideshow_interval(), settings_slideshow_shuffle(),
              settings_slideshow_transition(),
-             settings_slideshow_direction(), settings_slideshow_bgm(),
+             settings_slideshow_direction(), settings_slideshow_hold_to_exit(),
+             settings_slideshow_bgm(),
              settings_slideshow_bgm_shuffle(), settings_slideshow_bgm_path() };
 }
 
@@ -185,6 +186,7 @@ void ImageViewerScreen::buildPanels() {
         settings_set_slideshow_shuffle(changed.shuffle);
         settings_set_slideshow_transition(changed.transition);
         settings_set_slideshow_direction(changed.direction);
+        settings_set_slideshow_hold_to_exit(changed.hold_to_exit);
         settings_set_slideshow_bgm(changed.bgm);
         settings_set_slideshow_bgm_shuffle(changed.bgm_shuffle);
         settings_commit();
@@ -466,6 +468,7 @@ void ImageViewerScreen::startSlideshow() {
     config.transition = settings_slideshow_transition();
     config.direction = settings_slideshow_direction();
     config.shuffle = settings_slideshow_shuffle();
+    config.hold_to_exit = settings_slideshow_hold_to_exit();
     config.bgm_shuffle = settings_slideshow_bgm_shuffle();
     std::vector<PlaylistItem> bgm;
     if (settings_slideshow_bgm()) {

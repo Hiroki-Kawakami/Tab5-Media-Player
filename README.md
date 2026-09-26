@@ -1,5 +1,34 @@
 # Tab5-Media-Player
 
+## Supported Media Formats
+
+### Video
+
+Convert videos in your browser with the
+[converter](https://hiroki-kawakami.github.io/Tab5-Media-Player/).
+
+- **Containers:** AVI, MKV, MP4 (`.mp4`, `.m4v`, `.mov`)
+- **Video:** MJPEG (up to 2560 px wide), H.264 (Constrained Baseline/Main/High,
+  progressive 4:2:0 8-bit, up to 1280x720), MPEG-2 (Simple/Main, progressive,
+  up to 1280x720)
+- **Audio:** PCM, MP3, IMA ADPCM, AAC, Opus (MKV and MP4 only)
+
+### Audio
+
+- `.mp3`, `.aac` (ADTS)
+- `.wav` (16/24/32-bit PCM, IMA ADPCM)
+- `.m4a` (AAC, MP3, Opus or PCM)
+
+### Image
+
+- JPEG (`.jpg`, `.jpeg`), baseline and progressive
+- PNG (`.png`)
+
+For the fastest display, use baseline JPEG no larger than the screen in the
+orientation you view it (720x1280 portrait, 1280x720 landscape).
+
+## Development
+
 Play video files on M5Stack Tab5 (ESP32-P4).
 
 Clone with the required submodule:
@@ -10,8 +39,6 @@ cd Tab5-Media-Player
 ```
 
 For an existing checkout, run `git submodule update --init --recursive` once.
-
-## Development
 
 The dev environment lives in a Nix flake; always run build tooling through
 `nix develop`:

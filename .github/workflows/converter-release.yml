@@ -1,0 +1,82 @@
+name: Converter release
+
+on:
+  push:
+    tags:
+      - "converter-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: tools/converter-rs
+    steps:
+      - uses: actions/checkout@v4
+      - if: startsWith(github.ref, 'refs/tags/converter-v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if [ "converter-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $version in Cargo.toml"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked -p tab5conv --target ${{ matrix.target }}
+      - run: |
+          bin=target/${{ matrix.target }}/release/tab5conv
+          "$bin" --version
+          "$bin" --preset help
+      - if: runner.os != 'Windows'
+        run: tar -czf tab5conv-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release tab5conv
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/tab5conv.exe -DestinationPath tab5conv-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tab5conv-${{ matrix.target }}
+          path: tools/converter-rs/tab5conv-${{ matrix.target }}.*
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/converter-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - working-directory: dist
+        run: sha256sum tab5conv-* > SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "Converter ${GITHUB_REF_NAME#converter-v}" --notes ""
+      - run: |
+          git tag -f converter-latest "$GITHUB_SHA"
+          git push -f origin converter-latest
+      - run: |
+          gh release view converter-latest > /dev/null 2>&1 ||
+            gh release create converter-latest --latest=false --title "Converter (latest)" --notes ""
+          gh release upload converter-latest dist/* --clobber

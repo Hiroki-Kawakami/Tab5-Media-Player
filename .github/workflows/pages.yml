@@ -2,10 +2,8 @@ name: Converter web
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "tools/converter-rs/**"
-      - ".github/workflows/pages.yml"
+    tags:
+      - "converter-v*"
   workflow_dispatch:
 
 permissions:

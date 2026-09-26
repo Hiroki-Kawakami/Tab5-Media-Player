@@ -38,6 +38,27 @@ version), so the tool is a workspace:
 - **x264 settings are in `crates/ffmpeg`.** `-x264-params` is an x264
   detail, while `core` only says which profile.
 
+## Releases
+
+Pushing a `converter-vX.Y.Z` tag runs `.github/workflows/converter-release.yml`,
+which builds `tab5conv` for Linux (x86_64, aarch64), macOS (Apple silicon) and
+Windows (x86_64) and publishes a release with the archives and `SHA256SUMS`.
+`workflow_dispatch` builds without releasing. The same tag deploys the browser
+version (`pages.yml`), so the page and the CLI are always the same version.
+
+- **The tag must match `version` in `Cargo.toml`**; the build fails otherwise.
+- **Tags carry the `converter-` prefix** so they cannot collide with firmware
+  releases.
+- **The same files also go to the `converter-latest` release**, whose tag the
+  workflow moves to each new version. Its download URLs
+  (`releases/download/converter-latest/tab5conv-<target>.tar.gz`) never change;
+  `releases/latest` would instead follow whatever the repository released last.
+  It is created with `--latest=false` so it never takes that place itself.
+- **Linux builds are static (musl)**, so they run whatever glibc a sandbox has.
+- **Nothing is signed.** Files fetched with `curl` get no quarantine attribute
+  or Mark of the Web, so they run; a browser download may be blocked by
+  Gatekeeper or SmartScreen.
+
 ## Desktop app
 
 ```sh

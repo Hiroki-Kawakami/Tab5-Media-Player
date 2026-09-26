@@ -6,6 +6,9 @@
 
 Convert videos in your browser with the
 [converter](https://hiroki-kawakami.github.io/Tab5-Media-Player/).
+The command-line version, `tab5conv`, is on the
+[`converter-latest`](https://github.com/Hiroki-Kawakami/Tab5-Media-Player/releases/tag/converter-latest)
+release; it needs `ffmpeg` and `ffprobe` on `PATH`.
 
 - **Containers:** AVI, MKV, MP4 (`.mp4`, `.m4v`, `.mov`)
 - **Video:** MJPEG (up to 2560 px wide), H.264 (Constrained Baseline/Main/High,

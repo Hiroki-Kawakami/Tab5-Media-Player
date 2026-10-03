@@ -75,3 +75,7 @@ void settings_set_slideshow_bgm_shuffle(bool enabled);
 
 const std::string &settings_slideshow_bgm_path();
 void settings_set_slideshow_bgm_path(const std::string &path);
+
+bool settings_wifi_enabled();
+// `done` runs on the Wi-Fi worker task once the radio has followed.
+void settings_set_wifi_enabled(bool enabled, std::function<void()> done = {});

@@ -403,6 +403,36 @@ Adding `usb_host_msc` made the component manager re-solve
 `lv_conf_internal.h` fails the build with `-Werror`. The lock keeps LVGL at
 9.5.0; watch for that bump whenever a managed dependency is added.
 
+## Wi-Fi
+
+The radio is the C6 coprocessor behind esp-devkit's `libs/wifi` and
+`libs/esp_hosted_enhanced`. The SDIO link to it is brought up by
+`esp_wifi_init()`, i.e. when Wi-Fi is switched on, not at boot: with Wi-Fi off
+the board spends no internal SRAM on it. Switched on, the link's DMA
+descriptors and the `hosted_tx`, `hosted_rx` and `wifi_mgr` task stacks come out
+of internal SRAM, which is the same pool the video decoders' PIE task stacks
+need (see [Shared SRAM buffer](#shared-sram-buffer)).
+
+`wifi::Manager` keeps the credentials in its own `wifi` NVS namespace but not
+whether the radio is on, so that is a setting here (`settings_wifi_enabled`).
+`settings_apply()` calls `set_enabled(true)` for it, which also rejoins the
+saved network; the manager is not touched at all while the setting is off.
+
+The SD card and the SDIO link share the SDMMC controller; the BSP routes the
+card's commands through `esp_hosted_enhanced`'s hooks. Wi-Fi stays on during
+playback, so its traffic and the card reads contend for the controller.
+
+The RX buffers (`CONFIG_WIFI_RMT_*`) are sized for steady streaming receive
+rather than for the least memory.
+
+`WifiPage` registers itself as the manager's listener, which is a single slot;
+anything else that wants Wi-Fi state while the page exists has to share it.
+
+On the simulator `libs/wifi` runs its fake backend, driven by the `wifi-aps`,
+`wifi-connect-result`, `wifi-delay` and `wifi-drop` harness commands.
+`simulator/verify/wifi.txt` expects Wi-Fi off and switches it off again at the
+end, because the setting persists in `simulator/nvs_data.json`.
+
 ## Harness
 
 `CONFIG_HARNESS=y` is set for the device build (the simulator always has it),

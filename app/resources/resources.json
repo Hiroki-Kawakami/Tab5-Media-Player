@@ -37,7 +37,13 @@
         "TABLER_VOLUME_3": "tabler/volume-3.svg",
         "TABLER_VOLUME_4": "tabler/volume-4.svg",
         "TABLER_SUN": "tabler/sun.svg",
-        "TABLER_X": "tabler/x.svg"
+        "TABLER_X": "tabler/x.svg",
+        "TABLER_WIFI": "tabler/wifi.svg",
+        "TABLER_WIFI_2": "tabler/wifi-2.svg",
+        "TABLER_WIFI_1": "tabler/wifi-1.svg",
+        "TABLER_WIFI_0": "tabler/wifi-0.svg",
+        "TABLER_LOCK": "tabler/lock.svg",
+        "TABLER_REFRESH": "tabler/refresh.svg"
       }
     },
     "noto_sans_jp_24": {

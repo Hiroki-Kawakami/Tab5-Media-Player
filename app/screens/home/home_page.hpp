@@ -13,6 +13,7 @@ class HomePage {
 public:
     virtual ~HomePage() = default;
     virtual const std::string &title() const = 0;
+    virtual void build_navigation(lv_obj_t *) {}
     virtual void build(lv_obj_t *contents) = 0;
     virtual void save_state() {}
     virtual void on_appear() {}

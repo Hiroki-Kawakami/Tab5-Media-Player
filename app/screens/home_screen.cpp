@@ -14,6 +14,7 @@
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
 #include "screens/home/sound_page.hpp"
+#include "screens/home/wifi_page.hpp"
 #include "widgets.hpp"
 
 static constexpr int32_t kMenuWidth = 400;
@@ -23,6 +24,7 @@ const HomeScreen::MenuItem HomeScreen::kMenu[] = {
     {"Storage", LV_SYMBOL_USB, nullptr, "USB Drive", &HomeScreen::open_usb_drive},
     {"Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
     {"Settings", TABLER_VOLUME, &icon_36, "Sound", &HomeScreen::open_sound},
+    {"Settings", TABLER_WIFI, &icon_36, "Wi-Fi", &HomeScreen::open_wifi},
 };
 
 static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
@@ -156,6 +158,7 @@ void HomeScreen::build_page(lv_obj_t *pane) {
     } else {
         lv_navigation_title_create(navigation, page->title().c_str());
     }
+    page->build_navigation(navigation);
     page->build(contents);
     visible_ = page;
 }
@@ -202,6 +205,10 @@ std::shared_ptr<HomePage> HomeScreen::open_display() {
 
 std::shared_ptr<HomePage> HomeScreen::open_sound() {
     return std::make_shared<SoundPage>();
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_wifi() {
+    return std::make_shared<WifiPage>();
 }
 
 void HomeScreen::show_mount_error(const char *title, const char *message, esp_err_t err) {

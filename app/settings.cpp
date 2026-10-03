@@ -8,6 +8,7 @@
 #include "media_player.hpp"
 #include "nvs_flash.h"
 #include "ui_orientation.hpp"
+#include "wifi_manager.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -192,6 +193,8 @@ Setting<"slidebgmshuf", uint8_t, sanitize_flag> s_slideshow_bgm_shuffle{0};
 
 Setting<"slidebgmpath", std::string> s_slideshow_bgm_path{std::string()};
 
+Setting<"wifi", uint8_t, sanitize_flag> s_wifi{0};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -212,6 +215,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_slideshow_bgm);
     fn(s_slideshow_bgm_shuffle);
     fn(s_slideshow_bgm_path);
+    fn(s_wifi);
 }
 
 std::atomic<bool> s_headphone;
@@ -250,6 +254,7 @@ void settings_apply() {
     bsp_audio_set_volume(settings_volume());
     bsp_audio_set_eq_enabled(s_equalizer.get() != 0);
     bsp_audio_set_headphone_callback(headphone_changed, nullptr);
+    if (settings_wifi_enabled()) wifi::manager().set_enabled(true);
 }
 
 void settings_commit() {
@@ -431,4 +436,13 @@ const std::string &settings_slideshow_bgm_path() {
 
 void settings_set_slideshow_bgm_path(const std::string &path) {
     s_slideshow_bgm_path.set(path);
+}
+
+bool settings_wifi_enabled() {
+    return s_wifi.get() != 0;
+}
+
+void settings_set_wifi_enabled(bool enabled, std::function<void()> done) {
+    s_wifi.set(enabled);
+    wifi::manager().set_enabled(enabled, std::move(done));
 }

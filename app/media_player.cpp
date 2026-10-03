@@ -22,6 +22,9 @@
 #include "ui_font.hpp"
 #include "ui_orientation.hpp"
 #include "usb_msc.h"
+#ifndef ESP_PLATFORM
+#include "wifi_sim.hpp"
+#endif
 
 static const char *TAG = "media_player";
 
@@ -134,6 +137,9 @@ void app_entry() {
     media_cache_register_harness();
     h264_bench_register();
     mpeg2_bench_register();
+#ifndef ESP_PLATFORM
+    wifi::sim::register_harness_commands();
+#endif
 
     err = usb_msc_init([](usb_msc_event_t event, void *) {
         if (event != USB_MSC_EVENT_DISCONNECTED) return;

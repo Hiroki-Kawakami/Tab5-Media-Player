@@ -1,0 +1,40 @@
+settle
+tap 360 644
+settle
+capture wifi_off.jpg
+tap 630 191
+wait 1500
+settle
+capture wifi_list.jpg
+tap 360 388
+wait 300
+tap 131 960
+wait 300
+capture wifi_password.jpg
+tap 497 449
+wait 1500
+settle
+capture wifi_connected.jpg
+imu rot90
+wait 800
+settle
+capture wifi_landscape.jpg
+imu rot0
+wait 800
+settle
+wifi-aps fail-auth-net:-50:1,YOUR_SSID:-60:1
+tap 665 60
+wait 1500
+settle
+tap 360 517
+wait 300
+tap 497 449
+wait 1500
+settle
+capture wifi_failed.jpg
+tap 360 690
+settle
+tap 630 191
+wait 500
+settle
+capture wifi_turned_off.jpg

@@ -1,0 +1,9 @@
+dependencies:
+  espressif/mdns:
+    version: "^1.8.0"
+    rules:
+      - if: "target != linux"
+  espressif/esp_audio_codec:
+    version: ">=2.0.0"
+    rules:
+      - if: "target != linux"

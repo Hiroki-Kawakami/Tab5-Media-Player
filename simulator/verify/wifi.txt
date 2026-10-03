@@ -1,5 +1,5 @@
 settle
-tap 360 644
+tap 360 796
 settle
 capture wifi_off.jpg
 tap 630 191

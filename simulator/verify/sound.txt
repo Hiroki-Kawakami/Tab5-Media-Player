@@ -1,5 +1,5 @@
 settle
-tap 360 554
+tap 360 706
 settle
 capture sound.jpg
 down 400 227

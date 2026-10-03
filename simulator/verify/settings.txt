@@ -1,5 +1,5 @@
 settle
-tap 360 466
+tap 360 618
 settle
 capture settings_display.jpg
 down 537 227

@@ -21,6 +21,7 @@
           inputsFrom = [ esp-devkit.devShells.${system}.default ];
           packages = [
             pkgs.ffmpeg
+            pkgs.mbedtls_4
             pkgs.cargo
             pkgs.rustc
             pkgs.clippy

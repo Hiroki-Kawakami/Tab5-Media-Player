@@ -3,7 +3,8 @@
     "icon_120": {
       "size": 120,
       "icon": {
-        "TABLER_MUSIC": "tabler/music.svg"
+        "TABLER_MUSIC": "tabler/music.svg",
+        "TABLER_CAST": "tabler/cast.svg"
       }
     },
     "icon_72": {
@@ -43,7 +44,8 @@
         "TABLER_WIFI_1": "tabler/wifi-1.svg",
         "TABLER_WIFI_0": "tabler/wifi-0.svg",
         "TABLER_LOCK": "tabler/lock.svg",
-        "TABLER_REFRESH": "tabler/refresh.svg"
+        "TABLER_REFRESH": "tabler/refresh.svg",
+        "TABLER_CAST": "tabler/cast.svg"
       }
     },
     "noto_sans_jp_24": {

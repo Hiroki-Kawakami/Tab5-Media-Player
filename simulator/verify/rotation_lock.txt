@@ -1,5 +1,5 @@
 settle
-tap 360 466
+tap 360 618
 settle
 capture rotation_lock_off.jpg
 tap 640 376

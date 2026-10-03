@@ -46,6 +46,7 @@ private:
     void select(std::size_t index);
     std::shared_ptr<HomePage> open_sd_card();
     std::shared_ptr<HomePage> open_usb_drive();
+    std::shared_ptr<HomePage> open_airplay_receiver();
     std::shared_ptr<HomePage> open_display();
     std::shared_ptr<HomePage> open_sound();
     std::shared_ptr<HomePage> open_wifi();

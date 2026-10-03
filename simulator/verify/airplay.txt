@@ -1,0 +1,48 @@
+settle
+tap 360 468
+wait 500
+settle
+capture airplay_wifi_off.jpg
+tap 50 58
+settle
+tap 360 796
+settle
+tap 630 191
+wait 1500
+settle
+tap 360 388
+wait 300
+tap 131 960
+wait 300
+tap 497 449
+wait 1500
+settle
+tap 50 58
+settle
+tap 360 468
+wait 1500
+settle
+capture airplay_listening.jpg
+tap 50 58
+settle
+imu rot90
+wait 800
+settle
+tap 620 1100
+settle
+capture airplay_home_display.jpg
+tap 468 1100
+wait 1500
+settle
+capture airplay_landscape.jpg
+tap 60 1225
+settle
+capture airplay_home_cleared.jpg
+imu rot0
+wait 800
+settle
+tap 360 796
+settle
+tap 630 191
+wait 500
+settle

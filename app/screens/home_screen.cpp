@@ -10,6 +10,8 @@
 #include <iterator>
 #include "media_player.hpp"
 #include "resources.h"
+#include "screen_manager.hpp"
+#include "screens/airplay_receiver_screen.hpp"
 #include "screens/home/display_page.hpp"
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
@@ -22,6 +24,7 @@ static constexpr int32_t kMenuWidth = 400;
 const HomeScreen::MenuItem HomeScreen::kMenu[] = {
     {"Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
     {"Storage", LV_SYMBOL_USB, nullptr, "USB Drive", &HomeScreen::open_usb_drive},
+    {"Network", TABLER_CAST, &icon_36, "AirPlay Receiver", &HomeScreen::open_airplay_receiver},
     {"Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
     {"Settings", TABLER_VOLUME, &icon_36, "Sound", &HomeScreen::open_sound},
     {"Settings", TABLER_WIFI, &icon_36, "Wi-Fi", &HomeScreen::open_wifi},
@@ -197,6 +200,15 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
         return nullptr;
     }
     return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_airplay_receiver() {
+    navigate([this] {
+        stack_.clear();
+        selected_ = SIZE_MAX;
+    });
+    screen_manager.push(std::make_shared<AirPlayReceiverScreen>());
+    return nullptr;
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_display() {

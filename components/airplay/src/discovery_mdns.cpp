@@ -3,7 +3,7 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "advertiser.hpp"
+#include "discovery.hpp"
 #include "esp_log.h"
 #include "mdns.h"
 
@@ -45,6 +45,20 @@ std::unique_ptr<Advertiser> Advertiser::create(const std::string &host, const st
         return nullptr;
     }
     return advertiser;
+}
+
+uint16_t resolve_port(const std::string &instance, const char *type, uint32_t timeout_ms) {
+    const std::string service(type);
+    const std::size_t dot = service.find('.');
+    if (dot == std::string::npos) return 0;
+    mdns_result_t *results = nullptr;
+    if (mdns_query_srv(instance.c_str(), service.substr(0, dot).c_str(),
+                       service.substr(dot + 1).c_str(), timeout_ms, &results) != ESP_OK) {
+        return 0;
+    }
+    const uint16_t port = results ? results->port : 0;
+    mdns_query_results_free(results);
+    return port;
 }
 
 }  // namespace airplay

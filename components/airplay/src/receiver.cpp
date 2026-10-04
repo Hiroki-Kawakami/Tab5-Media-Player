@@ -4,8 +4,9 @@
  */
 
 #include "airplay.hpp"
-#include "advertiser.hpp"
 #include "crypto.hpp"
+#include "discovery.hpp"
+#include "remote.hpp"
 #include "stream.hpp"
 #include "task.hpp"
 #include "esp_heap_caps.h"
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <string_view>
@@ -28,6 +30,7 @@ static const char *TAG = "airplay";
 
 static constexpr int kMaxClients = 4;
 static constexpr std::size_t kRequestBytes = 16 * 1024;
+static constexpr std::size_t kMaxBodyBytes = 2 * 1024 * 1024;
 static constexpr int kPollMs = 100;
 static constexpr uint32_t kStackBytes = 8192;
 
@@ -36,6 +39,7 @@ struct Request {
     std::string_view uri;
     std::string_view headers;
     std::string_view body;
+    std::shared_ptr<const uint8_t> storage;
 
     std::string_view header(std::string_view name) const {
         std::string_view rest = headers;
@@ -65,7 +69,28 @@ struct Client {
     char *buffer = nullptr;
     std::size_t used = 0;
     std::size_t discard = 0;
+    std::string head;
+    uint8_t *body = nullptr;
+    std::size_t body_size = 0;
+    std::size_t body_got = 0;
 };
+
+static void parse_head(std::string_view head, Request *request) {
+    const std::size_t line_end = head.find("\r\n");
+    const std::string_view line = head.substr(0, line_end);
+    const std::size_t space = line.find(' ');
+    request->method = line.substr(0, space);
+    if (space != std::string_view::npos) {
+        const std::string_view rest = line.substr(space + 1);
+        request->uri = rest.substr(0, rest.find(' '));
+    }
+    request->headers =
+        line_end == std::string_view::npos ? std::string_view() : head.substr(line_end + 2);
+}
+
+static uint32_t be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
 
 static bool parse_param(std::string_view text, std::string_view key, uint32_t *value) {
     const std::size_t at = text.find(key);
@@ -81,6 +106,8 @@ public:
     ~Receiver();
     bool start();
     State state() const { return state_; }
+    NowPlaying now_playing();
+    void command(std::string command) { remote_.send(std::move(command)); }
 
 private:
     bool open_listeners();
@@ -96,6 +123,8 @@ private:
     bool announce(const Request &request);
     std::string setup(Client &client, const Request &request);
     void set_parameter(const Request &request);
+    void parse_dmap(const uint8_t *data, std::size_t size);
+    void set_artwork(std::shared_ptr<const uint8_t> data, std::size_t size);
     void end_session();
     void set_state(State state);
 
@@ -110,6 +139,19 @@ private:
     StreamSetup pending_;
     std::unique_ptr<Stream> stream_;
     std::unique_ptr<Advertiser> advertiser_;
+    Remote remote_;
+    std::mutex meta_lock_;
+    std::string title_;
+    std::string artist_;
+    std::string album_;
+    bool has_progress_ = false;
+    uint32_t progress_start_ = 0;
+    uint32_t progress_end_ = 0;
+    uint32_t rate_ = 44100;
+    bool has_volume_ = false;
+    float volume_db_ = 0;
+    std::atomic<bool> has_position_{ false };
+    std::atomic<uint32_t> position_rtp_{ 0 };
     std::atomic<State> state_{ State::Stopped };
     std::atomic<bool> quit_{ false };
     Task task_;
@@ -120,6 +162,7 @@ static Receiver *s_receiver;
 Receiver::~Receiver() {
     quit_ = true;
     task_.join();
+    remote_.stop();
     advertiser_.reset();
     end_session();
     for (Client &client : clients_) close_client(client);
@@ -179,10 +222,11 @@ bool Receiver::start() {
         { "et", "0,1" },    { "ek", "1" },      { "sr", "44100" },   { "ss", "16" },
         { "sv", "false" },  { "tp", "UDP" },    { "vn", "65537" },   { "vs", "105.1" },
         { "am", config_.model },   { "pw", "false" },  { "sf", "0x4" },
+        { "md", "0,1,2" },
     };
     advertiser_ = Advertiser::create(host, std::string(id) + "@" + config_.name, "_raop._tcp",
                                      port_, txt);
-    if (!advertiser_) return false;
+    if (!advertiser_ || !remote_.start()) return false;
 
     set_state(State::Listening);
     ESP_LOGI(TAG, "listening on %u", port_);
@@ -251,16 +295,46 @@ void Receiver::close_client(Client &client) {
     if (&client - clients_ == owner_) end_session();
     close(client.fd);
     heap_caps_free(client.buffer);
+    heap_caps_free(client.body);
     client = Client();
 }
 
 void Receiver::end_session() {
     stream_.reset();
     owner_ = -1;
+    remote_.clear();
+    {
+        std::lock_guard<std::mutex> guard(meta_lock_);
+        title_.clear();
+        artist_.clear();
+        album_.clear();
+        has_progress_ = false;
+    }
+    has_position_ = false;
+    set_artwork(nullptr, 0);
     if (state_ != State::Stopped) set_state(State::Listening);
 }
 
 void Receiver::read_client(Client &client) {
+    if (client.body) {
+        const ssize_t got =
+            recv(client.fd, client.body + client.body_got, client.body_size - client.body_got, 0);
+        if (got <= 0) {
+            close_client(client);
+            return;
+        }
+        client.body_got += (std::size_t)got;
+        if (client.body_got < client.body_size) return;
+        const std::string head = std::move(client.head);
+        Request request;
+        parse_head(head, &request);
+        request.storage = std::shared_ptr<const uint8_t>(client.body, heap_caps_free);
+        request.body = std::string_view(reinterpret_cast<const char *>(client.body), client.body_size);
+        client.body = nullptr;
+        client.head.clear();
+        handle(client, request);
+        return;
+    }
     if (client.discard) {
         char scrap[512];
         const ssize_t got =
@@ -294,25 +368,25 @@ std::size_t Receiver::handle_buffer(Client &client) {
     const std::string_view data(client.buffer, client.used);
     const std::size_t end = data.find("\r\n\r\n");
     if (end == std::string_view::npos) return 0;
-    const std::string_view head = data.substr(0, end);
-    const std::size_t line_end = head.find("\r\n");
-    const std::string_view line = head.substr(0, line_end);
-
     Request request;
-    const std::size_t space = line.find(' ');
-    request.method = line.substr(0, space);
-    if (space != std::string_view::npos) {
-        const std::string_view rest = line.substr(space + 1);
-        request.uri = rest.substr(0, rest.find(' '));
-    }
-    request.headers =
-        line_end == std::string_view::npos ? std::string_view() : head.substr(line_end + 2);
+    parse_head(data.substr(0, end), &request);
 
     const std::string_view length_text = request.header("Content-Length");
     const std::size_t length =
         length_text.empty() ? 0 : (std::size_t)strtoul(std::string(length_text).c_str(), nullptr, 10);
     const std::size_t total = end + 4 + length;
+    if (total > kRequestBytes && length <= kMaxBodyBytes) {
+        client.body = static_cast<uint8_t *>(heap_caps_malloc(length, MALLOC_CAP_SPIRAM));
+    }
+    if (client.body) {
+        client.head = std::string(data.substr(0, end));
+        client.body_size = length;
+        client.body_got = client.used - (end + 4);
+        memcpy(client.body, client.buffer + end + 4, client.body_got);
+        return client.used;
+    }
     if (total > kRequestBytes) {
+        ESP_LOGW(TAG, "dropping a %u-byte body", (unsigned)length);
         request.body = {};
         handle(client, request);
         client.discard = total - client.used;
@@ -466,6 +540,14 @@ std::string Receiver::setup(Client &client, const Request &request) {
     parse_param(transport, "timing_port=", &timing);
     StreamSetup setup = pending_;
     setup.output = config_.output.get();
+    setup.on_position = [this](uint32_t rtp) {
+        position_rtp_ = rtp;
+        has_position_ = true;
+    };
+    {
+        std::lock_guard<std::mutex> guard(meta_lock_);
+        rate_ = setup.format.rate;
+    }
     setup.peer = client.peer;
     setup.peer_control_port = (uint16_t)control;
     setup.peer_timing_port = (uint16_t)timing;
@@ -484,11 +566,96 @@ std::string Receiver::setup(Client &client, const Request &request) {
 }
 
 void Receiver::set_parameter(const Request &request) {
-    if (request.header("Content-Type") != "text/parameters") return;
-    const std::size_t at = request.body.find("volume:");
-    if (at == std::string_view::npos) return;
-    const float db = strtof(std::string(request.body.substr(at + 7, 32)).c_str(), nullptr);
-    if (auto listener = listener_.lock()) listener->on_airplay_volume(db);
+    const std::string_view type = request.header("Content-Type");
+    const auto *bytes = reinterpret_cast<const uint8_t *>(request.body.data());
+    if (type == "application/x-dmap-tagged") {
+        parse_dmap(bytes, request.body.size());
+        return;
+    }
+    if (type.starts_with("image/")) {
+        if (type == "image/none" || request.body.empty()) {
+            set_artwork(nullptr, 0);
+            return;
+        }
+        std::shared_ptr<const uint8_t> data = request.storage;
+        if (!data) {
+            auto *copy = static_cast<uint8_t *>(heap_caps_malloc(request.body.size(), MALLOC_CAP_SPIRAM));
+            if (!copy) return;
+            memcpy(copy, bytes, request.body.size());
+            data = std::shared_ptr<const uint8_t>(copy, heap_caps_free);
+        }
+        set_artwork(std::move(data), request.body.size());
+        return;
+    }
+    if (type != "text/parameters") return;
+
+    const std::string text(request.body);
+    if (const char *volume = strstr(text.c_str(), "volume:")) {
+        const float db = strtof(volume + 7, nullptr);
+        {
+            std::lock_guard<std::mutex> guard(meta_lock_);
+            has_volume_ = true;
+            volume_db_ = db;
+        }
+        if (auto listener = listener_.lock()) listener->on_airplay_volume(db);
+    }
+    if (const char *progress = strstr(text.c_str(), "progress:")) {
+        unsigned long start = 0, current = 0, end = 0;
+        if (sscanf(progress + 9, " %lu/%lu/%lu", &start, &current, &end) == 3) {
+            std::lock_guard<std::mutex> guard(meta_lock_);
+            has_progress_ = true;
+            progress_start_ = (uint32_t)start;
+            progress_end_ = (uint32_t)end;
+        }
+    }
+}
+
+void Receiver::parse_dmap(const uint8_t *data, std::size_t size) {
+    while (size >= 8) {
+        const uint32_t length = be32(data + 4);
+        if (length > size - 8) return;
+        const std::string_view tag(reinterpret_cast<const char *>(data), 4);
+        const std::string value(reinterpret_cast<const char *>(data + 8), length);
+        if (tag == "mlit") {
+            {
+                std::lock_guard<std::mutex> guard(meta_lock_);
+                title_.clear();
+                artist_.clear();
+                album_.clear();
+            }
+            parse_dmap(data + 8, length);
+        } else if (tag == "minm" || tag == "asar" || tag == "asal") {
+            std::lock_guard<std::mutex> guard(meta_lock_);
+            (tag == "minm" ? title_ : tag == "asar" ? artist_ : album_) = value;
+        }
+        data += 8 + length;
+        size -= 8 + length;
+    }
+}
+
+void Receiver::set_artwork(std::shared_ptr<const uint8_t> data, std::size_t size) {
+    if (auto listener = listener_.lock()) listener->on_airplay_artwork(std::move(data), size);
+}
+
+NowPlaying Receiver::now_playing() {
+    NowPlaying now;
+    now.state = state_;
+    now.remote = remote_.available();
+    std::lock_guard<std::mutex> guard(meta_lock_);
+    now.title = title_;
+    now.artist = artist_;
+    now.album = album_;
+    now.has_volume = has_volume_;
+    now.volume_db = volume_db_;
+    if (has_progress_ && rate_) {
+        now.duration_ms = (int64_t)(uint32_t)(progress_end_ - progress_start_) * 1000 / rate_;
+        if (has_position_) {
+            const int32_t played = (int32_t)(position_rtp_.load() - progress_start_);
+            now.position_ms = played < 0 ? 0 : (int64_t)played * 1000 / rate_;
+            if (now.position_ms > now.duration_ms) now.position_ms = now.duration_ms;
+        }
+    }
+    return now;
 }
 
 void Receiver::handle(Client &client, const Request &request) {
@@ -496,6 +663,8 @@ void Receiver::handle(Client &client, const Request &request) {
     const std::string_view method = request.method;
     ESP_LOGD(TAG, "%.*s %.*s", (int)method.size(), method.data(), (int)request.uri.size(),
              request.uri.data());
+    const std::string_view dacp_id = request.header("DACP-ID");
+    const std::string_view active_remote = request.header("Active-Remote");
 
     if (method == "OPTIONS") {
         respond(client, request, 200,
@@ -511,9 +680,12 @@ void Receiver::handle(Client &client, const Request &request) {
                 if (&other != &client && &other - clients_ == owner_) close_client(other);
             }
         }
-        stream_.reset();
+        end_session();
         owner_ = index;
         set_state(State::Connected);
+        if (!dacp_id.empty() && !active_remote.empty()) {
+            remote_.set_target(client.peer, std::string(dacp_id), std::string(active_remote));
+        }
         respond(client, request, 200, {});
     } else if (index != owner_) {
         respond(client, request, method == "POST" || method == "GET_PARAMETER" ? 200 : 453, {});
@@ -559,5 +731,19 @@ void stop() {
 }
 
 State state() { return s_receiver ? s_receiver->state() : State::Stopped; }
+
+NowPlaying now_playing() {
+    if (!s_receiver) return {};
+    return s_receiver->now_playing();
+}
+
+void remote(Command command) {
+    if (!s_receiver) return;
+    switch (command) {
+    case Command::PlayPause: s_receiver->command("playpause"); break;
+    case Command::Next: s_receiver->command("nextitem"); break;
+    case Command::Previous: s_receiver->command("previtem"); break;
+    }
+}
 
 }  // namespace airplay

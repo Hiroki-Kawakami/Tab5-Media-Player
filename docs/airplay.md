@@ -51,6 +51,49 @@ AirPlay volume (−30…0 dB, −144 mute) is applied as the same attenuation in
 `bsp_audio_set_volume` is linear in dB at 0.4 dB per step, so −30 dB is 25 and
 mute is 0. The Sound setting is restored when the screen closes.
 
+## Track info and artwork
+
+Senders only send metadata to receivers that advertise `md=0,1,2`. It all
+arrives as `SET_PARAMETER`:
+
+- `application/x-dmap-tagged`: an `mlit` holding `minm` (title), `asar`
+  (artist) and `asal` (album).
+- `image/jpeg` or `image/png`: the artwork; `image/none` clears it. A body
+  bigger than the 16 KB request buffer gets a PSRAM buffer of its own, up to
+  2 MB, which then becomes the artwork's storage without a copy.
+- `progress: start/current/end` in RTP time, sent at track start and on seeks
+  only, so the position comes from the RTP time of the packet last written to
+  the output.
+
+The screen polls `airplay::now_playing()` for the text and times and gets the
+artwork through the listener. It decodes the artwork on a task of its own
+(16 KB PSRAM stack, as for any image_framework caller) with
+`image_decode_to_fit()`, which unlike the file covers' path also enlarges:
+iPhones send 512x512 artwork for the 552 px box. The fitted picture goes to the
+start of framebuffer 1, like `AudioPlayerScreen`'s, and the rest of that
+framebuffer is the intermediate, so nothing is allocated. A baseline JPEG that
+has to grow is decoded 1:1 by the JPEG hardware alone (the pipeline's Layer 1
+decoder, no PPA) and enlarged in one software resize; one that shrinks keeps
+the covers' PPA path. The LVGL image showing the framebuffer is dropped before
+the decode starts writing into it.
+
+## Remote control
+
+The sender's RTSP requests carry `DACP-ID` and `Active-Remote`. The remote
+control service is `iTunes_Ctrl_<DACP-ID>._dacp._tcp` on the sender's own
+address, so only its port is resolved over mDNS (`mdns_query_srv`, or
+`DNSServiceResolve` on the simulator). Commands are
+`GET /ctrl-int/1/<command>` with the `Active-Remote` header, sent from a task
+of the component's own so the UI never waits on the network: `playpause`,
+`nextitem` and `previtem`. A failed request drops the port and resolves it
+again.
+
+The volume row only shows the sender's volume. The last volume is kept past
+the end of a session, as the output keeps it too: a sender that re-announces
+does not always send it again. `setproperty?dmcp.device-volume`
+is answered with 2xx but ignored by both iOS and current macOS Music, which no
+longer has a volume of its own.
+
 ## Memory
 
 The stream buffers and the three receiver tasks' stacks are PSRAM. mbedtls

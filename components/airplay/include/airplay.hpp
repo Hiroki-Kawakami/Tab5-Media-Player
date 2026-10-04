@@ -28,6 +28,8 @@ public:
     virtual void on_airplay_state(State state) = 0;
     /* kVolumeMute, or kVolumeMin..0 dB. */
     virtual void on_airplay_volume(float db) = 0;
+    /* JPEG or PNG bytes; null when the track has none or the session ended. */
+    virtual void on_airplay_artwork(std::shared_ptr<const uint8_t> data, std::size_t size) = 0;
 };
 
 /* Called from the receiver's playback task. */
@@ -52,5 +54,28 @@ struct Config {
 bool start(const Config &config, std::weak_ptr<Listener> listener);
 void stop();
 State state();
+
+struct NowPlaying {
+    State state = State::Stopped;
+    std::string title;
+    std::string artist;
+    std::string album;
+    /* -1 while the sender has not said. */
+    int64_t position_ms = -1;
+    int64_t duration_ms = -1;
+    bool has_volume = false;
+    float volume_db = 0;
+    /* The sender's remote control has been found; remote() is dropped until then. */
+    bool remote = false;
+};
+
+enum class Command {
+    PlayPause,
+    Next,
+    Previous,
+};
+
+NowPlaying now_playing();
+void remote(Command command);
 
 }  // namespace airplay

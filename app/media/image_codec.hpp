@@ -55,6 +55,11 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSiz
 bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
                        uint8_t *dst, std::size_t capacity, ImageSize *out,
                        void (*contended)(void *ctx) = nullptr, void *ctx = nullptr);
+/* Fits `box` exactly, enlarging too, as packed rows in `dst`. `scratch` takes
+   the intermediate picture and must not overlap `dst`; both 64-byte aligned. */
+bool image_decode_to_fit(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
+                         uint8_t *dst, std::size_t capacity, uint8_t *scratch,
+                         std::size_t scratch_capacity, ImageSize *out);
 /* `store` gets the encoded bytes, which live only for the call. */
 bool image_encode(const ImagePixels &pixels,
                   const std::function<bool(const uint8_t *data, std::size_t size)> &store);

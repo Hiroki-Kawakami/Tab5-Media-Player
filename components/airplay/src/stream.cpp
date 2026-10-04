@@ -411,6 +411,7 @@ bool Stream::play_packet() {
         due = play_time_ns_locked(play_rtp_);
         play_seq_++;
     }
+    const uint32_t rtp = play_rtp_;
     play_rtp_ += frames;
 
     starved_ = starving ? starved_ + 1 : 0;
@@ -437,6 +438,7 @@ bool Stream::play_packet() {
         }
     }
     write_output(out_, frames);
+    if (setup_.on_position) setup_.on_position(rtp);
     return true;
 }
 

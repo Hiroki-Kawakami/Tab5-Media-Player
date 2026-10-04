@@ -19,6 +19,7 @@ namespace airplay {
 
 struct StreamSetup {
     Output *output = nullptr;
+    std::function<void(uint32_t rtp)> on_position;
     Format format;
     bool encrypted = false;
     uint8_t key[16] = {};

@@ -27,7 +27,8 @@ submodule.
   thumbnail cache: the probe arena, image dedup, the heaps, and what stops
   while the video player is open.
 - [`docs/airplay.md`](docs/airplay.md) — the AirPlay 1 receiver: protocol facts
-  the code relies on, and clock sync and drift correction.
+  the code relies on, clock sync and drift correction, track info/artwork and
+  DACP remote control.
 - [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
   LVGL fonts, icon fonts and images from `app/resources/resources.json` at
   build time.

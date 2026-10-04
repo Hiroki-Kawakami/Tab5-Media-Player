@@ -3,17 +3,18 @@ set(AIRPLAY_SRCS
     "src/crypto.cpp"
     "src/decoder.cpp"
     "src/receiver.cpp"
+    "src/remote.cpp"
     "src/stream.cpp"
     "src/task.cpp")
 
 if(ESP_PLATFORM)
     idf_component_register(
-        SRCS ${AIRPLAY_SRCS} "src/advertiser_mdns.cpp"
+        SRCS ${AIRPLAY_SRCS} "src/discovery_mdns.cpp"
         INCLUDE_DIRS "include"
         PRIV_REQUIRES esp_timer lwip mbedtls espressif__mdns espressif__esp_audio_codec)
 else()
     idf_component_register(
-        SRCS ${AIRPLAY_SRCS} "src/advertiser_dnssd.cpp"
+        SRCS ${AIRPLAY_SRCS} "src/discovery_dnssd.cpp"
         INCLUDE_DIRS "include")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(TFPSACRYPTO REQUIRED IMPORTED_TARGET tfpsacrypto)

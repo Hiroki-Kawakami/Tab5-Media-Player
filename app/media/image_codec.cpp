@@ -573,6 +573,173 @@ bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, boo
     return true;
 }
 
+static imgf_resize_opts_t fill_opts(ImageSize box, bool rgb888) {
+    imgf_resize_opts_t opts = {};
+    opts.target_w = (uint16_t)box.width;
+    opts.target_h = (uint16_t)box.height;
+    opts.fit = IMGF_FIT_CONTAIN;
+    opts.dst_pixfmt = target_pixfmt(rgb888);
+    opts.alloc_caps = MALLOC_CAP_SPIRAM;
+    return opts;
+}
+
+static bool resize_to_fit(const uint8_t *src, uint32_t width, uint32_t height, std::size_t stride,
+                          ImageSize box, bool rgb888, uint8_t *dst, std::size_t capacity,
+                          ImageSize *out) {
+    const imgf_resize_opts_t opts = fill_opts(box, rgb888);
+    uint16_t fit_w = 0;
+    uint16_t fit_h = 0;
+    if (imgf_resize_compute_dst((uint16_t)width, (uint16_t)height, &opts, &fit_w, &fit_h) !=
+            IMGF_OK ||
+        (std::size_t)fit_w * fit_h * (rgb888 ? 3 : 2) > capacity) {
+        return false;
+    }
+    if (imgf_resize_buffer(src, (uint16_t)width, (uint16_t)height, stride, IMGF_PIX_RGB888, dst, 0,
+                           &opts) != IMGF_OK) {
+        return false;
+    }
+    *out = { (int16_t)fit_w, (int16_t)fit_h };
+    return true;
+}
+
+static bool hardware_to_fit(const uint8_t *data, std::size_t size, const ImageHeader &header,
+                            ImageSize box, bool rgb888, uint8_t *dst, std::size_t capacity,
+                            uint8_t *scratch, std::size_t scratch_capacity, ImageSize *out) {
+    if (header.width > kMaxHardwareWidth) return false;
+    const imgf_resize_opts_t opts = fill_opts(box, rgb888);
+    uint16_t fit_w = 0;
+    uint16_t fit_h = 0;
+    if (imgf_resize_compute_dst((uint16_t)header.width, (uint16_t)header.height, &opts, &fit_w,
+                                &fit_h) != IMGF_OK) {
+        return false;
+    }
+    CodecLock codec;
+    const uint32_t padded = (header.width + kStripRows - 1) / kStripRows * kStripRows;
+    jpeg_ppa_pipeline_handle_t handle = pipeline(kStripRows * padded * 3);
+    if (!handle) return false;
+
+    if (fit_w > header.width || fit_h > header.height) {
+        jpeg_enh_frame_info_t info = {};
+        const esp_err_t err = jpeg_enh_decoder_process(jpeg_ppa_pipeline_get_decoder(handle), data,
+                                                       (uint32_t)size, scratch, scratch_capacity,
+                                                       &info);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "jpeg decode: %s", esp_err_to_name(err));
+            return false;
+        }
+        return resize_to_fit(scratch, info.origin_w, info.origin_h, (std::size_t)info.pic_w * 3,
+                             box, rgb888, dst, capacity, out);
+    }
+
+    uint16_t direct_w = 0;
+    uint16_t direct_h = 0;
+    const uint32_t direct =
+        ppa_fit_scale(header.width, header.height, fit_w, fit_h, &direct_w, &direct_h);
+    const int32_t slack = direct_shortfall_max(box);
+    const bool close = direct && fit_w - direct_w <= slack && fit_h - direct_h <= slack;
+    const uint32_t scale = close ? direct : ppa_scale(header.width, header.height, fit_w, fit_h);
+    const uint32_t mid_w = header.width * scale / kScaleDenominator;
+    const uint32_t mid_h = header.height * scale / kScaleDenominator;
+    if (!mid_w || !mid_h) return false;
+
+    jpeg_ppa_output_t target = {};
+    jpeg_ppa_transform_t transform = {};
+    transform.scale_x = (float)scale / kScaleDenominator;
+    transform.scale_y = transform.scale_x;
+    target.pic_w = mid_w;
+    target.pic_h = mid_h;
+    if (close) {
+        if ((std::size_t)mid_w * mid_h * (rgb888 ? 3 : 2) > capacity) return false;
+        target.buffer = dst;
+        target.buffer_size = capacity;
+        target.color_mode = panel_color_mode(rgb888);
+        transform.rgb_swap = true;
+    } else {
+        if (align_up((std::size_t)mid_w * mid_h * 3) > scratch_capacity) return false;
+        target.buffer = scratch;
+        target.buffer_size = scratch_capacity;
+        target.color_mode = PPA_SRM_COLOR_MODE_RGB888;
+    }
+    const esp_err_t err = jpeg_ppa_pipeline_process(handle, data, size, &target, &transform, nullptr);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "jpeg decode: %s", esp_err_to_name(err));
+        return false;
+    }
+    if (close) {
+        *out = { (int16_t)mid_w, (int16_t)mid_h };
+        return true;
+    }
+    return resize_to_fit(scratch, mid_w, mid_h, (std::size_t)mid_w * 3, box, rgb888, dst,
+                         capacity, out);
+}
+
+static bool stream_to_fit(const uint8_t *data, std::size_t size, ImageFormat format, ImageSize box,
+                          bool rgb888, uint8_t *dst, std::size_t capacity, ImageSize *out) {
+    imgf_decoder_t *dec =
+        imgf_make_decoder(format == ImageFormat::Png ? IMGF_FMT_PNG : IMGF_FMT_JPEG);
+    if (!dec) return false;
+    imgf_buffer_source_t memory;
+    imgf_decode_opts_t options = {};
+    options.target_w = (uint16_t)box.width;
+    options.target_h = (uint16_t)box.height;
+    options.alloc_caps = MALLOC_CAP_SPIRAM;
+    if (imgf_decoder_open(dec, imgf_stream_from_buffer(&memory, data, size), &options) != IMGF_OK) {
+        imgf_decoder_destroy(dec);
+        return false;
+    }
+
+    const uint16_t src_w = imgf_decoder_width(dec);
+    const uint16_t src_h = imgf_decoder_height(dec);
+    const imgf_pixfmt_t src_pf = imgf_decoder_pixfmt(dec);
+    const imgf_resize_opts_t opts = fill_opts(box, rgb888);
+    imgf_err_t err = IMGF_OK;
+    imgf_resizer_t *resizer = imgf_resizer_create(src_w, src_h, src_pf, &opts, &err);
+    uint8_t *row = static_cast<uint8_t *>(
+        imgf_alloc((std::size_t)src_w * imgf_pixfmt_bpp(src_pf), MALLOC_CAP_SPIRAM));
+    const uint16_t dst_w = resizer ? imgf_resizer_dst_width(resizer) : 0;
+    const uint16_t dst_h = resizer ? imgf_resizer_dst_height(resizer) : 0;
+    const std::size_t packed = (std::size_t)dst_w * (rgb888 ? 3 : 2);
+    bool ok = resizer && row && packed * dst_h <= capacity;
+
+    uint16_t written = 0;
+    for (uint16_t y = 0; y < src_h && ok; y++) {
+        ok = imgf_decoder_next_row(dec, row) && imgf_resizer_push_row(resizer, row) >= 0;
+        while (ok && written < dst_h &&
+               imgf_resizer_pop_row(resizer, dst + (std::size_t)written * packed)) {
+            written++;
+        }
+    }
+    if (ok && written < dst_h && imgf_resizer_finish(resizer) > 0 &&
+        imgf_resizer_pop_row(resizer, dst + (std::size_t)written * packed)) {
+        written++;
+    }
+    imgf_free(row);
+    imgf_resizer_destroy(resizer);
+    imgf_decoder_destroy(dec);
+    if (!ok || written == 0) return false;
+    for (; written < dst_h; written++) {
+        memcpy(dst + (std::size_t)written * packed, dst + (std::size_t)(written - 1) * packed,
+               packed);
+    }
+    *out = { (int16_t)dst_w, (int16_t)dst_h };
+    return true;
+}
+
+bool image_decode_to_fit(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
+                         uint8_t *dst, std::size_t capacity, uint8_t *scratch,
+                         std::size_t scratch_capacity, ImageSize *out) {
+    ImageHeader header;
+    if (!data || !dst || !box.valid() || !image_header(data, size, &header) || !header.width) {
+        return false;
+    }
+    if (header.hardware && scratch &&
+        hardware_to_fit(data, size, header, box, rgb888, dst, capacity, scratch, scratch_capacity,
+                        out)) {
+        return true;
+    }
+    return stream_to_fit(data, size, header.format, box, rgb888, dst, capacity, out);
+}
+
 static uint8_t *read_file(FILE *fp, std::size_t size, const volatile bool *cancel) {
     uint8_t *buffer = alloc_dma(size);
     if (!buffer) {

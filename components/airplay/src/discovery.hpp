@@ -23,4 +23,7 @@ public:
                                               const TxtRecord &txt);
 };
 
+/* Blocks up to timeout_ms; 0 when not found. Needs a live Advertiser on the device. */
+uint16_t resolve_port(const std::string &instance, const char *type, uint32_t timeout_ms);
+
 }  // namespace airplay

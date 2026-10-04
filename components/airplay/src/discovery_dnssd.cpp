@@ -3,10 +3,11 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "advertiser.hpp"
+#include "discovery.hpp"
 #include "esp_log.h"
 
 #include <arpa/inet.h>
+#include <sys/select.h>
 #include <dns_sd.h>
 
 namespace airplay {
@@ -40,6 +41,29 @@ std::unique_ptr<Advertiser> Advertiser::create(const std::string &, const std::s
         return nullptr;
     }
     return std::make_unique<DnsSdAdvertiser>(ref);
+}
+
+static void resolved(DNSServiceRef, DNSServiceFlags, uint32_t, DNSServiceErrorType err,
+                     const char *, const char *, uint16_t port, uint16_t, const unsigned char *,
+                     void *context) {
+    if (err == kDNSServiceErr_NoError) *static_cast<uint16_t *>(context) = ntohs(port);
+}
+
+uint16_t resolve_port(const std::string &instance, const char *type, uint32_t timeout_ms) {
+    uint16_t port = 0;
+    DNSServiceRef ref = nullptr;
+    if (DNSServiceResolve(&ref, 0, 0, instance.c_str(), type, "local.", resolved, &port) !=
+        kDNSServiceErr_NoError) {
+        return 0;
+    }
+    const int fd = DNSServiceRefSockFD(ref);
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    timeval timeout = { (time_t)(timeout_ms / 1000), (suseconds_t)(timeout_ms % 1000 * 1000) };
+    if (select(fd + 1, &readable, nullptr, nullptr, &timeout) > 0) DNSServiceProcessResult(ref);
+    DNSServiceRefDeallocate(ref);
+    return port;
 }
 
 }  // namespace airplay

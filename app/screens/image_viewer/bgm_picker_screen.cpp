@@ -7,7 +7,7 @@
 #include "media_player.hpp"
 #include "screen_manager.hpp"
 #include "bsp.h"
-#include "usb_msc.h"
+#include "usb_host_msc.hpp"
 
 #include <cstring>
 #include <sys/stat.h>
@@ -26,7 +26,8 @@ static const char *storage_name(const char *mount_point) {
 }
 
 static bool storage_mounted(const char *mount_point) {
-    return strcmp(mount_point, kUsbMountPoint) == 0 ? usb_msc_is_mounted() : bsp_sd_is_mounted();
+    return strcmp(mount_point, kUsbMountPoint) == 0 ? usb_host::mounted(mount_point)
+                                                    : bsp_sd_is_mounted();
 }
 
 static const char *mount_point_of(const std::string &path) {

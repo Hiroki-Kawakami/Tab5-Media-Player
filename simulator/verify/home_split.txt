@@ -15,11 +15,11 @@ capture split_landscape_reselect.jpg
 tap 315 1079
 settle
 capture split_landscape_usb.jpg
-usb-detach
+usbh-msc-detach
 wait 500
 settle
 capture split_landscape_usb_removed.jpg
-usb-attach
+usbh-msc-attach
 tap 226 1079
 settle
 tap 240 479

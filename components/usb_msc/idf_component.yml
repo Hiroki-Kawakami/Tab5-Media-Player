@@ -1,5 +1,0 @@
-dependencies:
-  espressif/usb:
-    version: "^1.0.0"
-    rules:
-      - if: "target != linux"

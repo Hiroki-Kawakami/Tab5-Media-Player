@@ -67,6 +67,6 @@ direct_dependencies:
 - espressif/mdns
 - espressif/usb
 - lvgl/lvgl
-manifest_hash: b64989cce31e79d291ffbe36d93493b11647706b226d1f806284a1e5ea735a1b
+manifest_hash: d2fbc64acbddb8d20c7ad7cbba47c49356c940ad9416d76730d58e1b9692fec8
 target: esp32p4
 version: 3.0.0

@@ -8,6 +8,7 @@
 #include "lvgl.hpp"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include <mutex>
 #include "bench/h264_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
 #include "media/media_cache.hpp"
@@ -21,7 +22,8 @@
 #include "settings.hpp"
 #include "ui_font.hpp"
 #include "ui_orientation.hpp"
-#include "usb_msc.h"
+#include "usb_host.hpp"
+#include "usb_host_msc.hpp"
 #ifndef ESP_PLATFORM
 #include "wifi_sim.hpp"
 #endif
@@ -34,6 +36,8 @@ static constexpr std::size_t kProbeArenaBytes = 512 * 1024;
 alignas(64) static uint8_t s_shared_sram[kSharedSramBytes];
 static lv_display_t *s_main;
 static std::weak_ptr<HomeScreen> s_home;
+static std::mutex s_usb_lock;
+static std::shared_ptr<usb_host::MscDevice> s_usb_drive;
 
 static SharedSram shared_sram() {
     const std::size_t half = kSharedSramBytes / 2;
@@ -69,8 +73,15 @@ esp_err_t media_player_mount_sd() {
 }
 
 esp_err_t media_player_mount_usb() {
-    if (usb_msc_is_mounted()) return ESP_OK;
-    return usb_msc_mount(kUsbMountPoint, 0);
+    if (usb_host::mounted(kUsbMountPoint)) return ESP_OK;
+    usb_host::unmount(kUsbMountPoint);
+    std::shared_ptr<usb_host::MscDevice> drive;
+    {
+        std::lock_guard<std::mutex> guard(s_usb_lock);
+        drive = s_usb_drive;
+    }
+    if (!drive) return ESP_ERR_NOT_FOUND;
+    return usb_host::mount(drive, kUsbMountPoint);
 }
 
 SharedSram media_player_acquire_sram() {
@@ -141,8 +152,21 @@ void app_entry() {
     wifi::sim::register_harness_commands();
 #endif
 
-    err = usb_msc_init([](usb_msc_event_t event, void *) {
-        if (event != USB_MSC_EVENT_DISCONNECTED) return;
+    err = bsp_power_set_switch(BSP_POWER_SWITCH_USB5V, true);
+    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "USB 5V: %s", esp_err_to_name(err));
+    }
+    usb_host::Callbacks usb_callbacks;
+    usb_callbacks.msc_connected = [](std::shared_ptr<usb_host::MscDevice> device) {
+        std::lock_guard<std::mutex> guard(s_usb_lock);
+        if (!s_usb_drive) s_usb_drive = std::move(device);
+    };
+    usb_callbacks.msc_disconnected = [](const std::shared_ptr<usb_host::MscDevice> &device) {
+        {
+            std::lock_guard<std::mutex> guard(s_usb_lock);
+            if (s_usb_drive != device) return;
+            s_usb_drive.reset();
+        }
         player_eject(kUsbMountPoint);
         lv_lock();
         lv_async_call([] {
@@ -154,8 +178,9 @@ void app_entry() {
             if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
         });
         lv_unlock();
-    }, nullptr);
-    if (err != ESP_OK) ESP_LOGE(TAG, "usb msc init: %s", esp_err_to_name(err));
+    };
+    err = usb_host::install(std::move(usb_callbacks));
+    if (err != ESP_OK) ESP_LOGE(TAG, "usb host install: %s", esp_err_to_name(err));
 #ifdef ESP_PLATFORM
     ESP_LOGI(TAG, "internal heap free after usb init: %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));

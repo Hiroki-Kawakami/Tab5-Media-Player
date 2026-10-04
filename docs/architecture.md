@@ -354,7 +354,9 @@ Home screen's USB Drive button like the SD card. `app_entry()` switches VBUS on
 and installs the host stack at boot so a drive plugged in later is seen.
 
 `app_entry()` keeps the first connected `MscDevice` and drops it on its
-disconnect. Pulling a mounted drive sends `player_eject("/usb")`, which stops
+disconnect. The USB Drive row in the Home menu and in the BGM picker's storage
+list exists only while it is held; both lists are rebuilt from the connect and
+disconnect callbacks. Pulling a mounted drive sends `player_eject("/usb")`, which stops
 reading at once, then closes a player on a `/usb` file and drops the `/usb`
 pages from Home. The mount itself stays until the next
 `media_player_mount_usb()`, which runs from Home after the player and the

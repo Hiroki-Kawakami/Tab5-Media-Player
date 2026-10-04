@@ -20,6 +20,7 @@ wait 500
 settle
 capture split_landscape_usb_removed.jpg
 usbh-msc-attach
+settle
 tap 226 1079
 settle
 tap 240 479

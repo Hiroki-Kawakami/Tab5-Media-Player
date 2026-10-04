@@ -29,6 +29,7 @@ void app_entry();
 /* ESP_OK when already mounted; USB answers ESP_ERR_NOT_FOUND with no drive. */
 esp_err_t media_player_mount_sd();
 esp_err_t media_player_mount_usb();
+bool media_player_usb_connected();
 
 SharedSram media_player_acquire_sram();
 void media_player_release_sram();

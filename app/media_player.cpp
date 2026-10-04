@@ -84,6 +84,11 @@ esp_err_t media_player_mount_usb() {
     return usb_host::mount(drive, kUsbMountPoint);
 }
 
+bool media_player_usb_connected() {
+    std::lock_guard<std::mutex> guard(s_usb_lock);
+    return s_usb_drive != nullptr;
+}
+
 SharedSram media_player_acquire_sram() {
     display_manager.set_visible(s_main, false);
     bsp_display_wait_draw();
@@ -158,8 +163,17 @@ void app_entry() {
     }
     usb_host::Callbacks usb_callbacks;
     usb_callbacks.msc_connected = [](std::shared_ptr<usb_host::MscDevice> device) {
-        std::lock_guard<std::mutex> guard(s_usb_lock);
-        if (!s_usb_drive) s_usb_drive = std::move(device);
+        {
+            std::lock_guard<std::mutex> guard(s_usb_lock);
+            if (s_usb_drive) return;
+            s_usb_drive = std::move(device);
+        }
+        lv_lock();
+        lv_async_call([] {
+            BgmPickerScreen::refresh_storages();
+            if (auto home = s_home.lock()) home->refresh_menu();
+        });
+        lv_unlock();
     };
     usb_callbacks.msc_disconnected = [](const std::shared_ptr<usb_host::MscDevice> &device) {
         {
@@ -175,7 +189,11 @@ void app_entry() {
             VideoPlayerScreen::eject(kUsbMountPoint);
             BgmPickerScreen::eject(kUsbMountPoint);
             ImageViewerScreen::eject(kUsbMountPoint);
-            if (auto home = s_home.lock()) home->eject(kUsbMountPoint);
+            BgmPickerScreen::refresh_storages();
+            if (auto home = s_home.lock()) {
+                home->eject(kUsbMountPoint);
+                home->refresh_menu();
+            }
         });
         lv_unlock();
     };

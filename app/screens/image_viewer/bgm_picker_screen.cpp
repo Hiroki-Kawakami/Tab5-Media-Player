@@ -102,6 +102,10 @@ void BgmPickerScreen::eject(const std::string &mount_point) {
     if (s_active && path_is_under(s_active->path_, mount_point)) s_active->navigate({});
 }
 
+void BgmPickerScreen::refresh_storages() {
+    if (s_active && s_active->path_.empty()) s_active->navigate({});
+}
+
 void BgmPickerScreen::navigate(std::string path) {
     std::weak_ptr<Screen> weak = weak_from_this();
     lv_async_call([this, weak, path = std::move(path)] {
@@ -120,7 +124,10 @@ void BgmPickerScreen::show(const std::string &path) {
     bool opened = true;
     if (path_.empty()) {
         lv_label_set_text(navigation_title_, "Storage");
+        storages_.clear();
         for (const char *mount_point : kStorages) {
+            if (strcmp(mount_point, kUsbMountPoint) == 0 && !media_player_usb_connected()) continue;
+            storages_.push_back(mount_point);
             entries_.push_back({ PsramString(storage_name(mount_point)), true, MediaKind::None });
         }
     } else {
@@ -159,7 +166,7 @@ void BgmPickerScreen::pick(const std::string &path) {
 }
 
 std::string BgmPickerScreen::entryPath(std::size_t index) const {
-    if (path_.empty()) return kStorages[index];
+    if (path_.empty()) return storages_[index];
     return path_ + "/" + entries_[index].name.c_str();
 }
 
@@ -209,7 +216,7 @@ void BgmPickerScreen::bindRow(lv_obj_t *row, std::size_t index) {
     const DirectoryEntry &entry = entries_[index];
     const char *icon = !path_.empty()
         ? (entry.directory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_AUDIO)
-        : (strcmp(kStorages[index], kUsbMountPoint) == 0 ? LV_SYMBOL_USB : LV_SYMBOL_SD_CARD);
+        : (strcmp(storages_[index], kUsbMountPoint) == 0 ? LV_SYMBOL_USB : LV_SYMBOL_SD_CARD);
     lv_label_set_text(lv_obj_get_child(row, 0), icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
@@ -235,7 +242,7 @@ void BgmPickerScreen::openStorage(const char *mount_point) {
 
 void BgmPickerScreen::didSelectRow(std::size_t index) {
     if (path_.empty()) {
-        openStorage(kStorages[index]);
+        openStorage(storages_[index]);
     } else if (entries_[index].directory) {
         navigate(entryPath(index));
     } else {

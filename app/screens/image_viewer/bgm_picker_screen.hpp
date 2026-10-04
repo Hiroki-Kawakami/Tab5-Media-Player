@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <vector>
 
 class BgmPickerScreen : public NavigationScreen, private ListDataSource {
 public:
@@ -21,6 +22,7 @@ public:
     void onExit() override;
     void back() override;
     static void eject(const std::string &mount_point);
+    static void refresh_storages();
 
 private:
     void navigate(std::string path);
@@ -38,6 +40,7 @@ private:
     std::string start_;
     std::function<void(const std::string &)> on_pick_;
     std::string path_;
+    std::vector<const char *> storages_;
     PsramVector<DirectoryEntry> entries_;
     lv_obj_t *back_button_ = nullptr;
     lv_obj_t *use_button_ = nullptr;

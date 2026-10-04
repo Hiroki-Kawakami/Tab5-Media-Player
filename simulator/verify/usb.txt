@@ -1,11 +1,10 @@
 settle
 usbh-msc-detach
-tap 360 315
 settle
-capture usb_not_connected.jpg
-tap 360 690
-settle
+capture usb_menu_hidden.jpg
 usbh-msc-attach
+settle
+capture usb_menu_shown.jpg
 tap 360 315
 settle
 capture usb_browser.jpg
@@ -18,6 +17,7 @@ wait 800
 settle
 capture usb_removed_home.jpg
 usbh-msc-attach
+settle
 tap 360 315
 settle
 capture usb_remounted.jpg

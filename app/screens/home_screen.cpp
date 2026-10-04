@@ -21,8 +21,8 @@
 static constexpr int32_t kMenuWidth = 400;
 
 const HomeScreen::MenuItem HomeScreen::kMenu[] = {
-    {MenuId::SdCard, "Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
-    {MenuId::UsbDrive, "Storage", LV_SYMBOL_USB, nullptr, "USB Drive",
+    {MenuId::SdCard, "Device", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
+    {MenuId::UsbDrive, "Device", LV_SYMBOL_USB, nullptr, "USB Drive",
      &HomeScreen::open_usb_drive},
     {MenuId::AirPlayReceiver, "Network", TABLER_CAST, &icon_36, "AirPlay Receiver",
      &HomeScreen::open_airplay_receiver},
@@ -138,7 +138,10 @@ void HomeScreen::navigate(std::function<void()> change) {
 
 std::vector<const HomeScreen::MenuItem *> HomeScreen::menu_items() const {
     std::vector<const MenuItem *> items;
-    for (auto &item : kMenu) items.push_back(&item);
+    for (auto &item : kMenu) {
+        if (item.id == MenuId::UsbDrive && !media_player_usb_connected()) continue;
+        items.push_back(&item);
+    }
     return items;
 }
 

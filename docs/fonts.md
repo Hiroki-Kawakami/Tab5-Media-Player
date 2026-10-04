@@ -83,6 +83,17 @@ ASCII is deliberately absent: those codepoints always resolve in Montserrat,
 which comes first in the chain, so a Noto copy would be dead weight. Characters
 outside the list render as LVGL's placeholder box.
 
+## Decomposed kana
+
+File names written by macOS and titles from some senders arrive in NFD: が is
+か followed by the combining U+3099. LVGL has no notion of combining marks and
+would draw U+3099/U+309A as glyphs of their own, so `PackedFont` looks at the
+`next` codepoint LVGL passes for kerning and returns the precomposed glyph for
+the base, and an empty zero-width glyph for the mark. That `next` is only
+passed when the top font of the chain has kerning enabled, which the built-in
+Montserrat does. A mark after a base with no precomposed form is dropped.
+Sorting still compares raw bytes, so NFD and NFC names do not interleave.
+
 ## Checking it
 
 `simulator/verify/japanese.txt` walks into a directory of Japanese file names

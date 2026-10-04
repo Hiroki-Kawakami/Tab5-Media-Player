@@ -11,6 +11,46 @@ namespace {
 constexpr uint32_t kCompressedFlag = 0x80000000u;
 constexpr uint32_t kOffsetMask = 0x7FFFFFFFu;
 
+constexpr uint32_t kVoicedMark = 0x3099;
+constexpr uint32_t kSemiVoicedMark = 0x309A;
+
+struct Composition {
+    uint16_t base;
+    uint16_t composed;
+};
+
+constexpr Composition kVoiced[] = {
+    {0x3046, 0x3094}, {0x304B, 0x304C}, {0x304D, 0x304E}, {0x304F, 0x3050}, {0x3051, 0x3052}, {0x3053, 0x3054},
+    {0x3055, 0x3056}, {0x3057, 0x3058}, {0x3059, 0x305A}, {0x305B, 0x305C}, {0x305D, 0x305E}, {0x305F, 0x3060},
+    {0x3061, 0x3062}, {0x3064, 0x3065}, {0x3066, 0x3067}, {0x3068, 0x3069}, {0x306F, 0x3070}, {0x3072, 0x3073},
+    {0x3075, 0x3076}, {0x3078, 0x3079}, {0x307B, 0x307C}, {0x309D, 0x309E}, {0x30A6, 0x30F4}, {0x30AB, 0x30AC},
+    {0x30AD, 0x30AE}, {0x30AF, 0x30B0}, {0x30B1, 0x30B2}, {0x30B3, 0x30B4}, {0x30B5, 0x30B6}, {0x30B7, 0x30B8},
+    {0x30B9, 0x30BA}, {0x30BB, 0x30BC}, {0x30BD, 0x30BE}, {0x30BF, 0x30C0}, {0x30C1, 0x30C2}, {0x30C4, 0x30C5},
+    {0x30C6, 0x30C7}, {0x30C8, 0x30C9}, {0x30CF, 0x30D0}, {0x30D2, 0x30D3}, {0x30D5, 0x30D6}, {0x30D8, 0x30D9},
+    {0x30DB, 0x30DC}, {0x30EF, 0x30F7}, {0x30F0, 0x30F8}, {0x30F1, 0x30F9}, {0x30F2, 0x30FA}, {0x30FD, 0x30FE},
+};
+
+constexpr Composition kSemiVoiced[] = {
+    {0x306F, 0x3071}, {0x3072, 0x3074}, {0x3075, 0x3077}, {0x3078, 0x307A}, {0x307B, 0x307D}, {0x30CF, 0x30D1},
+    {0x30D2, 0x30D4}, {0x30D5, 0x30D7}, {0x30D8, 0x30DA}, {0x30DB, 0x30DD},
+};
+
+template <std::size_t N>
+uint32_t compose(const Composition (&table)[N], uint32_t letter) {
+    for (const Composition &entry : table) {
+        if (entry.base == letter) return entry.composed;
+    }
+    return letter;
+}
+
+// LVGL draws a combining mark as a spacing glyph of its own, so NFD kana are
+// composed here from the base and `next`.
+uint32_t compose(uint32_t letter, uint32_t next) {
+    if (next == kVoicedMark) return compose(kVoiced, letter);
+    if (next == kSemiVoicedMark) return compose(kSemiVoiced, letter);
+    return letter;
+}
+
 // Mirrors the decoder in lv_font_fmt_txt.c, which the resgen encoder targets:
 // a value costs bpp bits, a value equal to the previous one switches to repeat
 // mode where every further repeat is one bit, and the 11th repeat is followed
@@ -119,8 +159,14 @@ int32_t PackedFont::find(uint16_t codepoint) const {
 }
 
 bool PackedFont::get_glyph_dsc_cb(const lv_font_t *font, lv_font_glyph_dsc_t *out,
-                                  uint32_t letter, uint32_t) {
+                                  uint32_t letter, uint32_t next) {
     auto *self = static_cast<const PackedFont *>(font->dsc);
+    if (letter == kVoicedMark || letter == kSemiVoicedMark) {
+        *out = {};
+        out->format = LV_FONT_GLYPH_FORMAT_A8;
+        return true;
+    }
+    letter = compose(letter, next);
     if (letter > 0xFFFF) return false;
     const int32_t index = self->find(uint16_t(letter));
     if (index < 0) return false;

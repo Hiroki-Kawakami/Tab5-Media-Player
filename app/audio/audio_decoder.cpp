@@ -3,10 +3,10 @@
  * Copyright (c) 2026 Hiroki Kawakami
  */
 
-#include "audio_out.hpp"
+#include "audio_decoder.hpp"
+#include "audio_output.hpp"
 #include "ima_adpcm.hpp"
 #include "bsp.h"
-#include "settings.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -29,7 +29,7 @@ extern "C" {
 }
 #endif
 
-static const char *TAG = "audio_out";
+static const char *TAG = "audio_decoder";
 
 static constexpr std::size_t kPcmBytes = 64 * 1024;
 static constexpr uint32_t kOpusRate = 48000;
@@ -72,7 +72,7 @@ static void publish_frames(std::size_t bytes) {
 
 static void write_pcm(uint8_t *data, std::size_t len) {
     if (!len) return;
-    if (bsp_audio_write(data, len) == ESP_OK) publish_frames(len);
+    if (audio_output_write(data, len) == ESP_OK) publish_frames(len);
 }
 
 static void follow_format(uint32_t rate, uint8_t channels) {
@@ -80,7 +80,7 @@ static void follow_format(uint32_t rate, uint8_t channels) {
     s_rate = rate;
     s_channels = channels;
     s_bits = 16;
-    bsp_audio_open(s_rate, s_bits, s_channels);
+    audio_output_open(s_rate, s_bits, s_channels);
 }
 
 static constexpr uint32_t kAacRates[] = {
@@ -469,15 +469,14 @@ static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
     return true;
 }
 
-void audio_out_start() {
+void audio_decoder_start() {
     if (s_lock) return;
     s_lock = xSemaphoreCreateMutex();
-    bsp_audio_set_volume(settings_volume());
 }
 
-bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
+bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
     if (!s_lock) return false;
-    audio_out_close();
+    audio_decoder_close();
 
     if (track.codec == CodecId::None) return false;
     if (track.codec == CodecId::Unsupported) {
@@ -513,9 +512,9 @@ bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
     s_channels = s_setup.channels;
     s_bits = track.codec == CodecId::Pcm ? bits : 16;
 
-    const esp_err_t err = bsp_audio_open(s_rate, s_bits, s_channels);
+    const esp_err_t err = audio_output_open(s_rate, s_bits, s_channels);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "bsp_audio_open: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "audio_output_open: %s", esp_err_to_name(err));
         decoder_close();
         s_mode = Mode::Pcm;
         if (note) *note = std::string("audio unavailable: ") + esp_err_to_name(err);
@@ -527,13 +526,13 @@ bool audio_out_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
     s_running = true;
     xSemaphoreGive(s_lock);
 
-    bsp_audio_set_volume(settings_volume());
+    audio_output_apply_volume(audio_output_volume());
     ESP_LOGI(TAG, "%s %u Hz %u bit x%u", codec_name(track.codec), (unsigned)s_rate,
              (unsigned)s_bits, (unsigned)s_channels);
     return true;
 }
 
-void audio_out_close() {
+void audio_decoder_close() {
     if (!s_lock) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     const bool was_running = s_running;
@@ -543,10 +542,10 @@ void audio_out_close() {
 
     decoder_close();
     s_mode = Mode::Pcm;
-    if (was_running) bsp_audio_close();
+    if (was_running) audio_output_close();
 }
 
-void audio_out_write(const uint8_t *data, std::size_t len) {
+void audio_decoder_write(const uint8_t *data, std::size_t len) {
     if (!s_running || !data || !len) return;
     if (s_mode == Mode::PendingDecoder) open_pending_decoder(data, len);
 
@@ -571,7 +570,7 @@ void audio_out_write(const uint8_t *data, std::size_t len) {
     }
 }
 
-void audio_out_flush() {
+void audio_decoder_flush() {
     if (!s_lock) return;
     if (s_mode == Mode::Decoder) decoder_reset();
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -579,7 +578,7 @@ void audio_out_flush() {
     xSemaphoreGive(s_lock);
 }
 
-uint64_t audio_out_position_us() {
+uint64_t audio_decoder_position_us() {
     if (!s_lock || !s_rate) return 0;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     const uint64_t frames = s_frames;
@@ -588,4 +587,4 @@ uint64_t audio_out_position_us() {
     return frames * 1000000ull / rate;
 }
 
-bool audio_out_running() { return s_running; }
+bool audio_decoder_running() { return s_running; }

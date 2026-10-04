@@ -4,10 +4,10 @@
  */
 
 #include "airplay_receiver_screen.hpp"
+#include "audio/audio_output.hpp"
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
 #include "resources.h"
-#include "settings.hpp"
 #include "wifi_manager.hpp"
 #include "bsp.h"
 #include "esp_heap_caps.h"
@@ -83,7 +83,7 @@ void AirPlayReceiverScreen::Events::on_airplay_volume(float db) {
         if (db > 0) db = 0;
         volume = 100 + (int)(db * 2.5f - 0.5f);
     }
-    bsp_audio_set_volume(volume);
+    audio_output_apply_volume(volume);
 }
 
 void AirPlayReceiverScreen::Events::on_airplay_artwork(std::shared_ptr<const uint8_t> data,
@@ -96,14 +96,14 @@ void AirPlayReceiverScreen::Events::on_airplay_artwork(std::shared_ptr<const uin
 
 bool AirPlayReceiverScreen::Output::open(uint32_t rate, uint8_t channels) {
     channels_ = channels;
-    return bsp_audio_open(rate, 16, channels) == ESP_OK;
+    return audio_output_open(rate, 16, channels) == ESP_OK;
 }
 
 void AirPlayReceiverScreen::Output::write(int16_t *pcm, std::size_t frames) {
-    bsp_audio_write(pcm, frames * channels_ * sizeof(int16_t));
+    audio_output_write(pcm, frames * channels_ * sizeof(int16_t));
 }
 
-void AirPlayReceiverScreen::Output::close() { bsp_audio_close(); }
+void AirPlayReceiverScreen::Output::close() { audio_output_close(); }
 
 void AirPlayReceiverScreen::build() {
     createNavigation("AirPlay Receiver", LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
@@ -396,7 +396,7 @@ bool AirPlayReceiverScreen::startReceiver() {
 
 void AirPlayReceiverScreen::stopReceiver() {
     airplay::stop();
-    bsp_audio_set_volume(settings_volume());
+    audio_output_apply_volume(audio_output_volume());
 }
 
 bool AirPlayReceiverScreen::startDecoder() {

@@ -4,6 +4,7 @@
  */
 
 #include "settings_panel.hpp"
+#include "audio/audio_output.hpp"
 #include "screens/player_panel.hpp"
 #include "screens/home/settings_widgets.hpp"
 #include "settings.hpp"
@@ -27,8 +28,7 @@ static void set_brightness_text(lv_obj_t *value, int brightness) {
 }
 
 static void set_volume_text(lv_obj_t *value, int volume) {
-    lv_label_set_text_fmt(value, "%s  %d",
-                          settings_volume_is_headphone() ? "Headphone" : "Speaker", volume);
+    lv_label_set_text_fmt(value, "%s  %d", audio_route_name(audio_output_route()), volume);
 }
 
 static void build_display(lv_obj_t *contents, SettingsWidgets *widgets) {
@@ -62,17 +62,17 @@ static void build_display(lv_obj_t *contents, SettingsWidgets *widgets) {
 PlayerVolumeRows player_volume_rows_build(lv_obj_t *section) {
     auto row = lv_setting_row_create(section, "Volume");
     auto value = lv_setting_value_create(row, &kPanelColors);
-    set_volume_text(value, settings_volume());
+    set_volume_text(value, audio_output_volume());
 
-    auto volume = lv_setting_slider_create(section, 0, 100, settings_volume(), &kPanelColors);
+    auto volume = lv_setting_slider_create(section, 0, 100, audio_output_volume(), &kPanelColors);
     lv_obj_add_event_fn(volume, LV_EVENT_VALUE_CHANGED, [volume, value](lv_event_t *) {
         const int percent = lv_slider_get_value(volume);
-        bsp_audio_set_mute(false);
-        settings_set_volume(percent);
+        audio_output_set_mute(false);
+        audio_output_set_volume(percent);
         set_volume_text(value, percent);
     });
     lv_obj_add_event_fn(volume, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
-    settings_volume_observe(volume, [volume, value](int percent) {
+    audio_output_volume_observe(volume, [volume, value](int percent) {
         if (lv_obj_has_state(volume, LV_STATE_PRESSED)) return;
         lv_slider_set_value(volume, percent, LV_ANIM_OFF);
         set_volume_text(value, percent);
@@ -111,8 +111,8 @@ void player_settings_panel_build(lv_obj_t *root, std::function<void()> on_close,
             lv_obj_set_state(widgets.rotation_lock, LV_STATE_CHECKED, settings_rotation_locked());
         }
         if (widgets.volume) {
-            lv_slider_set_value(widgets.volume, settings_volume(), LV_ANIM_OFF);
-            set_volume_text(widgets.volume_value, settings_volume());
+            lv_slider_set_value(widgets.volume, audio_output_volume(), LV_ANIM_OFF);
+            set_volume_text(widgets.volume_value, audio_output_volume());
             lv_obj_set_state(widgets.equalizer, LV_STATE_CHECKED, settings_equalizer_enabled());
         }
     });

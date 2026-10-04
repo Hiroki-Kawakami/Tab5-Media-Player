@@ -4,20 +4,17 @@
  */
 
 #include "settings.hpp"
-#include "lvgl.hpp"
 #include "media_player.hpp"
 #include "nvs_flash.h"
 #include "ui_orientation.hpp"
 #include "wifi_manager.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #ifndef NVS_KEY_NAME_MAX_SIZE
 #define NVS_KEY_NAME_MAX_SIZE 16
@@ -152,6 +149,7 @@ constexpr auto clamp_volume = +[](int percent) -> uint8_t {
 
 Setting<"spkvolume", uint8_t, clamp_volume> s_speaker_volume{kDefaultSpeakerVolume};
 Setting<"hpvolume", uint8_t, clamp_volume> s_headphone_volume{kDefaultHeadphoneVolume};
+Setting<"usbvolume", uint8_t, clamp_volume> s_usb_volume{kDefaultUsbVolume};
 
 Setting<"equalizer", uint8_t, +[](bool enabled) -> uint8_t {
     return enabled ? 1 : 0;
@@ -202,6 +200,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_rotation);
     fn(s_speaker_volume);
     fn(s_headphone_volume);
+    fn(s_usb_volume);
     fn(s_equalizer);
     fn(s_audio_repeat);
     fn(s_audio_shuffle);
@@ -218,24 +217,6 @@ void for_each_setting(Fn &&fn) {
     fn(s_wifi);
 }
 
-std::atomic<bool> s_headphone;
-
-struct VolumeObserver {
-    lv_obj_t *owner;
-    std::function<void(int)> on_change;
-};
-std::vector<VolumeObserver> s_volume_observers;
-
-void headphone_changed(bool inserted, void *) {
-    s_headphone = inserted;
-    bsp_audio_set_volume(settings_volume());
-    lv_lock();
-    lv_async_call([] {
-        for (auto &observer : s_volume_observers) observer.on_change(settings_volume());
-    });
-    lv_unlock();
-}
-
 }  // namespace
 
 void settings_init() {
@@ -250,10 +231,7 @@ void settings_init() {
 
 void settings_apply() {
     bsp_display_set_brightness(s_display_brightness.get());
-    s_headphone = bsp_audio_headphone_inserted();
-    bsp_audio_set_volume(settings_volume());
     bsp_audio_set_eq_enabled(s_equalizer.get() != 0);
-    bsp_audio_set_headphone_callback(headphone_changed, nullptr);
     if (settings_wifi_enabled()) wifi::manager().set_enabled(true);
 }
 
@@ -304,33 +282,20 @@ void settings_set_rotation_lock(bool locked) {
     ui_orientation_set_locked(locked, rotation);
 }
 
-bool settings_volume_is_headphone() {
-    return s_headphone;
+int settings_route_volume(AudioRoute route) {
+    switch (route) {
+    case AudioRoute::Headphone: return s_headphone_volume.get();
+    case AudioRoute::Usb: return s_usb_volume.get();
+    default: return s_speaker_volume.get();
+    }
 }
 
-int settings_volume() {
-    return s_headphone ? s_headphone_volume.get() : s_speaker_volume.get();
-}
-
-void settings_set_volume(int percent) {
-    const bool changed = s_headphone ? s_headphone_volume.set(percent)
-                                     : s_speaker_volume.set(percent);
-    if (!changed) return;
-    bsp_audio_set_volume(settings_volume());
-}
-
-void settings_volume_observe(lv_obj_t *owner, std::function<void(int)> on_change) {
-    s_volume_observers.push_back({owner, std::move(on_change)});
-    // lv_obj_add_event_fn cannot carry LV_EVENT_DELETE: it frees its own closure
-    // from an earlier callback on that same event.
-    lv_obj_add_event_cb(owner, [](lv_event_t *event) {
-        auto owner = (lv_obj_t *)lv_event_get_user_data(event);
-        for (auto it = s_volume_observers.begin(); it != s_volume_observers.end(); ++it) {
-            if (it->owner != owner) continue;
-            s_volume_observers.erase(it);
-            return;
-        }
-    }, LV_EVENT_DELETE, owner);
+bool settings_set_route_volume(AudioRoute route, int percent) {
+    switch (route) {
+    case AudioRoute::Headphone: return s_headphone_volume.set(percent);
+    case AudioRoute::Usb: return s_usb_volume.set(percent);
+    default: return s_speaker_volume.set(percent);
+    }
 }
 
 bool settings_equalizer_enabled() {

@@ -6,6 +6,7 @@
 #pragma once
 #include <functional>
 #include <string>
+#include "audio/audio_output.hpp"
 #include "bsp.h"
 #include "lvgl.h"
 #include "playback/playlist.hpp"
@@ -14,6 +15,7 @@
 inline constexpr int kMinDisplayBrightness = 1;
 inline constexpr int kDefaultSpeakerVolume = 60;
 inline constexpr int kDefaultHeadphoneVolume = 40;
+inline constexpr int kDefaultUsbVolume = 40;
 inline constexpr int kMinSlideshowInterval = 5;
 inline constexpr int kMaxSlideshowInterval = 3600;
 
@@ -32,10 +34,8 @@ void settings_set_rotation_lock(bool locked);
 bsp_rotation_t settings_rotation();
 void settings_set_rotation(bsp_rotation_t rotation);
 
-bool settings_volume_is_headphone();
-int settings_volume();
-void settings_set_volume(int percent);
-void settings_volume_observe(lv_obj_t *owner, std::function<void(int)> on_change);
+int settings_route_volume(AudioRoute route);
+bool settings_set_route_volume(AudioRoute route, int percent);
 
 bool settings_equalizer_enabled();
 void settings_set_equalizer_enabled(bool enabled);

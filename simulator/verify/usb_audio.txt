@@ -1,0 +1,27 @@
+settle
+tap 360 706
+settle
+capture usb_audio_sound_speaker.jpg
+usbh-uac-attach captures/usb_audio_pcm.wav
+settle
+capture usb_audio_sound_usb.jpg
+tap 60 60
+settle
+tap 360 226
+settle
+tap 360 320
+settle
+tap 360 400
+wait 7500
+usbh-uac-detach
+settle
+capture usb_audio_sound_detached.jpg
+tap 360 160
+wait 2000
+usbh-uac-attach captures/usb_audio_switch.wav
+wait 5000
+usbh-uac-detach
+usbh-uac-attach captures/usb_audio_unsupported.wav 48000
+tap 360 160
+wait 2500
+usbh-uac-detach

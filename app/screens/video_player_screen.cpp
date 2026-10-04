@@ -4,6 +4,7 @@
  */
 
 #include "video_player_screen.hpp"
+#include "audio/audio_output.hpp"
 #include "media/media_cache.hpp"
 #include "media_player.hpp"
 #include "playback/player.hpp"
@@ -234,7 +235,7 @@ void VideoPlayerScreen::setMode(UiMode mode) {
     player_repaint();
 
     if (mode == UiMode::Bars) {
-        media_volume_show(volume_label_, volume_slider_, settings_volume());
+        media_volume_show(volume_label_, volume_slider_, audio_output_volume());
         lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     } else if (mode == UiMode::Settings) {

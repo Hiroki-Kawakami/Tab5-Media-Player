@@ -31,7 +31,7 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 media_buffer          │           └─▶ present
-  (arena)             └──▶ audio_out (PCM / MP3 / ADPCM / AAC / Opus) ──▶ bsp_audio_write
+  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus) ──▶ audio_output
 ```
 
 | path | role |
@@ -47,7 +47,7 @@ media_buffer          │           └─▶ present
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, WAV, MKV, MP4 and elementary-stream adapters |
 | `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture; `playlist.cpp`: the item list and the cursor both screens step through |
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
-| `app/audio/` | `audio_out`: BSP output, compressed audio decode, playback position; `ima_adpcm` |
+| `app/audio/` | `audio_decoder`: compressed audio decode, playback position; `audio_output`: board or USB Audio output, route volume and mute; `ima_adpcm` |
 | `app/screens/video_player_screen.*` | the full-screen player UI |
 | `app/screens/audio_player_screen.*` | the audio-only player UI, on the main display |
 | `app/screens/media_controls.*` | the transport widgets both screens build (icon button, slider, time text, the volume row's behaviour) |
@@ -513,7 +513,7 @@ guessing the extension.
   back by the audio position, so a card stall drags the slider back with it.
 - **The end is "the reader is at EOF and every audio slot is free".** The BSP
   has no drain or queued-bytes call, so the last moment the player can observe
-  is the one where `audio_out_write()` has returned for the last packet. The
+  is the one where `audio_decoder_write()` has returned for the last packet. The
   device buffer still plays out after that; `Finished` only moves the UI, and
   `bsp_audio_close()` does not happen until the screen leaves. Waiting for the
   clock to reach the duration instead would hang whenever the duration in the
@@ -533,7 +533,7 @@ guessing the extension.
   API; `wav_demux` is in µs like MP4.
   - **Packets are cut by us, not by the file.** A packet is about 32 KB rounded
     down to a whole PCM frame, or to a whole IMA ADPCM block, because
-    `audio_out` splits ADPCM by `block_align`. pts and seek are byte arithmetic
+    `audio_decoder` splits ADPCM by `block_align`. pts and seek are byte arithmetic
     and therefore exact.
   - **A `data` size of 0, or one past the end of the file, means the file is
     what a streaming writer left behind**, so it is clamped to the file size.
@@ -693,7 +693,7 @@ quarter turn; a roll that is not a multiple of 90 is ignored with a warning.
 | `video_decoder` | 2 | H.264 decode (parse, prediction, residual) or half of the MPEG-2 rows, core 0 |
 | `h264_post` | 2 | H.264 deblocking, packing, frame writes, reference window, core 1 |
 | `mpeg2_rows` | 2 | the other half of the MPEG-2 rows, core 1 |
-| `media_audio` | 6 | audio ring → `audio_out_write` |
+| `media_audio` | 6 | audio ring → `audio_decoder_write` |
 | `player_notify` | 2 | posts the state callback to the LVGL thread, stack in PSRAM |
 | `media_meta` | 2 | tags, cover art and thumbnails, core 0, stack in PSRAM (see [`metadata.md`](metadata.md)); stopped while the video player is open |
 
@@ -962,14 +962,14 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 
 ## Audio
 
-- **PCM is copied before it goes out.** `bsp_audio_write` runs the BSP's DSP
-  chain in place on the buffer it is given. `audio_out` copies PCM into its own
-  buffer first, so a ring slot is never passed directly. Decoded audio already
-  lands in that buffer.
+- **PCM is copied before it goes out.** `audio_output_write` may filter the
+  buffer it is given in place (the BSP's DSP chain). `audio_decoder` copies PCM
+  into its own buffer first, so a ring slot is never passed directly. Decoded
+  audio already lands in that buffer.
 - **The decoder follows the stream, not the container.** When a decoder
   reports a different rate or channel count (HE-AAC doubles the rate the
-  AudioSpecificConfig states), `bsp_audio_open` is called again.
-- **Decoders are reset on seek** (`audio_out_flush()`), so AAC and Opus do not
+  AudioSpecificConfig states), `audio_output_open` is called again.
+- **Decoders are reset on seek** (`audio_decoder_flush()`), so AAC and Opus do not
   carry state from before the jump. The audio task is parked by then.
 - **AAC's SBR (HE-AAC) decoding is on only next to MJPEG.** On the device it
   took about a quarter of a core even for plain AAC-LC, which H.264 playback

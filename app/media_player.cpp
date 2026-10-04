@@ -4,6 +4,7 @@
  */
 
 #include "media_player.hpp"
+#include "audio/audio_output.hpp"
 #include "display_manager.hpp"
 #include "lvgl.hpp"
 #include "esp_log.h"
@@ -119,6 +120,7 @@ void app_entry() {
     bsp_config.audio.speaker_mode = BSP_AUDIO_SPEAKER_MODE_AUTO;
     bsp_init(&bsp_config);
     settings_apply();
+    audio_output_init();
 
     esp_err_t err = display_init();
     if (err != ESP_OK) {
@@ -197,6 +199,8 @@ void app_entry() {
         });
         lv_unlock();
     };
+    usb_callbacks.uac_connected = audio_output_usb_connected;
+    usb_callbacks.uac_disconnected = audio_output_usb_disconnected;
     err = usb_host::install(std::move(usb_callbacks));
     if (err != ESP_OK) ESP_LOGE(TAG, "usb host install: %s", esp_err_to_name(err));
 #ifdef ESP_PLATFORM

@@ -4,8 +4,8 @@
  */
 
 #include "media_controls.hpp"
+#include "audio/audio_output.hpp"
 #include "settings.hpp"
-#include "bsp.h"
 #include "resources.h"
 #include "widgets.hpp"
 
@@ -115,7 +115,7 @@ MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<
 }
 
 const char *media_volume_icon(int32_t volume) {
-    return bsp_audio_get_mute() ? TABLER_VOLUME_3
+    return audio_output_get_mute() ? TABLER_VOLUME_3
          : volume <= 0          ? TABLER_VOLUME_4
          : volume < 50          ? TABLER_VOLUME_2
                                 : TABLER_VOLUME;
@@ -133,20 +133,20 @@ void media_volume_show(lv_obj_t *icon_label, lv_obj_t *slider, int32_t volume) {
 }
 
 void media_volume_bind(lv_obj_t *mute_button, lv_obj_t *icon_label, lv_obj_t *slider) {
-    media_volume_show(icon_label, slider, settings_volume());
+    media_volume_show(icon_label, slider, audio_output_volume());
 
     lv_obj_add_event_fn(mute_button, LV_EVENT_CLICKED, [icon_label, slider](lv_event_t *) {
-        bsp_audio_set_mute(!bsp_audio_get_mute());
+        audio_output_set_mute(!audio_output_get_mute());
         set_icon(icon_label, lv_slider_get_value(slider));
     });
     lv_obj_add_event_fn(slider, LV_EVENT_VALUE_CHANGED, [icon_label, slider](lv_event_t *) {
         const int32_t volume = lv_slider_get_value(slider);
-        bsp_audio_set_mute(false);
-        settings_set_volume(volume);
+        audio_output_set_mute(false);
+        audio_output_set_volume(volume);
         set_icon(icon_label, volume);
     });
     lv_obj_add_event_fn(slider, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
-    settings_volume_observe(slider, [icon_label, slider](int volume) {
+    audio_output_volume_observe(slider, [icon_label, slider](int volume) {
         if (lv_obj_has_state(slider, LV_STATE_PRESSED)) return;
         media_volume_show(icon_label, slider, volume);
     });

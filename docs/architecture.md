@@ -246,23 +246,27 @@ flash write instead of one per step.
 `settings_init()` only opens NVS and reads the values, so `app_entry()` can call
 it before `bsp_init()`: the display pixel format is part of `bsp_config` and has
 to be known by then. Everything the BSP does not take through `bsp_config` is
-pushed by `settings_apply()` right after `bsp_init()`: brightness, volume, the
-equalizer, and the headphone callback.
+pushed by `settings_apply()` right after `bsp_init()`: brightness and the
+equalizer. Volume, mute and the headphone callback belong to
+`audio_output_init()`, which runs right after it.
 
 The settings pages share their rows, sliders and segmented toggles through
 `app/screens/home/settings_widgets.*`; a page is then only its values and the
 side effects of changing them.
 
-Volume is stored twice, one value per output route: the speaker and a pair of
-headphones are comfortable at very different settings, so a single value means
-re-dragging the slider on every insert and removal. The Sound page shows one
-slider that follows the route instead — `settings_volume()` reads the value for
-the route the BSP reports, and the headphone callback applies the other one on
-insert and removal. That callback runs on the BSP dispatch task, so the UI is
-told through `settings_volume_observe()`, whose observers are dispatched on the
-LVGL thread and released with the object they were registered on. `bsp_audio_set_mute()` is
-what the player's mute button toggles — muting by setting the volume to zero
-would persist the zero.
+Volume is stored once per output route — speaker, headphones, and one value
+shared by every USB audio device: they are comfortable at very different
+settings, so a single value means re-dragging the slider on every insert and
+removal. The Sound page shows one slider that follows the route instead.
+`app/audio/audio_output.*` owns the route: USB while a device is connected,
+otherwise what the BSP's headphone detect reports. `settings.cpp` only stores the
+three values. Route changes arrive on the BSP dispatch task and the USB worker
+task, so the UI is told through `audio_output_volume_observe()`, whose observers
+are dispatched on the LVGL thread and released with the object they were
+registered on. `audio_output_set_mute()` is what the player's mute button
+toggles — muting by setting the volume to zero would persist the zero. AirPlay's
+sender volume goes through `audio_output_apply_volume()`, which is not stored
+and lasts until the route changes.
 
 The Display page's Color Mode switches the panel between RGB565 and RGB888
 without a restart. `media_player_set_display_pixel_format()` hides the main
@@ -381,6 +385,40 @@ Adding `usb_host_msc` made the component manager re-solve
 `esp32p4/dependencies.lock`, which moved LVGL to a 9.6 pre-release whose
 `lv_conf_internal.h` fails the build with `-Werror`. The lock keeps LVGL at
 9.5.0; watch for that bump whenever a managed dependency is added.
+
+## USB audio
+
+A USB audio device on the USB-A port takes the output over while it is
+connected (`CONFIG_USBH_UAC`; esp-devkit's `libs/usb_host` README covers what
+the driver supports). `app/audio/audio_output.*` is the one output every
+player writes to — `audio_decoder` and the AirPlay receiver call
+`audio_output_open/write/close`, never `bsp_audio_*` — and it moves an open
+stream between the board and the device when one is plugged in or pulled.
+Only the first device that connects is used.
+
+The board's DSP, EQ and software gain stay on the board's path: they correct
+the built-in speaker and headphone amp, and have nothing to do with an
+external DAC. On the device, volume and mute go to its feature unit, and the
+slider spans the whole range the device reports, linear in dB from its minimum
+at 1 to its maximum at 100, with 0 muting: DACs differ too much in output level
+for a fixed dB curve to leave the slider usable on all of them. A device without
+a volume control plays at 0 dB.
+
+`app/audio/usb_audio_output.*` picks the device format that matches the
+stream's rate and channel count with the closest bit depth, and converts
+channels (mono to stereo, stereo to mono) and sample width on the way.
+Resampling is not done: a rate the device does not list is logged and the
+stream is consumed in real time as silence, which keeps the player's clock
+running.
+
+The host library cannot enumerate a device whose configuration descriptor is
+larger than `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE`, which audio devices
+routinely are, so `esp32p4/sdkconfig.defaults` raises it to 1024. Hubs are not
+enabled, so a drive and a USB audio device cannot be used at the same time.
+
+On the simulator, `usbh-uac-attach [wav] [rate,...]` / `usbh-uac-detach` plug
+and pull a device that records to a WAV file; see
+`simulator/verify/usb_audio.txt`.
 
 ## Wi-Fi
 

@@ -4,13 +4,13 @@
  */
 
 #include "sound_page.hpp"
+#include "audio/audio_output.hpp"
 #include "settings.hpp"
 #include "settings_widgets.hpp"
 #include "widgets.hpp"
 
 static void set_volume_text(lv_obj_t *value, int volume) {
-    lv_label_set_text_fmt(value, "%s  %d",
-                          settings_volume_is_headphone() ? "Headphone" : "Speaker", volume);
+    lv_label_set_text_fmt(value, "%s  %d", audio_route_name(audio_output_route()), volume);
 }
 
 void SoundPage::build(lv_obj_t *contents) {
@@ -19,16 +19,16 @@ void SoundPage::build(lv_obj_t *contents) {
 
     auto row = lv_setting_row_create(section, "Volume");
     auto value = lv_setting_value_create(row);
-    set_volume_text(value, settings_volume());
+    set_volume_text(value, audio_output_volume());
 
-    auto slider = lv_setting_slider_create(section, 0, 100, settings_volume());
+    auto slider = lv_setting_slider_create(section, 0, 100, audio_output_volume());
     lv_obj_add_event_fn(slider, LV_EVENT_VALUE_CHANGED, [slider, value](lv_event_t *) {
         const int volume = lv_slider_get_value(slider);
-        settings_set_volume(volume);
+        audio_output_set_volume(volume);
         set_volume_text(value, volume);
     });
     lv_obj_add_event_fn(slider, LV_EVENT_RELEASED, [](lv_event_t *) { settings_commit(); });
-    settings_volume_observe(slider, [slider, value](int volume) {
+    audio_output_volume_observe(slider, [slider, value](int volume) {
         if (lv_obj_has_state(slider, LV_STATE_PRESSED)) return;
         lv_slider_set_value(slider, volume, LV_ANIM_OFF);
         set_volume_text(value, volume);

@@ -3,7 +3,7 @@
 # and shares the volume row with the player's settings. Started with a folder,
 # Music/ plays in order while the pictures change — a_aac, b_opus, then
 # c_alac, which cannot be opened and is skipped, then d_pcm — as `--log`
-# shows in audio_out's open lines; a touch ends the music with the pictures.
+# shows in audio_decoder's open lines; a touch ends the music with the pictures.
 # With one file, f_mp3, that file loops through the player's own loop, so it
 # is opened once however long it plays. The picker opens at the source chosen
 # before, or at the pictures when there is none; its storage list has no way

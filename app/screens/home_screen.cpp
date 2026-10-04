@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <iterator>
 #include "media_player.hpp"
 #include "resources.h"
 #include "screen_manager.hpp"
@@ -22,12 +21,14 @@
 static constexpr int32_t kMenuWidth = 400;
 
 const HomeScreen::MenuItem HomeScreen::kMenu[] = {
-    {"Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
-    {"Storage", LV_SYMBOL_USB, nullptr, "USB Drive", &HomeScreen::open_usb_drive},
-    {"Network", TABLER_CAST, &icon_36, "AirPlay Receiver", &HomeScreen::open_airplay_receiver},
-    {"Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
-    {"Settings", TABLER_VOLUME, &icon_36, "Sound", &HomeScreen::open_sound},
-    {"Settings", TABLER_WIFI, &icon_36, "Wi-Fi", &HomeScreen::open_wifi},
+    {MenuId::SdCard, "Storage", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
+    {MenuId::UsbDrive, "Storage", LV_SYMBOL_USB, nullptr, "USB Drive",
+     &HomeScreen::open_usb_drive},
+    {MenuId::AirPlayReceiver, "Network", TABLER_CAST, &icon_36, "AirPlay Receiver",
+     &HomeScreen::open_airplay_receiver},
+    {MenuId::Display, "Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
+    {MenuId::Sound, "Settings", TABLER_VOLUME, &icon_36, "Sound", &HomeScreen::open_sound},
+    {MenuId::Wifi, "Settings", TABLER_WIFI, &icon_36, "Wi-Fi", &HomeScreen::open_wifi},
 };
 
 static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
@@ -43,6 +44,12 @@ void HomeScreen::build() {
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(root_, 0, 0);
     lv_obj_set_style_pad_column(root_, 0, 0);
+    menu_pane_ = pane_create(root_, lv_color_hex(0xeeeeee));
+    build_menu();
+    separator_ = lv_ver_separator_create(root_);
+    page_pane_ = pane_create(root_, lv_color_white());
+    lv_obj_set_width(page_pane_, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(page_pane_, 1);
     lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
         if (is_landscape() != landscape_) navigate([] {});
     });
@@ -57,7 +64,7 @@ void HomeScreen::push(std::shared_ptr<HomePage> page) {
 void HomeScreen::pop() {
     navigate([this] {
         if (!stack_.empty()) stack_.pop_back();
-        if (stack_.empty()) selected_ = SIZE_MAX;
+        if (stack_.empty()) selected_.reset();
     });
 }
 
@@ -68,8 +75,38 @@ void HomeScreen::eject(const std::string &mount_point) {
     if (std::none_of(stack_.begin(), stack_.end(), under)) return;
     navigate([this, under] {
         stack_.erase(std::find_if(stack_.begin(), stack_.end(), under), stack_.end());
-        if (stack_.empty()) selected_ = SIZE_MAX;
+        if (stack_.empty()) selected_.reset();
     });
+}
+
+void HomeScreen::refresh_menu() {
+    int32_t scroll_y = lv_obj_get_scroll_y(menu_contents_);
+    lv_obj_clean(menu_contents_);
+    menu_rows_.clear();
+
+    auto items = menu_items();
+    lv_obj_t *section = nullptr;
+    const char *section_title = nullptr;
+    for (auto item : items) {
+        if (!section_title || std::strcmp(item->section, section_title) != 0) {
+            section = lv_grouped_section_create(menu_contents_, item->section);
+            section_title = item->section;
+        }
+        auto row = lv_grouped_row_create(section, item->icon, item->label, item->icon_font);
+        lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [this, item](lv_event_t *) { select(*item); });
+        menu_rows_.emplace_back(item->id, row);
+    }
+    update_menu_rows();
+    lv_obj_update_layout(menu_contents_);
+    lv_obj_scroll_to_y(menu_contents_, scroll_y, LV_ANIM_OFF);
+
+    auto selected = [this](const MenuItem *item) { return item->id == selected_; };
+    if (selected_ && std::none_of(items.begin(), items.end(), selected)) {
+        navigate([this] {
+            stack_.clear();
+            selected_.reset();
+        });
+    }
 }
 
 void HomeScreen::onAppear() {
@@ -93,65 +130,55 @@ void HomeScreen::navigate(std::function<void()> change) {
         if (weak.expired()) return;
         if (visible_) visible_->save_state();
         visible_ = nullptr;
-        lv_obj_clean(root_);
+        lv_obj_clean(page_pane_);
         change();
         layout();
     });
 }
 
+std::vector<const HomeScreen::MenuItem *> HomeScreen::menu_items() const {
+    std::vector<const MenuItem *> items;
+    for (auto &item : kMenu) items.push_back(&item);
+    return items;
+}
+
 void HomeScreen::layout() {
     landscape_ = is_landscape();
-    if (!landscape_) {
-        auto pane = pane_create(root_, lv_color_white());
-        if (stack_.empty()) {
-            build_menu(pane);
-        } else {
-            build_page(pane);
-        }
-        return;
-    }
-
-    auto menu = pane_create(root_, lv_color_white());
-    lv_obj_set_width(menu, kMenuWidth);
-    build_menu(menu);
-    lv_ver_separator_create(root_);
-    auto page = pane_create(root_, lv_color_white());
-    lv_obj_set_width(page, LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(page, 1);
-    build_page(page);
+    lv_obj_set_width(menu_pane_, landscape_ ? kMenuWidth : LV_PCT(100));
+    lv_obj_set_flag(menu_pane_, LV_OBJ_FLAG_HIDDEN, !landscape_ && !stack_.empty());
+    lv_obj_set_flag(separator_, LV_OBJ_FLAG_HIDDEN, !landscape_);
+    lv_obj_set_flag(page_pane_, LV_OBJ_FLAG_HIDDEN, !landscape_ && stack_.empty());
+    update_menu_rows();
+    build_page();
 }
 
-void HomeScreen::build_menu(lv_obj_t *pane) {
-    lv_obj_set_style_bg_color(pane, lv_color_hex(0xeeeeee), 0);
-    auto navigation = lv_navigation_create(pane);
+void HomeScreen::build_menu() {
+    auto navigation = lv_navigation_create(menu_pane_);
     lv_navigation_title_create(navigation, "Media Player");
 
-    auto contents = lv_spacer_create(pane, LV_PCT(100), LV_SIZE_CONTENT, 1);
-    lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(contents, 24, 0);
-    lv_obj_set_style_pad_row(contents, 12, 0);
+    menu_contents_ = lv_spacer_create(menu_pane_, LV_PCT(100), LV_SIZE_CONTENT, 1);
+    lv_obj_set_flex_flow(menu_contents_, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(menu_contents_, 24, 0);
+    lv_obj_set_style_pad_row(menu_contents_, 12, 0);
+    refresh_menu();
+}
 
-    lv_obj_t *section = nullptr;
-    for (std::size_t i = 0; i < std::size(kMenu); i++) {
-        if (i == 0 || std::strcmp(kMenu[i].section, kMenu[i - 1].section) != 0) {
-            section = lv_grouped_section_create(contents, kMenu[i].section);
-        }
-        auto row = lv_grouped_row_create(section, kMenu[i].icon, kMenu[i].label,
-                                         kMenu[i].icon_font);
+void HomeScreen::update_menu_rows() {
+    for (auto &[id, row] : menu_rows_) {
         lv_grouped_row_set_arrow_visible(row, !landscape_);
-        lv_obj_set_state(row, LV_STATE_CHECKED, landscape_ && selected_ == i);
-        lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [this, i](lv_event_t *) { select(i); });
+        lv_obj_set_state(row, LV_STATE_CHECKED, landscape_ && selected_ == id);
     }
 }
 
-void HomeScreen::build_page(lv_obj_t *pane) {
+void HomeScreen::build_page() {
     if (stack_.empty()) {
-        lv_obj_set_style_bg_color(pane, lv_color_hex(0xeeeeee), 0);
+        lv_obj_set_style_bg_color(page_pane_, lv_color_hex(0xeeeeee), 0);
         return;
     }
+    lv_obj_set_style_bg_color(page_pane_, lv_color_white(), 0);
 
-    auto navigation = lv_navigation_create(pane, LV_NAVIGATION_STYLE_LIST);
-    auto contents = lv_spacer_create(pane, LV_PCT(100), LV_SIZE_CONTENT, 1);
+    auto navigation = lv_navigation_create(page_pane_, LV_NAVIGATION_STYLE_LIST);
+    auto contents = lv_spacer_create(page_pane_, LV_PCT(100), LV_SIZE_CONTENT, 1);
     lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);
 
     HomePage *page = stack_.back().get();
@@ -166,17 +193,17 @@ void HomeScreen::build_page(lv_obj_t *pane) {
     visible_ = page;
 }
 
-void HomeScreen::select(std::size_t index) {
-    if (selected_ == index && !stack_.empty()) {
+void HomeScreen::select(const MenuItem &item) {
+    if (selected_ == item.id && !stack_.empty()) {
         navigate([this] { stack_.resize(1); });
         return;
     }
-    auto page = (this->*kMenu[index].open)();
+    auto page = (this->*item.open)();
     if (!page) return;
     page->home_ = this;
-    navigate([this, index, page] {
+    navigate([this, id = item.id, page] {
         stack_.assign(1, page);
-        selected_ = index;
+        selected_ = id;
     });
 }
 
@@ -205,7 +232,7 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
 std::shared_ptr<HomePage> HomeScreen::open_airplay_receiver() {
     navigate([this] {
         stack_.clear();
-        selected_ = SIZE_MAX;
+        selected_.reset();
     });
     screen_manager.push(std::make_shared<AirPlayReceiverScreen>());
     return nullptr;

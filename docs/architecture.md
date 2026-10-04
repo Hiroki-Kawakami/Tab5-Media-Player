@@ -220,12 +220,19 @@ landscape shows both at once: the menu on the left, the top page on the right.
 Portrait shows either the menu (empty stack) or the top page full-screen, which
 is the same navigation the separate screens used to give.
 
-Every navigation, rotation and eject rebuilds the whole view on the next LVGL
-tick rather than in place. Navigation is triggered from a click on a row or
-back button that the rebuild deletes, and the list calls back into the page
-that a pop destroys, so neither can happen inside the event. Pages outlive
-their views: a `FileBrowserPage` keeps its entries and scroll offset, so going
-back or rotating does not re-read the directory.
+The menu pane and the page pane are built once; rotation only resizes and hides
+them. Every navigation, rotation and eject rebuilds the page pane on the next
+LVGL tick rather than in place. Navigation is triggered from a back button that
+the rebuild deletes, and the list calls back into the page that a pop destroys,
+so neither can happen inside the event. Pages outlive their views: a
+`FileBrowserPage` keeps its entries and scroll offset, so going back or
+rotating does not re-read the directory.
+
+The menu is never rebuilt by navigation, so selecting a row in landscape keeps
+its scroll position. `refresh_menu()` rebuilds only the rows, for when the set
+of items changes; it keeps the scroll offset and closes the page of a selected
+item that went away. The selection is kept as a `MenuId`, not a row index, so
+it survives items appearing above it.
 
 Settings pages are pages of that same stack, so a setting opens next to the
 menu in landscape like a folder does. `app/settings.cpp` owns the values and

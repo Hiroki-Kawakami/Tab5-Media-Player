@@ -55,6 +55,18 @@ void Remote::send(std::string command) {
     if (!dacp_id_.empty()) pending_.push_back(std::move(command));
 }
 
+bool Remote::send_now(const std::string &command) {
+    sockaddr_storage peer;
+    std::string active_remote;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        if (!port_ || dacp_id_.empty()) return false;
+        peer = peer_;
+        active_remote = active_remote_;
+    }
+    return request(peer, port_, active_remote, command);
+}
+
 void Remote::loop() {
     while (!quit_) {
         sockaddr_storage peer;

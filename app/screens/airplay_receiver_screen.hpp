@@ -78,8 +78,12 @@ private:
     std::shared_ptr<const uint8_t> decode_data_;
     std::size_t decode_size_ = 0;
     ImageSize decoded_size_;
+    int decode_framebuffer_ = 0;
+    bool decode_pending_ = false;
     uint32_t requested_serial_ = 0;
-    uint32_t shown_serial_ = 0;
+    int shown_framebuffer_ = 0;
+    ImageSize shown_size_;
+    int image_framebuffer_ = 0;
 
     lv_obj_t *artwork_ = nullptr;
     lv_obj_t *artwork_icon_ = nullptr;

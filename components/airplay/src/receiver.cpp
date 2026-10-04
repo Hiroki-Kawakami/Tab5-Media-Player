@@ -149,6 +149,8 @@ private:
     uint32_t progress_end_ = 0;
     uint32_t rate_ = 44100;
     bool has_volume_ = false;
+    std::shared_ptr<const uint8_t> artwork_;
+    std::size_t artwork_size_ = 0;
     float volume_db_ = 0;
     std::atomic<bool> has_position_{ false };
     std::atomic<uint32_t> position_rtp_{ 0 };
@@ -163,6 +165,7 @@ Receiver::~Receiver() {
     quit_ = true;
     task_.join();
     remote_.stop();
+    if (owner_ >= 0) remote_.send_now("pause");
     advertiser_.reset();
     end_session();
     for (Client &client : clients_) close_client(client);
@@ -634,6 +637,12 @@ void Receiver::parse_dmap(const uint8_t *data, std::size_t size) {
 }
 
 void Receiver::set_artwork(std::shared_ptr<const uint8_t> data, std::size_t size) {
+    if (!data && !artwork_) return;
+    if (data && artwork_ && size == artwork_size_ && memcmp(data.get(), artwork_.get(), size) == 0) {
+        return;
+    }
+    artwork_ = data;
+    artwork_size_ = size;
     if (auto listener = listener_.lock()) listener->on_airplay_artwork(std::move(data), size);
 }
 

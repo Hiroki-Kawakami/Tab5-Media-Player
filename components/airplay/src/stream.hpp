@@ -111,6 +111,7 @@ private:
     uint16_t latest_seq_ = 0;
     uint16_t play_seq_ = 0;
     bool flush_pending_ = false;
+    bool silent_after_flush_ = false;
     uint32_t flush_rtp_ = 0;
     bool clock_valid_ = false;
     int64_t clock_offset_ns_ = 0;

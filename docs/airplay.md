@@ -51,6 +51,13 @@ AirPlay volume (−30…0 dB, −144 mute) is applied as the same attenuation in
 `bsp_audio_set_volume` is linear in dB at 0.4 dB per step, so −30 dB is 25 and
 mute is 0. The Sound setting is restored when the screen closes.
 
+An iPhone that pauses sends `FLUSH` and then keeps streaming digital silence
+until it resumes; AirPlay 1 has no message that says which. After a `FLUSH` the
+stream therefore drops all-zero packets until one with sound arrives, so a
+paused sender does not show as playing. A track that starts in digital silence
+after a skip only starts its output once the sound does, at that packet's own
+time.
+
 ## Track info and artwork
 
 Senders only send metadata to receivers that advertise `md=0,1,2`. It all
@@ -70,12 +77,13 @@ artwork through the listener. It decodes the artwork on a task of its own
 (16 KB PSRAM stack, as for any image_framework caller) with
 `image_decode_to_fit()`, which unlike the file covers' path also enlarges:
 iPhones send 512x512 artwork for the 552 px box. The fitted picture goes to the
-start of framebuffer 1, like `AudioPlayerScreen`'s, and the rest of that
-framebuffer is the intermediate, so nothing is allocated. A baseline JPEG that
+start of framebuffer 1 or 2, whichever is not on screen, and the rest of that
+framebuffer is the intermediate, so nothing is allocated and the old artwork
+stays up until the new one replaces it. An iPhone sends the same artwork again
+on every pause, so the receiver drops artwork identical to the last one. A baseline JPEG that
 has to grow is decoded 1:1 by the JPEG hardware alone (the pipeline's Layer 1
 decoder, no PPA) and enlarged in one software resize; one that shrinks keeps
-the covers' PPA path. The LVGL image showing the framebuffer is dropped before
-the decode starts writing into it.
+the covers' PPA path.
 
 ## Remote control
 
@@ -87,6 +95,12 @@ address, so only its port is resolved over mDNS (`mdns_query_srv`, or
 of the component's own so the UI never waits on the network: `playpause`,
 `nextitem` and `previtem`. A failed request drops the port and resolves it
 again.
+
+AirPlay 1 has no way for a receiver to end a session, and an iPhone does not
+notice the RTSP connection closing until it next sends a request. Stopping the
+receiver therefore sends DACP `pause` first, so the sender at least stops
+playing; the iPhone still keeps the receiver as its output. Resetting the
+connection instead of closing it changed nothing there.
 
 The volume row only shows the sender's volume. The last volume is kept past
 the end of a session, as the output keeps it too: a sender that re-announces

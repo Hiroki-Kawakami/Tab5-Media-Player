@@ -166,6 +166,7 @@ void Stream::flush(bool has_rtp, uint32_t rtp) {
     playing_ = false;
     flush_pending_ = has_rtp;
     flush_rtp_ = rtp;
+    silent_after_flush_ = true;
 }
 
 void Stream::send_to(int index, uint16_t port, const uint8_t *data, std::size_t len) {
@@ -241,11 +242,17 @@ void Stream::handle_audio(const uint8_t *packet, std::size_t len, bool resent) {
     const uint32_t frames =
         decoder_.decode(payload, size, decoded_, setup_.format.frames_per_packet);
     if (!frames) return;
+    bool silent = true;
+    for (uint32_t i = 0; i < frames * setup_.format.channels && silent; i++) silent = !decoded_[i];
 
     std::lock_guard<std::mutex> guard(lock_);
     if (flush_pending_) {
         if ((int32_t)(rtp - flush_rtp_) < 0) return;
         flush_pending_ = false;
+    }
+    if (silent_after_flush_) {
+        if (silent) return;
+        silent_after_flush_ = false;
     }
     if (playing_ && seq_before(seq, play_seq_)) return;
     Slot &slot = slots_[seq % kSlots];

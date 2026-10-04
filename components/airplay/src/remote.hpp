@@ -29,6 +29,8 @@ public:
     void clear();
     bool available() const { return port_ != 0; }
     void send(std::string command);
+    /* After stop(): sends on the caller's task, blocking up to the request timeout. */
+    bool send_now(const std::string &command);
 
 private:
     void loop();

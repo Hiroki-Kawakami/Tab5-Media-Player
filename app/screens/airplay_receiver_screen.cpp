@@ -32,7 +32,7 @@ static constexpr int32_t kArtworkSide = 552;
 static constexpr ImageSize kArtworkBox = { kArtworkSide, kArtworkSide };
 static constexpr int32_t kArtworkRadius = 24;
 /* LVGL draws through framebuffer 0 only. */
-static constexpr int kArtworkFramebuffer = 1;
+static constexpr int kArtworkFramebuffers[] = { 1, 2 };
 
 static constexpr uint32_t kForegroundColor = 0x101010;
 static constexpr uint32_t kTrackColor = 0xd0d0d0;
@@ -199,11 +199,14 @@ void AirPlayReceiverScreen::showArtworkIcon(const char *icon) {
 }
 
 void AirPlayReceiverScreen::showArtworkImage() {
-    if (!artwork_ || artwork_image_) return;
-    auto *buffer = static_cast<uint8_t *>(bsp_display_get_frame_buffer(kArtworkFramebuffer));
+    if (!artwork_ || (artwork_image_ && image_framebuffer_ == shown_framebuffer_)) return;
+    auto *buffer = static_cast<uint8_t *>(bsp_display_get_frame_buffer(shown_framebuffer_));
     const bool rgb888 = bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
-    artwork_image_ = image_object_create(artwork_, buffer, decoded_size_, rgb888);
-    if (!artwork_image_) return;
+    lv_obj_t *image = image_object_create(artwork_, buffer, shown_size_, rgb888);
+    if (!image) return;
+    if (artwork_image_) lv_obj_delete(artwork_image_);
+    artwork_image_ = image;
+    image_framebuffer_ = shown_framebuffer_;
     if (artwork_icon_) {
         lv_obj_delete(artwork_icon_);
         artwork_icon_ = nullptr;
@@ -212,9 +215,13 @@ void AirPlayReceiverScreen::showArtworkImage() {
 }
 
 void AirPlayReceiverScreen::updateArtwork(bool connected) {
-    if (decoding_) return;
+    if (!decoding_ && decode_pending_) {
+        decode_pending_ = false;
+        shown_framebuffer_ = decoded_size_.valid() ? decode_framebuffer_ : 0;
+        shown_size_ = decoded_size_;
+    }
     const uint32_t serial = events_->artwork_serial;
-    if (serial != requested_serial_) {
+    if (!decoding_ && serial != requested_serial_) {
         std::shared_ptr<const uint8_t> data;
         std::size_t size = 0;
         {
@@ -223,24 +230,24 @@ void AirPlayReceiverScreen::updateArtwork(bool connected) {
             size = events_->artwork_size;
             requested_serial_ = events_->artwork_serial;
         }
-        if (artwork_image_) {
-            lv_obj_delete(artwork_image_);
-            artwork_image_ = nullptr;
-        }
-        decoded_size_ = {};
-        shown_serial_ = requested_serial_;
         if (data && decode_wake_) {
+            decode_framebuffer_ = shown_framebuffer_ == kArtworkFramebuffers[0]
+                                      ? kArtworkFramebuffers[1]
+                                      : kArtworkFramebuffers[0];
             decode_data_ = std::move(data);
             decode_size_ = size;
+            decode_pending_ = true;
             decoding_ = true;
             xSemaphoreGive(decode_wake_);
+        } else {
+            shown_framebuffer_ = 0;
         }
     }
     if (!connected) {
         showArtworkIcon(TABLER_CAST);
-    } else if (!decoding_ && decoded_size_.valid()) {
+    } else if (shown_framebuffer_) {
         showArtworkImage();
-    } else {
+    } else if (!decoding_) {
         showArtworkIcon(TABLER_MUSIC);
     }
 }
@@ -429,7 +436,8 @@ void AirPlayReceiverScreen::decodeMain(void *arg) {
     while (true) {
         xSemaphoreTake(self->decode_wake_, portMAX_DELAY);
         if (self->decode_quit_) break;
-        auto *buffer = static_cast<uint8_t *>(bsp_display_get_frame_buffer(kArtworkFramebuffer));
+        auto *buffer =
+            static_cast<uint8_t *>(bsp_display_get_frame_buffer(self->decode_framebuffer_));
         const bool rgb888 = bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
         const bsp_size_t panel = bsp_display_get_size();
         const std::size_t capacity = (std::size_t)panel.width * panel.height * (rgb888 ? 3 : 2);

@@ -9,7 +9,7 @@ would show placeholder boxes if Japanese ever reached them.
 
 ## Why a resgen pack and not an `lv_font_t`
 
-The 6761 glyph subset costs 758 KB at 24 px and 1366 KB at 38 px as 2 bpp packs,
+The 7141 glyph subset costs 783 KB at 24 px and 1410 KB at 38 px as 2 bpp packs,
 tables included — about 17 per cent under the same bitmaps stored raw, and the
 reason the factory partition went from 4M to 6M. Neither LVGL's
 `lv_font_fmt_txt` nor its compressed variant (`LV_USE_FONT_COMPRESSED`, which
@@ -74,9 +74,16 @@ nix develop -c sh -c '$RESGEN_PYTHON -m fontTools.subset NotoSansJP-VariableFont
     --layout-features= --no-hinting --name-IDs="*"'
 ```
 
-`jp_glyphs.txt` is every JIS X 0208 kanji (level 1 and level 2, 6355 of them)
-plus kana including the halfwidth block, fullwidth alphanumerics and the
-punctuation and symbols that show up in file names. The joyo kanji alone were
+`jp_glyphs.txt` is all of JIS X 0208 — the non-kanji rows 1–8 (symbols,
+fullwidth alphanumerics, kana, Greek, Cyrillic, box drawing) and every kanji
+(level 1 and level 2, 6355 of them) — plus the NEC row 13 specials of CP932
+(⑪, Ⅳ, ㈱, №), Latin-1 Supplement, halfwidth katakana, the few kana and
+fullwidth forms outside JIS X 0208, and a short hand-picked line of symbols
+that titles use but no JIS row has (♡, the en and em dashes, ♫, ⅰ). Symbols are taken by whole rows rather than
+picked one by one because titles use the odd one (∞, 々, Ω, Д in kaomoji), and
+Latin-1 because the built-in Montserrat stops at ASCII, so é or ö
+in a tag would otherwise be a box. ≒ (U+2252) is the one JIS X 0208 symbol
+Noto Sans JP does not have, so it is left out. The joyo kanji alone were
 tried first and were not enough for a music library: 煌, 凛, 絆, 綺, 薔薇,
 檸檬 and friends are all level 2, and titles and artist names use them freely.
 ASCII is deliberately absent: those codepoints always resolve in Montserrat,

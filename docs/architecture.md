@@ -355,9 +355,12 @@ names render as missing-glyph boxes until a font covering them is loaded.
 
 ## USB drive
 
-The USB-A port is driven by esp-devkit's `libs/usb_host` with
-`CONFIG_USBH_MSC`; its README covers the transport, why `usb_host_msc` is not
-used, and how a mount outlives its drive. The drive is mounted at `/usb` by the
+The USB-A port is driven by esp-devkit's `libs/usb_host`, its own host stack
+on IDF's DWC2 HAL rather than `espressif/usb`, with `CONFIG_USBH_MSC`; its
+README covers the controller, the transport, why `usb_host_msc` is not used,
+and how a mount outlives its drive. It does not use `espressif/usb`: some
+capture devices never answer after the second bus reset its enumeration sends,
+and its isochronous scheduling stops the channel between transfers. The drive is mounted at `/usb` by the
 Home screen's USB Drive button like the SD card. `app_entry()` switches VBUS on
 and installs the host stack at boot so a drive plugged in later is seen.
 
@@ -377,7 +380,7 @@ playback, where the JPEG decoder and the panel scanout already saturate PSRAM,
 a 64 KB chunk takes 10.2 ms instead of 14.4 ms. That holds 50 fps where the
 copying path dropped to 36 fps with bursts of 23 dropped frames in a row.
 
-The host stack and its three tasks take about 25 KB of internal RAM at boot.
+The host stack and its two tasks take about 25 KB of internal RAM at boot.
 
 On the simulator the drive is `SIMULATOR_USBH_MSC_PATH` (`run.sh` pins it to
 `simulator/usb`, gitignored), attached at boot when that directory exists.
@@ -425,12 +428,8 @@ the graph allocates comes from PSRAM through the modules' `alloc_caps`. A
 stream the graph cannot be built for is logged and consumed in real time as
 silence, which keeps the player's clock running.
 
-The host library cannot enumerate a device whose configuration descriptor is
-larger than `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE`, which audio devices
-and cameras routinely are (a camera lists every frame size), so
-`esp32p4/sdkconfig.defaults` raises it to 4096. The buffer is PSRAM
-(`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM`). Hubs are not enabled, so a
-drive, a USB audio device and a camera cannot be used at the same time.
+Hubs are not supported, so a drive, a USB audio device and a camera cannot be
+used at the same time.
 
 On the simulator, `usbh-uac-attach [wav] [rate,...]` / `usbh-uac-detach` plug
 and pull a device that records to a WAV file; see
@@ -466,10 +465,11 @@ alternates. A capture dongle that wants 2048-byte payloads gets its 800-byte
 alternate (6.4 MB/s) and still delivers 30 fps of a test pattern; busy
 pictures that compress worse may not fit.
 
-The isochronous receive buffers are internal RAM, unlike the rest of the USB
-stack's (`libs/usb_host` README, Video): in PSRAM a quarter of the camera's
-packets were lost while the picture was decoded and shown, which reached the
-decoder as broken JPEGs.
+The camera's receive buffers are internal RAM (`libs/usb_host` README, Video):
+in PSRAM a quarter of an isochronous camera's packets were lost while the
+picture was decoded and shown, which reached the decoder as broken JPEGs, and
+a bulk camera's buffers there cost its microphone one packet in twelve. A bulk
+camera with 16 KB payloads takes 64 KB of internal RAM while it streams.
 
 If the device also records audio, `CapturePlayback` plays it through
 `audio_output` with the Video content type, so the volume slider and the

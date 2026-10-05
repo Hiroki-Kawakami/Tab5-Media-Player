@@ -25,7 +25,7 @@ public:
     void refresh_menu();
 
 private:
-    enum class MenuId { SdCard, UsbDrive, AirPlayReceiver, Display, Sound, Wifi };
+    enum class MenuId { SdCard, UsbDrive, VideoInput, AirPlayReceiver, Display, Sound, Wifi };
 
     struct MenuItem {
         MenuId id;
@@ -57,6 +57,7 @@ private:
     void select(const MenuItem &item);
     std::shared_ptr<HomePage> open_sd_card();
     std::shared_ptr<HomePage> open_usb_drive();
+    std::shared_ptr<HomePage> open_video_input();
     std::shared_ptr<HomePage> open_airplay_receiver();
     std::shared_ptr<HomePage> open_display();
     std::shared_ptr<HomePage> open_sound();

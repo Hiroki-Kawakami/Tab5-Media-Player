@@ -5,8 +5,14 @@
 
 #pragma once
 #include <cstddef>
+#include <memory>
 #include <string>
 #include "bsp.h"
+
+namespace usb_host {
+class UacCaptureDevice;
+class UvcDevice;
+}
 
 inline constexpr std::size_t kSharedSramBytes = 245760;
 inline constexpr const char *kSdMountPoint = "/sdcard";
@@ -30,6 +36,8 @@ void app_entry();
 esp_err_t media_player_mount_sd();
 esp_err_t media_player_mount_usb();
 bool media_player_usb_connected();
+std::shared_ptr<usb_host::UvcDevice> media_player_camera();
+std::shared_ptr<usb_host::UacCaptureDevice> media_player_capture_audio();
 
 SharedSram media_player_acquire_sram();
 void media_player_release_sram();

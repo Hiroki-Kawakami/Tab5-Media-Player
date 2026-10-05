@@ -24,6 +24,7 @@ struct MediaTopBar {
     lv_obj_t *info_button;
 };
 
+/* Without on_info there is no info button. */
 MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<void()> on_back,
                                 std::function<void()> on_info);
 

@@ -1,0 +1,42 @@
+settle
+usbh-msc-detach
+usbh-uvc-detach
+settle
+capture video_input_menu_hidden.jpg
+usbh-uac-capture-attach
+usbh-uvc-attach
+settle
+capture video_input_menu_shown.jpg
+tap 360 319
+wait 1500
+capture video_input_preview.jpg
+tap 360 640
+wait 800
+capture video_input_bars.jpg
+tap 660 1240
+wait 800
+capture video_input_settings.jpg
+tap 668 692
+wait 800
+capture video_input_settings_closed.jpg
+wait 5000
+capture video_input_autohide.jpg
+imu rot90
+wait 1000
+capture video_input_landscape.jpg
+tap 640 360
+wait 800
+capture video_input_landscape_bars.jpg
+imu rot0
+wait 1000
+tap 50 40
+wait 1000
+settle
+capture video_input_back.jpg
+tap 360 319
+wait 1500
+usbh-uac-capture-detach
+usbh-uvc-detach
+wait 1000
+settle
+capture video_input_unplugged.jpg

@@ -600,6 +600,10 @@ void player_start(const media_arena_t &arena) {
 void player_observe_state(void (*on_change)()) { s_state_observer.store(on_change); }
 
 void player_open(const std::string &path) { send_command(Command::Open, &path); }
+media_arena_t player_arena() {
+    return s_arena;
+}
+
 void player_close() {
     if (!s_commands) return;
     xSemaphoreTake(s_closed, 0);

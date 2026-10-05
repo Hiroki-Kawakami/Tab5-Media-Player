@@ -82,6 +82,10 @@ PSRAM fragmentation making it unavailable after the UI has been used for a
 while. It cannot be a `.bss` array like the SRAM buffer, because `.bss` stays in
 internal RAM.
 
+The Video Input screen borrows the same arena for camera frames while it is
+open (see [Video input](#video-input)); `player_arena()` hands it out between
+`player_close()` and the next `player_open()`.
+
 A second, 512 KB arena is allocated next to it for the metadata worker, which
 opens files for their tags and cover art while the player holds the big one
 (see [`metadata.md`](metadata.md)).
@@ -423,12 +427,60 @@ silence, which keeps the player's clock running.
 
 The host library cannot enumerate a device whose configuration descriptor is
 larger than `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE`, which audio devices
-routinely are, so `esp32p4/sdkconfig.defaults` raises it to 1024. Hubs are not
-enabled, so a drive and a USB audio device cannot be used at the same time.
+and cameras routinely are (a camera lists every frame size), so
+`esp32p4/sdkconfig.defaults` raises it to 4096. The buffer is PSRAM
+(`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM`). Hubs are not enabled, so a
+drive, a USB audio device and a camera cannot be used at the same time.
 
 On the simulator, `usbh-uac-attach [wav] [rate,...]` / `usbh-uac-detach` plug
 and pull a device that records to a WAV file; see
 `simulator/verify/usb_audio.txt`.
+
+## Video input
+
+A USB camera or capture device (`CONFIG_USBH_UVC`, esp-devkit's
+`libs/usb_host` README) adds Video Input to the Home menu's Device section
+while it is connected; `app_entry()` keeps the first one, like the drive.
+`VideoInputScreen` is pushed full screen like the AirPlay receiver, not as a
+Home page, and goes back on its own when the camera is pulled.
+
+It is the video player without the player: the same `video_presenter` and
+`MjpegRenderer`, the shared SRAM as strip buffers, the same overlay display and
+inset handover (see [Player overlay](#player-overlay) and
+[`playback.md`](playback.md#the-overlay)), with frames submitted as they arrive
+(`due_us` 0). The bars are 80 px top and bottom, start hidden, and hide again
+after 4 s. MJPEG cannot redraw a frame it has drawn, and nothing pins the last
+packet the way the player does, so a mode change waits for the next frame to
+fill the area the UI left; while a camera sends nothing, that area keeps
+whatever was there.
+
+The capture is fixed at 1280x720 MJPEG, 30 fps. Frames land in four 1 MB slots
+carved out of the media arena, which is idle because the player is closed
+whenever Home is on screen. Four is what can be out at once: one filling, one
+waiting to be received, one in the presenter's queue and one being decoded. A
+frame larger than a slot is dropped.
+
+The host stack does one isochronous transaction per microframe, so cameras
+whose bandwidth needs two or three are limited to their single-transaction
+alternates. A capture dongle that wants 2048-byte payloads gets its 800-byte
+alternate (6.4 MB/s) and still delivers 30 fps of a test pattern; busy
+pictures that compress worse may not fit.
+
+The isochronous receive buffers are internal RAM, unlike the rest of the USB
+stack's (`libs/usb_host` README, Video): in PSRAM a quarter of the camera's
+packets were lost while the picture was decoded and shown, which reached the
+decoder as broken JPEGs.
+
+If the device also records audio, `CapturePlayback` plays it through
+`audio_output` with the Video content type, so the volume slider and the
+Settings panel's Sound section are the board's. The device clock and the I2S
+clock drift apart, which shows up as the capture ring's fill: it is prefilled
+to 20 ms, and while its smoothed fill is more than 3 ms off, each 5 ms chunk
+drops or repeats one frame (at most 0.4 %). A read that times out prefills
+again.
+
+On the simulator, `run.sh` points `SIMULATOR_USBH_UVC_PATH` at `simulator/uvc`
+(gitignored, any 1280x720 JPEGs); see `simulator/verify/video_input.txt`.
 
 ## Wi-Fi
 

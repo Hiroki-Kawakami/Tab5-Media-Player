@@ -31,6 +31,8 @@ struct PlayerStatus {
 };
 
 void player_start(const media_arena_t &arena);
+/* Free for others from player_close() until the next player_open(). */
+media_arena_t player_arena();
 void player_observe_state(void (*on_change)());
 void player_open(const std::string &path);
 void player_close();

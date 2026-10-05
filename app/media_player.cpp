@@ -19,12 +19,15 @@
 #include "screens/audio_player_screen.hpp"
 #include "screens/image_viewer/bgm_picker_screen.hpp"
 #include "screens/image_viewer_screen.hpp"
+#include "screens/video_input_screen.hpp"
 #include "screens/video_player_screen.hpp"
 #include "settings.hpp"
 #include "ui_font.hpp"
 #include "ui_orientation.hpp"
 #include "usb_host.hpp"
 #include "usb_host_msc.hpp"
+#include "usb_host_uac.hpp"
+#include "usb_host_uvc.hpp"
 #ifndef ESP_PLATFORM
 #include "wifi_sim.hpp"
 #endif
@@ -39,6 +42,8 @@ static lv_display_t *s_main;
 static std::weak_ptr<HomeScreen> s_home;
 static std::mutex s_usb_lock;
 static std::shared_ptr<usb_host::MscDevice> s_usb_drive;
+static std::shared_ptr<usb_host::UvcDevice> s_camera;
+static std::shared_ptr<usb_host::UacCaptureDevice> s_capture_audio;
 
 static SharedSram shared_sram() {
     const std::size_t half = kSharedSramBytes / 2;
@@ -88,6 +93,16 @@ esp_err_t media_player_mount_usb() {
 bool media_player_usb_connected() {
     std::lock_guard<std::mutex> guard(s_usb_lock);
     return s_usb_drive != nullptr;
+}
+
+std::shared_ptr<usb_host::UvcDevice> media_player_camera() {
+    std::lock_guard<std::mutex> guard(s_usb_lock);
+    return s_camera;
+}
+
+std::shared_ptr<usb_host::UacCaptureDevice> media_player_capture_audio() {
+    std::lock_guard<std::mutex> guard(s_usb_lock);
+    return s_capture_audio;
 }
 
 SharedSram media_player_acquire_sram() {
@@ -199,6 +214,40 @@ void app_entry() {
         });
         lv_unlock();
     };
+    usb_callbacks.uvc_connected = [](std::shared_ptr<usb_host::UvcDevice> device) {
+        {
+            std::lock_guard<std::mutex> guard(s_usb_lock);
+            if (s_camera) return;
+            s_camera = std::move(device);
+        }
+        lv_lock();
+        lv_async_call([] {
+            if (auto home = s_home.lock()) home->refresh_menu();
+        });
+        lv_unlock();
+    };
+    usb_callbacks.uvc_disconnected = [](const std::shared_ptr<usb_host::UvcDevice> &device) {
+        {
+            std::lock_guard<std::mutex> guard(s_usb_lock);
+            if (s_camera != device) return;
+            s_camera.reset();
+        }
+        lv_lock();
+        lv_async_call([] {
+            VideoInputScreen::unplugged();
+            if (auto home = s_home.lock()) home->refresh_menu();
+        });
+        lv_unlock();
+    };
+    usb_callbacks.uac_capture_connected = [](std::shared_ptr<usb_host::UacCaptureDevice> device) {
+        std::lock_guard<std::mutex> guard(s_usb_lock);
+        if (!s_capture_audio) s_capture_audio = std::move(device);
+    };
+    usb_callbacks.uac_capture_disconnected =
+        [](const std::shared_ptr<usb_host::UacCaptureDevice> &device) {
+            std::lock_guard<std::mutex> guard(s_usb_lock);
+            if (s_capture_audio == device) s_capture_audio.reset();
+        };
     usb_callbacks.uac_connected = audio_output_usb_connected;
     usb_callbacks.uac_disconnected = audio_output_usb_disconnected;
     err = usb_host::install(std::move(usb_callbacks));

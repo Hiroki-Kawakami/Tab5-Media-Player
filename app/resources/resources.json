@@ -45,7 +45,8 @@
         "TABLER_WIFI_0": "tabler/wifi-0.svg",
         "TABLER_LOCK": "tabler/lock.svg",
         "TABLER_REFRESH": "tabler/refresh.svg",
-        "TABLER_CAST": "tabler/cast.svg"
+        "TABLER_CAST": "tabler/cast.svg",
+        "TABLER_VIDEO": "tabler/video.svg"
       }
     },
     "noto_sans_jp_24": {

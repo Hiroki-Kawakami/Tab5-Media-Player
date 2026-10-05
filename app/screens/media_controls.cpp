@@ -99,14 +99,18 @@ MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<
 
     lv_spacer_create(bar, 1, 1, 1);
 
-    result.info_button = media_icon_button(bar, kTopBarIconButton, &icon_36, TABLER_INFO_CIRCLE,
-                                           lv_color_white());
-    lv_obj_add_event_fn(result.info_button, LV_EVENT_CLICKED,
-                        [on_info](lv_event_t *) { on_info(); });
+    int32_t info_width = 0;
+    if (on_info) {
+        result.info_button = media_icon_button(bar, kTopBarIconButton, &icon_36,
+                                               TABLER_INFO_CIRCLE, lv_color_white());
+        lv_obj_add_event_fn(result.info_button, LV_EVENT_CLICKED,
+                            [on_info](lv_event_t *) { on_info(); });
+        info_width = kTopBarPadding + kTopBarIconButton;
+    }
 
     lv_obj_update_layout(bar);
-    const int32_t room = lv_obj_get_width(bar) - 2 * kTopBarPadding - kTopBarPadding -
-                         kTopBarIconButton - (lv_obj_get_width(back) - lv_obj_get_width(result.title));
+    const int32_t room = lv_obj_get_width(bar) - 2 * kTopBarPadding - info_width -
+                         (lv_obj_get_width(back) - lv_obj_get_width(result.title));
     if (lv_obj_get_width(result.title) > room) {
         lv_obj_set_width(result.title, room);
         lv_label_set_long_mode(result.title, LV_LABEL_LONG_MODE_DOTS);

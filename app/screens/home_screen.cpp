@@ -11,6 +11,7 @@
 #include "resources.h"
 #include "screen_manager.hpp"
 #include "screens/airplay_receiver_screen.hpp"
+#include "screens/video_input_screen.hpp"
 #include "screens/home/display_page.hpp"
 #include "screens/home/file_browser_page.hpp"
 #include "screens/home/grouped_list.hpp"
@@ -24,6 +25,8 @@ const HomeScreen::MenuItem HomeScreen::kMenu[] = {
     {MenuId::SdCard, "Device", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
     {MenuId::UsbDrive, "Device", LV_SYMBOL_USB, nullptr, "USB Drive",
      &HomeScreen::open_usb_drive},
+    {MenuId::VideoInput, "Device", TABLER_VIDEO, &icon_36, "Video Input",
+     &HomeScreen::open_video_input},
     {MenuId::AirPlayReceiver, "Network", TABLER_CAST, &icon_36, "AirPlay Receiver",
      &HomeScreen::open_airplay_receiver},
     {MenuId::Display, "Settings", TABLER_SUN, &icon_36, "Display", &HomeScreen::open_display},
@@ -140,6 +143,7 @@ std::vector<const HomeScreen::MenuItem *> HomeScreen::menu_items() const {
     std::vector<const MenuItem *> items;
     for (auto &item : kMenu) {
         if (item.id == MenuId::UsbDrive && !media_player_usb_connected()) continue;
+        if (item.id == MenuId::VideoInput && !media_player_camera()) continue;
         items.push_back(&item);
     }
     return items;
@@ -230,6 +234,17 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
         return nullptr;
     }
     return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
+}
+
+std::shared_ptr<HomePage> HomeScreen::open_video_input() {
+    auto camera = media_player_camera();
+    if (!camera) return nullptr;
+    navigate([this] {
+        stack_.clear();
+        selected_.reset();
+    });
+    screen_manager.push(std::make_shared<VideoInputScreen>(std::move(camera)));
+    return nullptr;
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_airplay_receiver() {

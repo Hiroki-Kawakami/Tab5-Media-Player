@@ -9,6 +9,7 @@
 #include "lvgl.hpp"
 #include "media/psram_allocator.hpp"
 #include "settings.hpp"
+#include <atomic>
 #include <cmath>
 #include <mutex>
 #include <new>
@@ -27,7 +28,9 @@ struct State {
     uint32_t rate = 0;
     uint8_t bits = 0;
     uint8_t channels = 0;
+    AudioContent content = AudioContent::Music;
     std::unique_ptr<UsbAudioOutput> usb_stream;
+    std::atomic<float> usb_gain{1.0f};
 
     std::mutex route_lock;
     std::shared_ptr<usb_host::UacDevice> usb;
@@ -50,6 +53,11 @@ float usb_volume_db(const usb_host::UacDevice &device, int percent) {
     return min + (device.volume_max_db() - min) * percent / 100.0f;
 }
 
+float board_curve_gain(int percent) {
+    if (percent <= 0) return 0.0f;
+    return powf(10.0f, (percent - 100) * 0.4f / 20.0f);
+}
+
 void apply_locked(State &state) {
     const AudioRoute board_route = state.headphone ? AudioRoute::Headphone : AudioRoute::Speaker;
     int board = settings_route_volume(board_route);
@@ -61,8 +69,12 @@ void apply_locked(State &state) {
     const int usb = state.transient >= 0 ? state.transient : settings_route_volume(AudioRoute::Usb);
     const bool muted = state.mute || usb <= 0;
     state.usb->set_mute(muted);
-    state.usb->set_volume_db(muted && !state.usb->has_mute() ? -INFINITY
-                                                            : usb_volume_db(*state.usb, usb));
+    if (state.usb->has_volume()) {
+        state.usb->set_volume_db(muted && !state.usb->has_mute() ? -INFINITY
+                                                                : usb_volume_db(*state.usb, usb));
+    } else {
+        state.usb_gain = muted && !state.usb->has_mute() ? 0.0f : board_curve_gain(usb);
+    }
 }
 
 void notify_observers() {
@@ -166,10 +178,11 @@ void audio_output_usb_connected(std::shared_ptr<usb_host::UacDevice> device) {
     }
     {
         std::lock_guard<std::mutex> guard(s_state->stream_lock);
-        s_state->usb_stream = std::make_unique<UsbAudioOutput>(std::move(device));
+        s_state->usb_stream = std::make_unique<UsbAudioOutput>(std::move(device), &s_state->usb_gain);
         if (s_state->open) {
             bsp_audio_close();
-            s_state->usb_stream->open(s_state->rate, s_state->bits, s_state->channels);
+            s_state->usb_stream->open(s_state->rate, s_state->bits, s_state->channels,
+                                      s_state->content);
         }
     }
     notify_observers();
@@ -193,17 +206,19 @@ void audio_output_usb_disconnected(const std::shared_ptr<usb_host::UacDevice> &d
     notify_observers();
 }
 
-esp_err_t audio_output_open(uint32_t rate, uint8_t bits, uint8_t channels) {
+esp_err_t audio_output_open(uint32_t rate, uint8_t bits, uint8_t channels, AudioContent content) {
     std::lock_guard<std::mutex> guard(s_state->stream_lock);
     State &state = *s_state;
-    if (state.open && state.rate == rate && state.bits == bits && state.channels == channels) {
+    if (state.open && state.rate == rate && state.bits == bits && state.channels == channels &&
+        state.content == content) {
         return ESP_OK;
     }
     state.rate = rate;
     state.bits = bits;
     state.channels = channels;
+    state.content = content;
     if (state.usb_stream) {
-        state.usb_stream->open(rate, bits, channels);
+        state.usb_stream->open(rate, bits, channels, content);
         state.open = true;
         return ESP_OK;
     }

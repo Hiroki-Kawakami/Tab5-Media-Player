@@ -96,7 +96,7 @@ void AirPlayReceiverScreen::Events::on_airplay_artwork(std::shared_ptr<const uin
 
 bool AirPlayReceiverScreen::Output::open(uint32_t rate, uint8_t channels) {
     channels_ = channels;
-    return audio_output_open(rate, 16, channels) == ESP_OK;
+    return audio_output_open(rate, 16, channels, AudioContent::Music) == ESP_OK;
 }
 
 void AirPlayReceiverScreen::Output::write(int16_t *pcm, std::size_t frames) {

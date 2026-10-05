@@ -16,6 +16,7 @@ class UacDevice;
 }
 
 enum class AudioRoute { Speaker, Headphone, Usb };
+enum class AudioContent { Music, Video };
 
 // After bsp_init() and settings_init().
 void audio_output_init();
@@ -37,7 +38,7 @@ void audio_output_usb_connected(std::shared_ptr<usb_host::UacDevice> device);
 void audio_output_usb_disconnected(const std::shared_ptr<usb_host::UacDevice> &device);
 
 // Opening a running stream with another format reopens it.
-esp_err_t audio_output_open(uint32_t rate, uint8_t bits, uint8_t channels);
+esp_err_t audio_output_open(uint32_t rate, uint8_t bits, uint8_t channels, AudioContent content);
 void audio_output_close();
 // May filter `data` in place. Blocks while the output is full.
 esp_err_t audio_output_write(void *data, std::size_t len);

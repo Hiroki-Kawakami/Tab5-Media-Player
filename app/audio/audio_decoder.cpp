@@ -59,6 +59,7 @@ static uint16_t s_block_align;
 static uint32_t s_rate;
 static uint8_t s_channels;
 static uint8_t s_bits;
+static AudioContent s_content = AudioContent::Music;
 static uint64_t s_frames;
 static uint8_t *s_pcm;
 
@@ -80,7 +81,7 @@ static void follow_format(uint32_t rate, uint8_t channels) {
     s_rate = rate;
     s_channels = channels;
     s_bits = 16;
-    audio_output_open(s_rate, s_bits, s_channels);
+    audio_output_open(s_rate, s_bits, s_channels, s_content);
 }
 
 static constexpr uint32_t kAacRates[] = {
@@ -474,7 +475,8 @@ void audio_decoder_start() {
     s_lock = xSemaphoreCreateMutex();
 }
 
-bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, std::string *note) {
+bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, AudioContent content,
+                        std::string *note) {
     if (!s_lock) return false;
     audio_decoder_close();
 
@@ -512,7 +514,8 @@ bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, std::string *note)
     s_channels = s_setup.channels;
     s_bits = track.codec == CodecId::Pcm ? bits : 16;
 
-    const esp_err_t err = audio_output_open(s_rate, s_bits, s_channels);
+    s_content = content;
+    const esp_err_t err = audio_output_open(s_rate, s_bits, s_channels, s_content);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "audio_output_open: %s", esp_err_to_name(err));
         decoder_close();

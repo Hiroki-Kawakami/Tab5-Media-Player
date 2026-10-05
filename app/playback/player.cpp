@@ -346,7 +346,9 @@ static void handle_open(const std::string &path) {
     }
 
     std::string note;
-    s_have_audio = audio_decoder_open(info.audio, info.video.codec == CodecId::Mjpeg, &note);
+    s_have_audio = audio_decoder_open(info.audio, info.video.codec == CodecId::Mjpeg,
+                                      s_audio_only ? AudioContent::Music : AudioContent::Video,
+                                      &note);
     if (s_have_audio &&
         !audio_task_start(info.audio.codec == CodecId::Opus ? kOpusStackBytes : kAudioStackBytes)) {
         audio_decoder_close();

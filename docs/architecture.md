@@ -402,14 +402,24 @@ external DAC. On the device, volume and mute go to its feature unit, and the
 slider spans the whole range the device reports, linear in dB from its minimum
 at 1 to its maximum at 100, with 0 muting: DACs differ too much in output level
 for a fixed dB curve to leave the slider usable on all of them. A device without
-a volume control plays at 0 dB.
+a volume control gets a software gain on the board's curve instead (1..100 is
+-40..0 dB), and one without a mute control is muted through that gain.
 
 `app/audio/usb_audio_output.*` picks the device format that matches the
-stream's rate and channel count with the closest bit depth, and converts
-channels (mono to stereo, stereo to mono) and sample width on the way.
-Resampling is not done: a rate the device does not list is logged and the
-stream is consumed in real time as silence, which keeps the player's clock
-running.
+stream's channel count with the closest bit depth, and builds an
+esp-devkit `audio_framework` graph for whatever differs: channel mixing,
+resampling, the software gain, and the sample width at the sink. A stream that
+needs none of it goes to the device untouched.
+
+Resampling happens only when the device does not list the stream's rate. The
+target is a rate an integer multiple or divisor away when the device has one,
+which takes the cheaper `INTEGER` resampler, and otherwise the lowest rate
+above the stream's (the highest below it as a last resort). A non-integer
+ratio takes `POLYPHASE` for music and AirPlay and Catmull-Rom (`CUBIC`) for
+video; `audio_output_open()` carries which of the two a stream is. Everything
+the graph allocates comes from PSRAM through the modules' `alloc_caps`. A
+stream the graph cannot be built for is logged and consumed in real time as
+silence, which keeps the player's clock running.
 
 The host library cannot enumerate a device whose configuration descriptor is
 larger than `CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE`, which audio devices

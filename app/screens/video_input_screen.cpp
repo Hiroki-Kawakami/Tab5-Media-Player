@@ -355,19 +355,7 @@ bool VideoInputScreen::startCapture(std::string *error) {
     const BaseType_t created =
         xTaskCreate(feedMain, "video_input", kFeedStackBytes, this, kFeedPriority, nullptr);
 #endif
-    if (feed_stopped_ && created == pdPASS) {
-#ifdef ESP_PLATFORM
-        if (!stats_timer_) {
-            esp_timer_create_args_t args = {};
-            args.callback = logStats;
-            args.arg = this;
-            args.name = "video_input_stats";
-            esp_timer_create(&args, &stats_timer_);
-        }
-        if (stats_timer_) esp_timer_start_periodic(stats_timer_, 1000000);
-#endif
-        return true;
-    }
+    if (feed_stopped_ && created == pdPASS) return true;
     if (feed_stopped_) vSemaphoreDelete(feed_stopped_);
     feed_stopped_ = nullptr;
     camera_->stop();
@@ -376,13 +364,6 @@ bool VideoInputScreen::startCapture(std::string *error) {
 }
 
 void VideoInputScreen::stopCapture() {
-#ifdef ESP_PLATFORM
-    if (stats_timer_) {
-        esp_timer_stop(stats_timer_);
-        esp_timer_delete(stats_timer_);
-        stats_timer_ = nullptr;
-    }
-#endif
     audio_.stop();
     feed_quit_ = true;
     camera_->stop();
@@ -396,35 +377,16 @@ void VideoInputScreen::feedMain(void *arg) {
     auto *self = static_cast<VideoInputScreen *>(arg);
     while (!self->feed_quit_) {
         usb_host::UvcFrame frame;
-        self->feed_stage_ = 1;
         const esp_err_t err = self->camera_->receive(&frame, kReceiveTimeoutMs);
-        self->feed_stage_ = 0;
-        if (err == ESP_ERR_TIMEOUT) {
-            self->receive_timeouts_++;
-            continue;
-        }
-        if (err != ESP_OK) {
-            self->last_receive_err_ = err;
-            ESP_LOGW(TAG, "receive: %s, feeding stops", esp_err_to_name(err));
-            break;
-        }
-        self->received_++;
+        if (err == ESP_ERR_TIMEOUT) continue;
+        if (err != ESP_OK) break;
         Held &held = self->held_[frame.slot];
-        held.screen = self;
         held.camera = self->camera_.get();
         held.frame = frame;
-        self->feed_stage_ = 2;
-        const bool submitted =
-            video_presenter_submit(frame.data, frame.size, releaseFrame, &held, true, 0);
-        self->feed_stage_ = 0;
-        if (submitted) {
-            self->submitted_++;
-        } else {
-            self->submit_failed_++;
+        if (!video_presenter_submit(frame.data, frame.size, releaseFrame, &held, true, 0)) {
             self->camera_->release(frame);
         }
     }
-    self->feed_stage_ = 3;
     xSemaphoreGive(self->feed_stopped_);
 #ifdef ESP_PLATFORM
     vTaskDeleteWithCaps(nullptr);
@@ -435,19 +397,7 @@ void VideoInputScreen::feedMain(void *arg) {
 
 void VideoInputScreen::releaseFrame(void *ctx) {
     auto *held = static_cast<Held *>(ctx);
-    held->screen->released_++;
     held->camera->release(held->frame);
-}
-
-void VideoInputScreen::logStats(void *arg) {
-    auto *self = static_cast<VideoInputScreen *>(arg);
-    static const char *const kStages[] = { "idle", "receive", "submit", "stopped" };
-    ESP_LOGI(TAG, "feed: %s, %u received, %u timeouts, %u submitted, %u submit failed, "
-                  "%u released, last err %s",
-             kStages[self->feed_stage_.load()], (unsigned)self->received_.exchange(0),
-             (unsigned)self->receive_timeouts_.exchange(0),
-             (unsigned)self->submitted_.exchange(0), (unsigned)self->submit_failed_.exchange(0),
-             (unsigned)self->released_.exchange(0), esp_err_to_name(self->last_receive_err_.load()));
 }
 
 void VideoInputScreen::tick() {

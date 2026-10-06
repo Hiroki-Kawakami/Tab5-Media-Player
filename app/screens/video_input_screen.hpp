@@ -12,9 +12,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#ifdef ESP_PLATFORM
-#include "esp_timer.h"
-#endif
 
 #include <array>
 #include <atomic>
@@ -38,7 +35,6 @@ private:
     static constexpr std::size_t kSlots = 4;
 
     struct Held {
-        VideoInputScreen *screen = nullptr;
         usb_host::UvcDevice *camera = nullptr;
         usb_host::UvcFrame frame;
     };
@@ -55,7 +51,6 @@ private:
     void stopCapture();
     static void feedMain(void *arg);
     static void releaseFrame(void *ctx);
-    static void logStats(void *arg);
     void tick();
     void refresh();
     void showStartError(const std::string &message);
@@ -65,16 +60,6 @@ private:
     CapturePlayback audio_;
     SemaphoreHandle_t feed_stopped_ = nullptr;
     std::atomic<bool> feed_quit_{ false };
-#ifdef ESP_PLATFORM
-    esp_timer_handle_t stats_timer_ = nullptr;
-#endif
-    std::atomic<int> feed_stage_{ 0 };
-    std::atomic<uint32_t> received_{ 0 };
-    std::atomic<uint32_t> receive_timeouts_{ 0 };
-    std::atomic<uint32_t> submitted_{ 0 };
-    std::atomic<uint32_t> submit_failed_{ 0 };
-    std::atomic<uint32_t> released_{ 0 };
-    std::atomic<int> last_receive_err_{ ESP_OK };
     std::string title_;
     std::string error_;
     std::string shown_title_;

@@ -459,11 +459,9 @@ whenever Home is on screen. Four is what can be out at once: one filling, one
 waiting to be received, one in the presenter's queue and one being decoded. A
 frame larger than a slot is dropped.
 
-The host stack does one isochronous transaction per microframe, so cameras
-whose bandwidth needs two or three are limited to their single-transaction
-alternates. A capture dongle that wants 2048-byte payloads gets its 800-byte
-alternate (6.4 MB/s) and still delivers 30 fps of a test pattern; busy
-pictures that compress worse may not fit.
+The host stack takes alternates with up to three transactions per microframe,
+so a capture dongle that asks for 2048-byte payloads gets its 2 x 1024-byte
+alternate rather than a single-transaction one that busy pictures may not fit.
 
 The camera's receive buffers are internal RAM (`libs/usb_host` README, Video):
 in PSRAM a quarter of an isochronous camera's packets were lost while the

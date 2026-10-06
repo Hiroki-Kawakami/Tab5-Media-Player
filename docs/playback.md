@@ -971,11 +971,35 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   AudioSpecificConfig states), `audio_output_open` is called again.
 - **Decoders are reset on seek** (`audio_decoder_flush()`), so AAC and Opus do not
   carry state from before the jump. The audio task is parked by then.
-- **AAC's SBR (HE-AAC) decoding is on only next to MJPEG.** On the device it
-  took about a quarter of a core even for plain AAC-LC, which H.264 playback
-  cannot spare; MJPEG is decoded in hardware and can. With H.264, an HE-AAC
-  track plays its core only (half the rate, no high band); the rate change is
-  handled like any other. The simulator's libavcodec ignores the setting.
+- **AAC is decoded by esp-devkit's `audf_aac`, on both targets**, so the
+  simulator plays the same samples as the device. Internals, measurements and
+  how to check it: [`esp-devkit/libs/audio_framework/docs/aac.md`](../esp-devkit/libs/audio_framework/docs/aac.md).
+- **The HE-AAC mode is fixed per video codec** (`aac_he_for()` in
+  `app/playback/player.cpp`). Audio-only files and MJPEG, which is decoded in
+  hardware, get SBR and PS (`AUDF_AAC_HE_V2`, about 10 % of a core against 3 %
+  for LC). H.264 and MPEG-2, decoded in software on both cores, get SBR without
+  PS (`AUDF_AAC_HE_V1`): a PS track plays as mono, which saves the PS stage,
+  the largest one. The decoder is created on the first
+  packet and states its final rate and channel count there, so the output is
+  reopened at most once, before any PCM.
+- **`audf_aac`'s 12 KB work buffer is in internal RAM** (`scratch_caps`), the
+  rest in PSRAM. It is the buffer every stage touches; the whole decoder
+  (50-130 KB) does not fit next to playback.
+- **`aacbench` times `audf_aac` on the device.** It needs a build with
+  `AAC_BENCH_DIR` naming a directory with `lc.aac`, `he.aac` and `ps.aac` (the
+  `lc_44_2_128`, `he_48_2_64` and `ps_48_2_32` clips of
+  `esp-devkit/libs/audio_framework/test/make_aac_material.sh`):
+
+  ```sh
+  nix develop -c idf.py -C esp32p4 -B esp32p4/build-bench-aac \
+      -DAAC_BENCH_DIR=/path/to/clips -p <port> flash
+  ```
+
+  `aacbench <loops> [lc|he|ps] [off|v1|v2] [hash] [esp] [internal]` prints
+  cycles per frame and per stage. `hash` prints the FNV-1a that
+  `aac_dec_test --hash` prints on the host, `esp` runs esp_audio_codec on the
+  same clip instead, and `internal` allocates the decoder in internal RAM.
+  `aackerneltest <n>` runs `audf_aac_kernel_selftest`.
 - **AAC decides raw or ADTS from the first packet**, not from the container:
   AVI has several format tags for AAC and they are not used consistently. Raw
   AAC with no AudioSpecificConfig gets one built from the track's rate and
@@ -992,12 +1016,12 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   OpusHead pre-skip is not applied on the device.
 - **The playback position is PCM frames written divided by the sample rate.**
   It feeds the clock correction above.
-- **The device MP3, AAC and Opus decoders are `espressif/esp_audio_codec`,
-  pinned below 2.6.**
+- **The device MP3 and Opus decoders are `espressif/esp_audio_codec`, pinned
+  below 2.6.**
   2.6 and later refuse to build unless the ESP32-P4 is chip revision 3.0 or
   newer, and this board's P4 is older (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3`).
   Check the silicon before raising the pin. The dependency is device-only.
-- **The simulator decodes MP3, AAC and Opus with ffmpeg's libavcodec.** It is
+- **The simulator decodes MP3 and Opus with ffmpeg's libavcodec.** It is
   linked in `simulator/CMakeLists.txt`, and `flake.nix` provides it.
 - **`MP3` uses `ESP_AUDIO_DEC_RECOVERY_PLC` on every packet and the others do
   not.** That is what MP3 has always been given; for Opus, PLC means "this

@@ -5,6 +5,7 @@
 
 #include "audio_decoder.hpp"
 #include "audio_output.hpp"
+#include "audf_aac.h"
 #include "audf_adpcm.h"
 #include "bsp.h"
 #include "esp_heap_caps.h"
@@ -15,7 +16,6 @@
 
 #ifdef ESP_PLATFORM
 extern "C" {
-#include "esp_aac_dec.h"
 #include "esp_audio_dec.h"
 #include "esp_mp3_dec.h"
 #include "esp_opus_dec.h"
@@ -37,8 +37,9 @@ static constexpr uint32_t kOpusRate = 48000;
 enum class Mode {
     Pcm,
     Adpcm,
+    Aac,
+    PendingAac,
     Decoder,
-    PendingDecoder,
     Failed,
 };
 
@@ -47,7 +48,7 @@ struct DecoderSetup {
     uint32_t rate = 0;
     uint8_t channels = 0;
     bool adts = false;
-    bool sbr = true;
+    audf_aac_he_t he = AUDF_AAC_HE_OFF;
     std::vector<uint8_t> extradata;
 };
 
@@ -57,6 +58,7 @@ static Mode s_mode = Mode::Pcm;
 static DecoderSetup s_setup;
 static uint16_t s_block_align;
 static audf_decoder_t *s_adpcm;
+static audf_decoder_t *s_aac;
 static uint32_t s_rate;
 static uint8_t s_channels;
 static uint8_t s_bits;
@@ -186,23 +188,11 @@ static esp_audio_dec_handle_t s_decoder;
 static bool decoder_open() {
     const DecoderSetup &setup = s_setup;
     esp_audio_dec_cfg_t config = {};
-    esp_aac_dec_cfg_t aac = {};
     esp_opus_dec_cfg_t opus = {};
     switch (setup.codec) {
     case CodecId::Mp3:
         esp_mp3_dec_register();
         config.type = ESP_AUDIO_TYPE_MP3;
-        break;
-    case CodecId::Aac:
-        esp_aac_dec_register();
-        config.type = ESP_AUDIO_TYPE_AAC;
-        aac.sample_rate = (int32_t)setup.rate;
-        aac.channel = setup.channels;
-        aac.bits_per_sample = 16;
-        aac.no_adts_header = !setup.adts;
-        aac.aac_plus_enable = setup.sbr;
-        config.cfg = &aac;
-        config.cfg_sz = sizeof(aac);
         break;
     case CodecId::Opus:
         esp_opus_dec_register();
@@ -272,14 +262,13 @@ static AVFrame *s_frame;
 static AVCodecID codec_id_of(CodecId codec) {
     switch (codec) {
     case CodecId::Mp3: return AV_CODEC_ID_MP3;
-    case CodecId::Aac: return AV_CODEC_ID_AAC;
     case CodecId::Opus: return AV_CODEC_ID_OPUS;
     default: return AV_CODEC_ID_NONE;
     }
 }
 
 static bool uses_parser() {
-    return s_setup.codec == CodecId::Mp3 || (s_setup.codec == CodecId::Aac && s_setup.adts);
+    return s_setup.codec == CodecId::Mp3;
 }
 
 static bool decoder_open() {
@@ -398,18 +387,55 @@ static void decoder_write(const uint8_t *data, std::size_t len) {
 
 #endif
 
-static void open_pending_decoder(const uint8_t *data, std::size_t len) {
+static void aac_close() {
+    audf_decoder_destroy(s_aac);
+    s_aac = nullptr;
+}
+
+static void open_pending_aac(const uint8_t *data, std::size_t len) {
     s_setup.adts = is_adts(data, len);
     if (!s_setup.adts && s_setup.extradata.empty()) {
         s_setup.extradata = make_audio_specific_config(s_setup.rate, s_setup.channels);
     }
-    if (decoder_open()) {
-        s_mode = Mode::Decoder;
+    audf_aac_config_t config = {};
+    config.asc = s_setup.adts ? data : s_setup.extradata.data();
+    config.asc_len = s_setup.adts ? len : s_setup.extradata.size();
+    config.adts = s_setup.adts;
+    config.he = s_setup.he;
+#ifdef ESP_PLATFORM
+    config.alloc_caps = MALLOC_CAP_SPIRAM;
+    config.scratch_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+    const esp_err_t err = audf_aac_decoder_create(&config, &s_aac);
+    if (err != ESP_OK ||
+        audf_decoder_max_frames(s_aac) * audf_decoder_channels(s_aac) * sizeof(int16_t) > kPcmBytes) {
+        ESP_LOGE(TAG, "AAC decoder unavailable: %s", esp_err_to_name(err));
+        aac_close();
+        s_mode = Mode::Failed;
         return;
     }
-    ESP_LOGE(TAG, "%s decoder unavailable", codec_name(s_setup.codec));
-    decoder_close();
-    s_mode = Mode::Failed;
+    follow_format(audf_aac_decoder_rate(s_aac), audf_decoder_channels(s_aac));
+    s_mode = Mode::Aac;
+}
+
+static void write_aac(const uint8_t *data, std::size_t len) {
+    const std::size_t frame_bytes = audf_decoder_channels(s_aac) * sizeof(int16_t);
+    while (len > 0) {
+        std::size_t frame_len = len;
+        if (s_setup.adts) {
+            frame_len = audf_aac_adts_frame_len(data, len);
+            if (!frame_len || frame_len > len) return;
+        }
+        std::size_t frames = 0;
+        const esp_err_t err = audf_decoder_decode(s_aac, data, frame_len, s_pcm, &frames);
+        if (err == ESP_OK) {
+            write_pcm(s_pcm, frames * frame_bytes);
+        } else {
+            ESP_LOGW(TAG, "AAC decode: %s", esp_err_to_name(err));
+        }
+        data += frame_len;
+        len -= frame_len;
+    }
 }
 
 static bool adpcm_open(const TrackInfo &track) {
@@ -436,10 +462,10 @@ static void write_adpcm(const uint8_t *data, std::size_t len) {
     }
 }
 
-static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
+static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *note) {
     s_setup = {};
     s_setup.codec = track.codec;
-    s_setup.sbr = aac_sbr;
+    s_setup.he = aac_he;
     s_setup.rate = track.sample_rate;
     s_setup.channels = track.channels;
     s_block_align = track.block_align;
@@ -463,7 +489,7 @@ static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
             if (note) *note = "unsupported AAC configuration";
             return false;
         }
-        s_mode = Mode::PendingDecoder;
+        s_mode = Mode::PendingAac;
         return true;
     case CodecId::Opus:
         if (!prepare_opus(track, &s_setup, note)) return false;
@@ -489,7 +515,7 @@ void audio_decoder_start() {
     s_lock = xSemaphoreCreateMutex();
 }
 
-bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, AudioContent content,
+bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioContent content,
                         std::string *note) {
     if (!s_lock) return false;
     audio_decoder_close();
@@ -517,7 +543,7 @@ bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, AudioContent conte
         }
     }
 
-    if (!prepare(track, aac_sbr, note)) {
+    if (!prepare(track, aac_he, note)) {
         s_mode = Mode::Pcm;
         return false;
     }
@@ -534,6 +560,7 @@ bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, AudioContent conte
         ESP_LOGE(TAG, "audio_output_open: %s", esp_err_to_name(err));
         decoder_close();
         adpcm_close();
+        aac_close();
         s_mode = Mode::Pcm;
         if (note) *note = std::string("audio unavailable: ") + esp_err_to_name(err);
         return false;
@@ -560,17 +587,21 @@ void audio_decoder_close() {
 
     decoder_close();
     adpcm_close();
+    aac_close();
     s_mode = Mode::Pcm;
     if (was_running) audio_output_close();
 }
 
 void audio_decoder_write(const uint8_t *data, std::size_t len) {
     if (!s_running || !data || !len) return;
-    if (s_mode == Mode::PendingDecoder) open_pending_decoder(data, len);
+    if (s_mode == Mode::PendingAac) open_pending_aac(data, len);
 
     switch (s_mode) {
     case Mode::Decoder:
         decoder_write(data, len);
+        return;
+    case Mode::Aac:
+        write_aac(data, len);
         return;
     case Mode::Adpcm:
         write_adpcm(data, len);
@@ -592,6 +623,7 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
 void audio_decoder_flush() {
     if (!s_lock) return;
     if (s_mode == Mode::Decoder) decoder_reset();
+    if (s_mode == Mode::Aac) audf_decoder_reset(s_aac);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_frames = 0;
     xSemaphoreGive(s_lock);

@@ -181,6 +181,16 @@ static void audio_task(void *) {
 #endif
 }
 
+static audf_aac_he_t aac_he_for(CodecId video) {
+    switch (video) {
+    case CodecId::None:
+    case CodecId::Mjpeg: return AUDF_AAC_HE_V2;
+    case CodecId::H264:
+    case CodecId::Mpeg2: return AUDF_AAC_HE_V1;
+    default: return AUDF_AAC_HE_OFF;
+    }
+}
+
 #ifdef ESP_PLATFORM
 static BaseType_t audio_task_create(uint32_t stack_bytes, uint32_t caps) {
     return xTaskCreatePinnedToCoreWithCaps(audio_task, "media_audio", stack_bytes, nullptr, 6,
@@ -346,7 +356,7 @@ static void handle_open(const std::string &path) {
     }
 
     std::string note;
-    s_have_audio = audio_decoder_open(info.audio, info.video.codec == CodecId::Mjpeg,
+    s_have_audio = audio_decoder_open(info.audio, aac_he_for(info.video.codec),
                                       s_audio_only ? AudioContent::Music : AudioContent::Video,
                                       &note);
     if (s_have_audio &&

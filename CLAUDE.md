@@ -36,6 +36,10 @@ submodule.
   chain, which sizes are covered, and the compressed glyph pack behind them.
 - [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI,
   desktop app and browser version that convert videos for the player.
+- `esp-devkit/libs/audio_framework/docs/aac.md` — the in-house AAC decoder (LC,
+  HE-AAC v1/v2): fixed point and float split, the PIE kernels and chip facts,
+  why PSRAM working set dominates, and how to check it against ffmpeg and the
+  ISO conformance streams.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button

@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <mutex>
+#include "bench/aac_bench.hpp"
 #include "bench/h264_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
 #include "media/media_cache.hpp"
@@ -168,6 +169,7 @@ void app_entry() {
         ESP_LOGE(TAG, "no memory for the probe arena");
     }
     media_cache_register_harness();
+    aac_bench_register();
     h264_bench_register();
     mpeg2_bench_register();
 #ifndef ESP_PLATFORM

@@ -47,7 +47,7 @@ media_buffer          │           └─▶ present
 | `app/media/` | `Demuxer` interface, `MediaInfo`/`Packet`, the AVI, WAV, MKV, MP4 and elementary-stream adapters |
 | `app/playback/` | `player.cpp`: commands, state machine, reader, audio and the media clock; `video_pacing.cpp`: everything that only exists because there is a picture; `playlist.cpp`: the item list and the cursor both screens step through |
 | `app/video/` | `video_presenter` (placement, framebuffers, UI clip, decode/present stages), `VideoRenderer` and its MJPEG, H.264 and MPEG-2 implementations (the latter two share `PackedYuvScaler` for the PPA call), the FreeRTOS hooks the decoders run on |
-| `app/audio/` | `audio_decoder`: compressed audio decode, playback position; `audio_output`: board or USB Audio output, route volume and mute; `ima_adpcm` |
+| `app/audio/` | `audio_decoder`: compressed audio decode, playback position; `audio_output`: board or USB Audio output, route volume and mute |
 | `app/screens/video_player_screen.*` | the full-screen player UI |
 | `app/screens/audio_player_screen.*` | the audio-only player UI, on the main display |
 | `app/screens/media_controls.*` | the transport widgets both screens build (icon button, slider, time text, the volume row's behaviour) |
@@ -980,12 +980,13 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   AVI has several format tags for AAC and they are not used consistently. Raw
   AAC with no AudioSpecificConfig gets one built from the track's rate and
   channels (LC).
-- **IMA ADPCM is decoded by `app/audio/ima_adpcm.cpp`**, on both targets.
+- **IMA ADPCM is decoded by esp-devkit's `audf_adpcm`**, on both targets.
   `esp_audio_codec`'s ADPCM decoder has no block-align setting, so it cannot
   follow the file's block size. Packets are split by `block_align`. Stereo
   blocks hold 4 bytes of the left channel, then 4 of the right, and so on (as
   in ffmpeg and libsndfile), not alternating nibbles. MS ADPCM is not
-  supported.
+  supported. A `block_align` that is 0, not a multiple of 4 bytes per
+  channel, or decodes to more than the 64 KB PCM buffer is rejected at open.
 - **Opus is MKV and MP4 only** (ffmpeg cannot mux it into AVI) and decodes at
   48 kHz. Only channel mapping family 0 (mono or stereo) is accepted. The
   OpusHead pre-skip is not applied on the device.

@@ -5,7 +5,7 @@
 
 #include "audio_decoder.hpp"
 #include "audio_output.hpp"
-#include "ima_adpcm.hpp"
+#include "audf_adpcm.h"
 #include "bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -56,6 +56,7 @@ static bool s_running;
 static Mode s_mode = Mode::Pcm;
 static DecoderSetup s_setup;
 static uint16_t s_block_align;
+static audf_decoder_t *s_adpcm;
 static uint32_t s_rate;
 static uint8_t s_channels;
 static uint8_t s_bits;
@@ -411,15 +412,27 @@ static void open_pending_decoder(const uint8_t *data, std::size_t len) {
     s_mode = Mode::Failed;
 }
 
+static bool adpcm_open(const TrackInfo &track) {
+    audf_adpcm_config_t config = {};
+    config.channels = track.channels;
+    config.block_align = track.block_align;
+    if (audf_adpcm_decoder_create(&config, &s_adpcm) != ESP_OK) return false;
+    return audf_decoder_max_frames(s_adpcm) * sizeof(int16_t) * track.channels <= kPcmBytes;
+}
+
+static void adpcm_close() {
+    audf_decoder_destroy(s_adpcm);
+    s_adpcm = nullptr;
+}
+
 static void write_adpcm(const uint8_t *data, std::size_t len) {
-    const std::size_t block = s_block_align ? s_block_align : len;
-    const std::size_t max_frames = kPcmBytes / (sizeof(int16_t) * s_channels);
-    int16_t *out = reinterpret_cast<int16_t *>(s_pcm);
-    while (len >= block) {
-        const std::size_t frames = ima_adpcm_decode(data, block, s_channels, out, max_frames);
-        write_pcm(s_pcm, frames * sizeof(int16_t) * s_channels);
-        data += block;
-        len -= block;
+    while (len >= s_block_align) {
+        std::size_t frames = 0;
+        if (audf_decoder_decode(s_adpcm, data, s_block_align, s_pcm, &frames) == ESP_OK) {
+            write_pcm(s_pcm, frames * sizeof(int16_t) * s_channels);
+        }
+        data += s_block_align;
+        len -= s_block_align;
     }
 }
 
@@ -436,8 +449,9 @@ static bool prepare(const TrackInfo &track, bool aac_sbr, std::string *note) {
         s_mode = Mode::Pcm;
         return true;
     case CodecId::AdpcmIma:
-        if (track.channels > kImaAdpcmMaxChannels) {
-            if (note) *note = "unsupported IMA ADPCM channel count";
+        if (!adpcm_open(track)) {
+            adpcm_close();
+            if (note) *note = "unsupported IMA ADPCM format";
             return false;
         }
         s_mode = Mode::Adpcm;
@@ -519,6 +533,7 @@ bool audio_decoder_open(const TrackInfo &track, bool aac_sbr, AudioContent conte
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "audio_output_open: %s", esp_err_to_name(err));
         decoder_close();
+        adpcm_close();
         s_mode = Mode::Pcm;
         if (note) *note = std::string("audio unavailable: ") + esp_err_to_name(err);
         return false;
@@ -544,6 +559,7 @@ void audio_decoder_close() {
     xSemaphoreGive(s_lock);
 
     decoder_close();
+    adpcm_close();
     s_mode = Mode::Pcm;
     if (was_running) audio_output_close();
 }

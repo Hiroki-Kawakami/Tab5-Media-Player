@@ -61,6 +61,16 @@ struct Codec<uint16_t> {
 };
 
 template <>
+struct Codec<uint32_t> {
+    static esp_err_t get(nvs_handle_t nvs, const char *key, uint32_t &value) {
+        return nvs_get_u32(nvs, key, &value);
+    }
+    static esp_err_t set(nvs_handle_t nvs, const char *key, uint32_t value) {
+        return nvs_set_u32(nvs, key, value);
+    }
+};
+
+template <>
 struct Codec<std::string> {
     static esp_err_t get(nvs_handle_t nvs, const char *key, std::string &value) {
         std::size_t size = 0;
@@ -193,6 +203,11 @@ Setting<"slidebgmpath", std::string> s_slideshow_bgm_path{std::string()};
 
 Setting<"wifi", uint8_t, sanitize_flag> s_wifi{0};
 
+Setting<"vinwidth", uint16_t> s_video_input_width{0};
+Setting<"vinheight", uint16_t> s_video_input_height{0};
+Setting<"vininterval", uint32_t> s_video_input_interval{0};
+Setting<"vinstretch", uint8_t, sanitize_flag> s_video_input_stretch{0};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -215,6 +230,10 @@ void for_each_setting(Fn &&fn) {
     fn(s_slideshow_bgm_shuffle);
     fn(s_slideshow_bgm_path);
     fn(s_wifi);
+    fn(s_video_input_width);
+    fn(s_video_input_height);
+    fn(s_video_input_interval);
+    fn(s_video_input_stretch);
 }
 
 }  // namespace
@@ -410,4 +429,24 @@ bool settings_wifi_enabled() {
 void settings_set_wifi_enabled(bool enabled, std::function<void()> done) {
     s_wifi.set(enabled);
     wifi::manager().set_enabled(enabled, std::move(done));
+}
+
+void settings_video_input_format(uint16_t *width, uint16_t *height, uint32_t *interval) {
+    *width = s_video_input_width.get();
+    *height = s_video_input_height.get();
+    *interval = s_video_input_interval.get();
+}
+
+void settings_set_video_input_format(uint16_t width, uint16_t height, uint32_t interval) {
+    s_video_input_width.set(width);
+    s_video_input_height.set(height);
+    s_video_input_interval.set(interval);
+}
+
+bool settings_video_input_stretch() {
+    return s_video_input_stretch.get() != 0;
+}
+
+void settings_set_video_input_stretch(bool stretch) {
+    s_video_input_stretch.set(stretch);
 }

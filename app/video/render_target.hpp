@@ -19,6 +19,9 @@ struct RenderTarget {
     bsp_size_t source = {};
     bsp_rotation_t rotation = BSP_ROTATION_0;
     uint32_t scale_n = kScaleDenominator;
+    // Differs from scale_n only while the presenter stretches, which only
+    // MjpegRenderer honours.
+    uint32_t scale_n_y = kScaleDenominator;
     bsp_rect_t rect = {};
     bsp_rect_t clip = {};
 };

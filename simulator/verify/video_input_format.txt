@@ -1,0 +1,63 @@
+settle
+usbh-msc-detach
+usbh-uvc-detach
+settle
+usbh-uvc-attach - 2560x1440,1920x1080,1280x720,640x480
+settle
+tap 360 319
+wait 1500
+tap 360 640
+wait 800
+capture video_input_format_bars.jpg
+tap 600 40
+wait 800
+capture video_input_format_panel.jpg
+tap 530 794
+wait 800
+capture video_input_format_resolutions.jpg
+tap 465 950
+wait 1000
+capture video_input_format_640.jpg
+tap 530 872
+wait 800
+capture video_input_format_rates.jpg
+tap 465 980
+wait 1000
+capture video_input_format_15.jpg
+capture video_input_format_aspect.jpg
+tap 608 950
+wait 1000
+capture video_input_format_stretch.jpg
+tap 498 950
+wait 1000
+tap 668 692
+wait 800
+tap 360 300
+wait 800
+capture video_input_format_bars_after.jpg
+tap 40 40
+wait 1000
+settle
+tap 360 319
+wait 1500
+tap 360 300
+wait 800
+capture video_input_format_reopened.jpg
+imu rot90
+wait 1000
+tap 640 360
+wait 800
+capture video_input_format_landscape_bars.jpg
+imu rot0
+wait 1000
+tap 600 40
+wait 800
+tap 530 794
+wait 800
+tap 465 903
+wait 1000
+tap 530 872
+wait 800
+tap 465 933
+wait 1000
+capture video_input_format_restored.jpg

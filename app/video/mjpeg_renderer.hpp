@@ -11,6 +11,8 @@ class MjpegRenderer : public VideoRenderer {
 public:
     ~MjpegRenderer() override { close(); }
 
+    static bool fits(uint32_t width, uint32_t height);
+
     bool open(const SharedSram &sram, bsp_pixel_format_t format, const TrackInfo &track,
               std::string *error) override;
     void close() override;

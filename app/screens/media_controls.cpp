@@ -99,23 +99,49 @@ MediaTopBar media_top_bar_build(lv_obj_t *bar, const char *title, std::function<
 
     lv_spacer_create(bar, 1, 1, 1);
 
-    int32_t info_width = 0;
     if (on_info) {
         result.info_button = media_icon_button(bar, kTopBarIconButton, &icon_36,
                                                TABLER_INFO_CIRCLE, lv_color_white());
         lv_obj_add_event_fn(result.info_button, LV_EVENT_CLICKED,
                             [on_info](lv_event_t *) { on_info(); });
-        info_width = kTopBarPadding + kTopBarIconButton;
     }
-
-    lv_obj_update_layout(bar);
-    const int32_t room = lv_obj_get_width(bar) - 2 * kTopBarPadding - info_width -
-                         (lv_obj_get_width(back) - lv_obj_get_width(result.title));
-    if (lv_obj_get_width(result.title) > room) {
-        lv_obj_set_width(result.title, room);
-        lv_label_set_long_mode(result.title, LV_LABEL_LONG_MODE_DOTS);
-    }
+    media_top_bar_fit_title(bar, result.title);
     return result;
+}
+
+lv_obj_t *media_top_bar_text_button(lv_obj_t *bar, const char *text, std::function<void()> on_click,
+                                    lv_obj_t **label) {
+    lv_obj_t *button = lv_button_create(bar, LV_BUTTON_STYLE_PLAIN);
+    lv_obj_set_size(button, LV_SIZE_CONTENT, kTopBarIconButton);
+    lv_obj_set_style_pad_hor(button, 24, 0);
+    lv_obj_set_style_radius(button, 16, 0);
+    lv_obj_set_style_bg_color(button, lv_color_white(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(button, LV_OPA_20, LV_STATE_PRESSED);
+    lv_obj_add_event_fn(button, LV_EVENT_CLICKED, [on_click](lv_event_t *) { on_click(); });
+
+    lv_obj_t *text_label = lv_label_create(button);
+    lv_obj_set_font_role(text_label, LV_WIDGETS_FONT_BODY);
+    lv_obj_center(text_label);
+    lv_label_set_text(text_label, text);
+    if (label) *label = text_label;
+    return button;
+}
+
+void media_top_bar_fit_title(lv_obj_t *bar, lv_obj_t *title) {
+    lv_obj_t *back = lv_obj_get_parent(title);
+    lv_obj_set_width(title, LV_SIZE_CONTENT);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_update_layout(bar);
+    int32_t trailing = 0;
+    for (uint32_t i = lv_obj_get_index(back) + 2; i < lv_obj_get_child_count(bar); i++) {
+        trailing += kTopBarPadding + lv_obj_get_width(lv_obj_get_child(bar, i));
+    }
+    const int32_t room = lv_obj_get_width(bar) - 2 * kTopBarPadding - trailing -
+                         (lv_obj_get_width(back) - lv_obj_get_width(title));
+    if (lv_obj_get_width(title) > room) {
+        lv_obj_set_width(title, room);
+        lv_label_set_long_mode(title, LV_LABEL_LONG_MODE_DOTS);
+    }
 }
 
 const char *media_volume_icon(int32_t volume) {

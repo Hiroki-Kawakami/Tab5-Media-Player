@@ -86,6 +86,8 @@ static bsp_rotation_t s_rotation = BSP_ROTATION_0;
 static std::atomic<bsp_rotation_t> s_requested_rotation{BSP_ROTATION_0};
 static bsp_rotation_t s_source_rotation = BSP_ROTATION_0;
 static std::atomic<bsp_rotation_t> s_requested_source_rotation{BSP_ROTATION_0};
+static bool s_stretch;
+static std::atomic<bool> s_requested_stretch{false};
 static int s_fb_count;
 static int s_fb_index;
 static std::atomic<bool> s_repaint{false};
@@ -169,7 +171,8 @@ static void clear_outside(int index, const RenderTarget &target) {
 
     const bsp_rect_t visible = intersect(s_clip, rect);
     if (!visible.size.width) return;
-    const int band = std::min<int>(2 * ((target.scale_n + kScaleDenominator - 1) / kScaleDenominator) + 1,
+    const uint32_t scale_n = std::max(target.scale_n, target.scale_n_y);
+    const int band = std::min<int>(2 * ((scale_n + kScaleDenominator - 1) / kScaleDenominator) + 1,
                                    std::min(visible.size.width, visible.size.height));
     const int visible_right = visible.origin.x + visible.size.width;
     const int visible_bottom = visible.origin.y + visible.size.height;
@@ -205,10 +208,11 @@ static bool place(bsp_size_t source, int index, RenderTarget *target) {
     const uint32_t src_h = (uint32_t)source.height;
     if (!src_w || !src_h) return false;
 
-    uint32_t n = std::min(fit_w * kScaleDenominator / src_w, fit_h * kScaleDenominator / src_h);
-    n = std::clamp<uint32_t>(n, 1, kMaxScaleN);
+    uint32_t n = std::clamp<uint32_t>(fit_w * kScaleDenominator / src_w, 1, kMaxScaleN);
+    uint32_t n_y = std::clamp<uint32_t>(fit_h * kScaleDenominator / src_h, 1, kMaxScaleN);
+    if (!s_stretch) n = n_y = std::min(n, n_y);
     const uint32_t out_w = src_w * n / kScaleDenominator;
-    const uint32_t out_h = src_h * n / kScaleDenominator;
+    const uint32_t out_h = src_h * n_y / kScaleDenominator;
     if (!out_w || !out_h || out_w > fit_w || out_h > fit_h) return false;
 
     const int panel_w = (int)(swap ? out_h : out_w);
@@ -220,6 +224,7 @@ static bool place(bsp_size_t source, int index, RenderTarget *target) {
     target->source = source;
     target->rotation = rotation;
     target->scale_n = n;
+    target->scale_n_y = n_y;
     target->rect = { { (s_panel.width - panel_w) / 2, (s_panel.height - panel_h) / 2 },
                      { panel_w, panel_h } };
     target->clip = s_clip;
@@ -278,9 +283,11 @@ static void consume_requests() {
     }
     const bsp_rotation_t rotation = s_requested_rotation.load();
     const bsp_rotation_t source_rotation = s_requested_source_rotation.load();
-    if (rotation != s_rotation || source_rotation != s_source_rotation) {
+    const bool stretch = s_requested_stretch.load();
+    if (rotation != s_rotation || source_rotation != s_source_rotation || stretch != s_stretch) {
         s_rotation = rotation;
         s_source_rotation = source_rotation;
+        s_stretch = stretch;
         s_clear_all.store(true);
         s_repaint.store(true);
     }
@@ -551,6 +558,8 @@ bool video_presenter_begin(const SharedSram &sram, bsp_rotation_t rotation) {
     s_requested_rotation.store(rotation);
     s_source_rotation = BSP_ROTATION_0;
     s_requested_source_rotation.store(BSP_ROTATION_0);
+    s_stretch = false;
+    s_requested_stretch.store(false);
     s_fb_index = s_fb_count - 1;
     s_rect = {};
     s_clip = { { 0, 0 }, s_panel };
@@ -728,6 +737,11 @@ void video_presenter_set_rotation(bsp_rotation_t rotation) {
 
 void video_presenter_set_source_rotation(bsp_rotation_t rotation) {
     s_requested_source_rotation.store(rotation);
+    if (s_wake) xSemaphoreGive(s_wake);
+}
+
+void video_presenter_set_stretch(bool stretch) {
+    s_requested_stretch.store(stretch);
     if (s_wake) xSemaphoreGive(s_wake);
 }
 

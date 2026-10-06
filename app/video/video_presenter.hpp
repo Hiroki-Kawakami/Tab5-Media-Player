@@ -35,6 +35,9 @@ struct VideoInsets {
 void video_presenter_set_ui_insets(const VideoInsets &insets);
 void video_presenter_set_rotation(bsp_rotation_t rotation);
 void video_presenter_set_source_rotation(bsp_rotation_t rotation);
+/* Fills the area on both axes instead of keeping the aspect ratio; begin()
+ * turns it off. */
+void video_presenter_set_stretch(bool stretch);
 
 float video_presenter_fps();
 std::string video_presenter_error();

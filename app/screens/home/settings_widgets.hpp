@@ -29,7 +29,8 @@ lv_obj_t *lv_setting_slider_create(lv_obj_t *section, int32_t min, int32_t max, 
 lv_obj_t *lv_setting_separator_create(lv_obj_t *section, const SettingColors *colors = nullptr);
 lv_obj_t *lv_setting_segmented_create(lv_obj_t *row, std::initializer_list<const char *> labels,
                                       int active,
-                                      std::function<void(lv_obj_t *, int)> on_select);
+                                      std::function<void(lv_obj_t *, int)> on_select,
+                                      const SettingColors *colors = nullptr);
 void lv_setting_segmented_set_active(lv_obj_t *segmented, int active);
 lv_obj_t *lv_setting_dropdown_create(lv_obj_t *row, const char *options, uint32_t selected,
                                      std::function<void(lv_obj_t *, uint32_t)> on_select,

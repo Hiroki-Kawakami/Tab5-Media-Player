@@ -453,9 +453,21 @@ packet the way the player does, so a mode change waits for the next frame to
 fill the area the UI left; while a camera sends nothing, that area keeps
 whatever was there.
 
-The capture is fixed at 1280x720 MJPEG, 30 fps. Frames land in four 1 MB slots
-carved out of the media arena, which is idle because the player is closed
-whenever Home is on screen. Four is what can be out at once: one filling, one
+The top bar's right end shows the input format, and opens the Input Format
+panel: Resolution and Frame Rate dropdowns over the camera's MJPEG sizes of at
+most 1920x1080 pixels that `MjpegRenderer::fits`, at up to 60 Hz (a continuous
+interval range is offered as the common rates inside it). The last choice is
+one setting, not one per device; a camera without it gets the nearest it
+offers, 1280x720 at 30 Hz when nothing was chosen. Switching restarts only the
+camera and flushes the presenter: the renderer takes each JPEG at its own size,
+so the stream stays open. The panel's Aspect Ratio (also a setting) makes
+`video_presenter_set_stretch()` scale each axis to the area on its own; each
+axis is still in 1/16 steps, so it fills a 4:3 source but leaves a 16:9 one
+where it was. `video_presenter_begin()` turns it off, so the players never
+stretch, and only `MjpegRenderer` reads the separate vertical scale.
+
+Frames land in four 1 MB slots carved out of the media arena, which is idle
+because the player is closed whenever Home is on screen. Four is what can be out at once: one filling, one
 waiting to be received, one in the presenter's queue and one being decoded. A
 frame larger than a slot is dropped.
 
@@ -478,7 +490,8 @@ drops or repeats one frame (at most 0.4 %). A read that times out prefills
 again.
 
 On the simulator, `run.sh` points `SIMULATOR_USBH_UVC_PATH` at `simulator/uvc`
-(gitignored, any 1280x720 JPEGs); see `simulator/verify/video_input.txt`.
+(gitignored, any 1280x720 JPEGs); see `simulator/verify/video_input.txt` and,
+for the Input Format panel, `video_input_format.txt`.
 
 ## Wi-Fi
 

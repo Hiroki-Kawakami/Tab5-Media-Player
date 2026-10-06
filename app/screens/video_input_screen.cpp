@@ -10,6 +10,7 @@
 #include "playback/player.hpp"
 #include "screens/media_controls.hpp"
 #include "screens/video_player/settings_panel.hpp"
+#include "settings.hpp"
 #include "video/video_presenter.hpp"
 #include "ui_orientation.hpp"
 #include "bsp.h"
@@ -20,9 +21,7 @@
 
 static const char *TAG = "video_input";
 
-static constexpr uint16_t kCaptureWidth = 1280;
-static constexpr uint16_t kCaptureHeight = 720;
-static constexpr uint32_t kCaptureInterval = 333333;
+static constexpr InputFormat kDefaultFormat = { 1280, 720, 333333 };
 static constexpr std::size_t kSlotBytes = 1024 * 1024;
 static constexpr uint32_t kReceiveTimeoutMs = 100;
 static constexpr uint32_t kFeedStackBytes = 4096;
@@ -89,6 +88,7 @@ VideoInsets VideoInputScreen::insets() const {
         add_inset(insets, panel_edge(Edge::Bottom, rotation_), kBarHeight);
         break;
     case UiMode::Settings:
+    case UiMode::InputFormat:
         if (is_portrait(rotation_)) {
             add_inset(insets, panel_edge(Edge::Bottom, rotation_), kPortraitPanelHeight);
         } else {
@@ -124,7 +124,9 @@ void VideoInputScreen::closeOverlay() {
     top_bar_ = nullptr;
     bottom_bar_ = nullptr;
     settings_ = nullptr;
+    input_format_ = nullptr;
     title_label_ = nullptr;
+    format_label_ = nullptr;
     volume_label_ = nullptr;
     volume_slider_ = nullptr;
 }
@@ -148,25 +150,50 @@ void VideoInputScreen::buildUi() {
     });
 
     top_bar_ = create_bar(screen, lv_pct(100), kBarHeight, LV_ALIGN_TOP_MID);
-    title_label_ =
-        media_top_bar_build(top_bar_, title_.c_str(), [this] { this->back(); }, nullptr).title;
+    buildTopBar(top_bar_);
     bottom_bar_ = create_bar(screen, lv_pct(100), kBarHeight, LV_ALIGN_BOTTOM_MID);
     buildBottomBar(bottom_bar_);
 
-    settings_ = is_portrait(rotation_)
-        ? create_bar(screen, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
-        : create_bar(screen, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
+    settings_ = buildPanel(screen);
     player_settings_panel_build(settings_, [this] { requestMode(UiMode::Bars); });
+    input_format_ = buildPanel(screen);
+    InputFormatPanel callbacks;
+    callbacks.current = [this] { return format_; };
+    callbacks.on_select = [this](const InputFormat &format) { switchFormat(format); };
+    callbacks.stretched = [] { return settings_video_input_stretch(); };
+    callbacks.on_stretch = [](bool stretch) {
+        video_presenter_set_stretch(stretch);
+        settings_set_video_input_stretch(stretch);
+        settings_commit();
+    };
+    callbacks.on_close = [this] { requestMode(UiMode::Bars); };
+    input_format_panel_build(input_format_, sizes_, std::move(callbacks));
 
     lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
     lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
+    lv_obj_set_flag(input_format_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::InputFormat);
 
     /* A bar sits where it was created until the layout runs, and every area it
      * leaves on the way is painted with the screen behind it -- black, over the
      * video. Settle the layout here, where the invalidations can still be
      * dropped, so only the final areas are ever drawn. */
     lv_obj_update_layout(screen);
+}
+
+void VideoInputScreen::buildTopBar(lv_obj_t *parent) {
+    title_label_ =
+        media_top_bar_build(parent, title_.c_str(), [this] { this->back(); }, nullptr).title;
+    if (!format_.width) return;
+    media_top_bar_text_button(parent, input_format_label(format_).c_str(),
+                              [this] { requestMode(UiMode::InputFormat); }, &format_label_);
+    media_top_bar_fit_title(parent, title_label_);
+}
+
+lv_obj_t *VideoInputScreen::buildPanel(lv_obj_t *screen) {
+    return is_portrait(rotation_)
+        ? create_bar(screen, lv_pct(100), kPortraitPanelHeight, LV_ALIGN_BOTTOM_MID)
+        : create_bar(screen, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
 }
 
 void VideoInputScreen::buildBottomBar(lv_obj_t *parent) {
@@ -199,6 +226,7 @@ void VideoInputScreen::setMode(UiMode mode) {
         lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    if (mode != UiMode::InputFormat) lv_obj_add_flag(input_format_, LV_OBJ_FLAG_HIDDEN);
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
@@ -210,6 +238,9 @@ void VideoInputScreen::setMode(UiMode mode) {
     } else if (mode == UiMode::Settings) {
         lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
         lv_obj_remove_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+    } else if (mode == UiMode::InputFormat) {
+        lv_obj_send_event(input_format_, LV_EVENT_REFRESH, nullptr);
+        lv_obj_remove_flag(input_format_, LV_OBJ_FLAG_HIDDEN);
     }
     if (mode == UiMode::Hidden) return;
     lv_display_trigger_activity(ui_);
@@ -241,6 +272,8 @@ void VideoInputScreen::rotate(bsp_rotation_t rotation) {
         lv_obj_invalidate(bottom_bar_);
     } else if (mode_ == UiMode::Settings) {
         lv_obj_invalidate(settings_);
+    } else if (mode_ == UiMode::InputFormat) {
+        lv_obj_invalidate(input_format_);
     }
     refresh();
 }
@@ -255,6 +288,10 @@ void VideoInputScreen::onEnter() {
     rotation_ = ui_orientation_current();
     mode_ = UiMode::Hidden;
     error_.clear();
+    sizes_ = input_sizes(camera_->frame_sizes());
+    InputFormat saved;
+    settings_video_input_format(&saved.width, &saved.height, &saved.interval);
+    format_ = input_format_pick(sizes_, saved.width ? saved : kDefaultFormat);
     if (!openOverlay()) {
         showStartError({});
         return;
@@ -268,6 +305,7 @@ void VideoInputScreen::onEnter() {
         return;
     }
     video_presenter_set_ui_insets(insets());
+    video_presenter_set_stretch(settings_video_input_stretch());
     ui_orientation_set_listener([](bsp_rotation_t rotation, void *arg) {
         static_cast<VideoInputScreen *>(arg)->rotate(rotation);
     }, this);
@@ -320,10 +358,14 @@ void VideoInputScreen::showStartError(const std::string &message) {
 }
 
 bool VideoInputScreen::startCapture(std::string *error) {
+    if (!format_.width) {
+        *error = "camera has no MJPEG format up to 1920x1080";
+        return false;
+    }
     TrackInfo track;
     track.codec = CodecId::Mjpeg;
-    track.width = kCaptureWidth;
-    track.height = kCaptureHeight;
+    track.width = format_.width;
+    track.height = format_.height;
     if (!video_presenter_open_stream(track, error)) return false;
 
     player_close();
@@ -332,16 +374,18 @@ bool VideoInputScreen::startCapture(std::string *error) {
         *error = "no memory for camera frames";
         return false;
     }
+    return startStream(error);
+}
+
+bool VideoInputScreen::startStream(std::string *error) {
+    const media_arena_t arena = player_arena();
     uint8_t *slots[kSlots];
     for (std::size_t i = 0; i < kSlots; i++) slots[i] = arena.data + i * kSlotBytes;
-    const esp_err_t err = camera_->start(kCaptureWidth, kCaptureHeight, kCaptureInterval, slots,
+    const esp_err_t err = camera_->start(format_.width, format_.height, format_.interval, slots,
                                          kSlots, kSlotBytes);
-    if (err == ESP_ERR_NOT_SUPPORTED) {
-        *error = "camera has no 1280x720 MJPEG at 30 fps";
-        return false;
-    }
     if (err != ESP_OK) {
-        *error = std::string("camera did not start: ") + esp_err_to_name(err);
+        *error = "camera did not start " + input_format_label(format_) + ": " +
+                 esp_err_to_name(err);
         return false;
     }
 
@@ -365,12 +409,41 @@ bool VideoInputScreen::startCapture(std::string *error) {
 
 void VideoInputScreen::stopCapture() {
     audio_.stop();
+    stopStream();
+}
+
+void VideoInputScreen::stopStream() {
     feed_quit_ = true;
     camera_->stop();
     if (!feed_stopped_) return;
     xSemaphoreTake(feed_stopped_, portMAX_DELAY);
     vSemaphoreDelete(feed_stopped_);
     feed_stopped_ = nullptr;
+}
+
+/* The decoder takes each JPEG at its own size, so the open stream carries on;
+ * only the frames of the old format still queued are dropped. */
+void VideoInputScreen::switchFormat(const InputFormat &format) {
+    if (format == format_) return;
+    const InputFormat previous = format_;
+    stopStream();
+    video_presenter_flush();
+    format_ = format;
+    std::string error;
+    if (startStream(&error)) {
+        error_.clear();
+        settings_set_video_input_format(format.width, format.height, format.interval);
+        settings_commit();
+    } else {
+        ESP_LOGW(TAG, "%s", error.c_str());
+        format_ = previous;
+        std::string ignored;
+        error_ = startStream(&ignored) ? error : ignored;
+    }
+    if (format_label_) {
+        lv_label_set_text(format_label_, input_format_label(format_).c_str());
+        media_top_bar_fit_title(top_bar_, title_label_);
+    }
 }
 
 void VideoInputScreen::feedMain(void *arg) {

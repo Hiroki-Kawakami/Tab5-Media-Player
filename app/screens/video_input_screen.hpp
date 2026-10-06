@@ -5,6 +5,7 @@
 
 #pragma once
 #include "audio/capture_playback.hpp"
+#include "screens/video_input/input_format.hpp"
 #include "bsp_types.h"
 #include "screen_manager.hpp"
 #include "usb_host_uvc.hpp"
@@ -17,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct VideoInsets;
 
@@ -30,7 +32,7 @@ public:
     static void unplugged();
 
 private:
-    enum class UiMode { Hidden, Bars, Settings };
+    enum class UiMode { Hidden, Bars, Settings, InputFormat };
 
     static constexpr std::size_t kSlots = 4;
 
@@ -42,13 +44,18 @@ private:
     bool openOverlay();
     void closeOverlay();
     void buildUi();
+    void buildTopBar(lv_obj_t *parent);
     void buildBottomBar(lv_obj_t *parent);
+    lv_obj_t *buildPanel(lv_obj_t *screen);
     void rotate(bsp_rotation_t rotation);
     void setMode(UiMode mode);
     void requestMode(UiMode mode);
     VideoInsets insets() const;
     bool startCapture(std::string *error);
     void stopCapture();
+    bool startStream(std::string *error);
+    void stopStream();
+    void switchFormat(const InputFormat &format);
     static void feedMain(void *arg);
     static void releaseFrame(void *ctx);
     void tick();
@@ -57,6 +64,8 @@ private:
 
     std::shared_ptr<usb_host::UvcDevice> camera_;
     std::array<Held, kSlots> held_;
+    std::vector<InputSize> sizes_;
+    InputFormat format_;
     CapturePlayback audio_;
     SemaphoreHandle_t feed_stopped_ = nullptr;
     std::atomic<bool> feed_quit_{ false };
@@ -70,7 +79,9 @@ private:
     lv_obj_t *top_bar_ = nullptr;
     lv_obj_t *bottom_bar_ = nullptr;
     lv_obj_t *settings_ = nullptr;
+    lv_obj_t *input_format_ = nullptr;
     lv_obj_t *title_label_ = nullptr;
+    lv_obj_t *format_label_ = nullptr;
     lv_obj_t *volume_label_ = nullptr;
     lv_obj_t *volume_slider_ = nullptr;
     lv_timer_t *timer_ = nullptr;

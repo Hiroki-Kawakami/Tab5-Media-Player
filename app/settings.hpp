@@ -79,3 +79,10 @@ void settings_set_slideshow_bgm_path(const std::string &path);
 bool settings_wifi_enabled();
 // `done` runs on the Wi-Fi worker task once the radio has followed.
 void settings_set_wifi_enabled(bool enabled, std::function<void()> done = {});
+
+// Zero width until a format was chosen.
+void settings_video_input_format(uint16_t *width, uint16_t *height, uint32_t *interval);
+void settings_set_video_input_format(uint16_t width, uint16_t height, uint32_t interval);
+
+bool settings_video_input_stretch();
+void settings_set_video_input_stretch(bool stretch);

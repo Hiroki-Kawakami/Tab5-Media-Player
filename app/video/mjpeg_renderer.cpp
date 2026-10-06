@@ -38,7 +38,7 @@ static ppa_srm_rotation_angle_t ppa_rotation(bsp_rotation_t rotation) {
 static bool covers_panel_unscaled(const RenderTarget &target) {
     return !render_target_clipped(target) &&
            target.rotation == BSP_ROTATION_0 &&
-           target.scale_n == kScaleDenominator &&
+           target.scale_n == kScaleDenominator && target.scale_n_y == kScaleDenominator &&
            target.rect.origin.x == 0 && target.rect.origin.y == 0 &&
            target.rect.size.width == target.panel.width &&
            target.rect.size.height == target.panel.height &&
@@ -48,6 +48,10 @@ static bool covers_panel_unscaled(const RenderTarget &target) {
            target.source.height % kMcuAlignment == 0 &&
            (uintptr_t)target.framebuffer % kCacheAlignment == 0 &&
            target.framebuffer_bytes % kCacheAlignment == 0;
+}
+
+bool MjpegRenderer::fits(uint32_t width, uint32_t height) {
+    return width <= kMaxWidth && (uint64_t)width * height <= kMaxPixels;
 }
 
 bool MjpegRenderer::open(const SharedSram &sram, bsp_pixel_format_t format, const TrackInfo &,
@@ -139,10 +143,11 @@ bool MjpegRenderer::draw(VideoFrame *frame, const RenderTarget &target, std::str
     const Path path = covers_panel_unscaled(target) ? Path::Direct : Path::Pipeline;
     if (path != path_) {
         path_ = path;
-        ESP_LOGI(TAG, "%s: src %dx%d rotation %d scale %u/%u rect %d,%d %dx%d fb %p (%u bytes)",
+        ESP_LOGI(TAG, "%s: src %dx%d rotation %d scale %u/%u x %u/%u rect %d,%d %dx%d fb %p (%u bytes)",
                  path == Path::Direct ? "direct decode" : "pipeline",
                  target.source.width, target.source.height, (int)target.rotation,
                  (unsigned)target.scale_n, (unsigned)kScaleDenominator,
+                 (unsigned)target.scale_n_y, (unsigned)kScaleDenominator,
                  target.rect.origin.x, target.rect.origin.y,
                  target.rect.size.width, target.rect.size.height,
                  target.framebuffer, (unsigned)target.framebuffer_bytes);
@@ -176,11 +181,10 @@ bool MjpegRenderer::decode_scaled(const uint8_t *data, std::size_t len,
     output.pic_h = (uint32_t)target.panel.height;
     output.color_mode = color_mode_;
 
-    const float scale = (float)target.scale_n / kScaleDenominator;
     jpeg_ppa_transform_t transform = {};
     transform.rotation = ppa_rotation(target.rotation);
-    transform.scale_x = scale;
-    transform.scale_y = scale;
+    transform.scale_x = (float)target.scale_n / kScaleDenominator;
+    transform.scale_y = (float)target.scale_n_y / kScaleDenominator;
     transform.out_offset_x = (uint32_t)target.rect.origin.x;
     transform.out_offset_y = (uint32_t)target.rect.origin.y;
     if (render_target_clipped(target)) {

@@ -79,13 +79,15 @@ lv_obj_t *lv_setting_separator_create(lv_obj_t *section, const SettingColors *co
 
 lv_obj_t *lv_setting_segmented_create(lv_obj_t *row, std::initializer_list<const char *> labels,
                                       int active,
-                                      std::function<void(lv_obj_t *, int)> on_select) {
+                                      std::function<void(lv_obj_t *, int)> on_select,
+                                      const SettingColors *colors) {
     auto segmented = lv_container_create(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_user_data(segmented, (void *)colors);
     lv_obj_set_size(segmented, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_all(segmented, 4, 0);
     lv_obj_set_style_pad_column(segmented, 4, 0);
     lv_obj_set_style_radius(segmented, 12, 0);
-    lv_obj_set_style_bg_color(segmented, lv_color_hex(kSegmentTrackColor), 0);
+    lv_obj_set_style_bg_color(segmented, lv_color_hex(colors ? colors->track : kSegmentTrackColor), 0);
     lv_obj_set_style_bg_opa(segmented, LV_OPA_COVER, 0);
 
     int index = 0;
@@ -104,12 +106,14 @@ lv_obj_t *lv_setting_segmented_create(lv_obj_t *row, std::initializer_list<const
 }
 
 void lv_setting_segmented_set_active(lv_obj_t *segmented, int active) {
+    const auto *colors = static_cast<const SettingColors *>(lv_obj_get_user_data(segmented));
+    const uint32_t track = colors ? colors->track : kSegmentTrackColor;
+    const uint32_t accent = colors ? colors->accent : kSegmentActiveColor;
     for (uint32_t i = 0; i < lv_obj_get_child_count(segmented); i++) {
         auto button = lv_obj_get_child(segmented, i);
         const bool on = (int)i == active;
-        lv_obj_set_style_bg_color(
-            button, lv_color_hex(on ? kSegmentActiveColor : kSegmentTrackColor), 0);
-        lv_obj_set_style_text_color(button, on ? lv_color_white() : lv_color_black(), 0);
+        lv_obj_set_style_bg_color(button, lv_color_hex(on ? accent : track), 0);
+        lv_obj_set_style_text_color(button, on || colors ? lv_color_white() : lv_color_black(), 0);
     }
 }
 

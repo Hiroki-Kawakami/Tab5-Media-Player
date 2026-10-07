@@ -23,6 +23,7 @@ Usage:
   run.sh simulator --verify <script> [args...]      harness script against the simulator
   run.sh esp32p4 [idf args...]                      idf.py on the device (default: flash monitor)
   run.sh esp32p4 --verify <port> <script> [args...] harness script against a flashed device
+  run.sh esp32p4oc ...                              same as esp32p4, overclocked build (CPU 400MHz, PSRAM 220MHz)
 USAGE
     exit 1
 }
@@ -43,7 +44,7 @@ case "$TARGET" in
         "$SIM_BUILD/simulator"
     fi
     ;;
-  esp32p4)
+  esp32p4|esp32p4oc)
     if [ "$1" = "--verify" ]; then
         shift
         [ $# -ge 2 ] || usage
@@ -51,7 +52,7 @@ case "$TARGET" in
         "$HARNESS" --port "$PORT" --out "$HERE/captures" "$SCRIPT" "$@"
     else
         [ $# -gt 0 ] || set -- flash monitor
-        idf.py -C "$HERE/esp32p4" "$@"
+        idf.py -C "$HERE/$TARGET" "$@"
     fi
     ;;
   *)

@@ -51,6 +51,7 @@ The dev environment lives in a Nix flake; always run build tooling through
 nix develop -c ./run.sh                                             # host simulator (SDL window)
 nix develop -c ./run.sh esp32p4                                     # flash + monitor the device
 nix develop -c ./run.sh esp32p4 build
+nix develop -c ./run.sh esp32p4oc                                   # overclocked build (CPU 400MHz, PSRAM 220MHz)
 nix develop -c ./run.sh simulator --verify simulator/verify/home.txt # headless UI check
 ```
 

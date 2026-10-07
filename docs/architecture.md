@@ -7,6 +7,7 @@
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
 | `components/` | project-specific components (`media_buffer`, `media_tags`, `riff_demux`, `es_audio_demux`, `mkv_demux`, `mp4_demux`, `vdec_common`, `h264_dec`, `mpeg2_dec` in plain C; `airplay` in C++) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
+| `esp32p4oc/` | the same wrapper overclocked (CPU 400 MHz, PSRAM 220 MHz); see [Overclocked build](#overclocked-build) |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
 | `esp-devkit/` | submodule: BSP, LVGL port, `ui_framework`, harness |
@@ -326,6 +327,30 @@ not, and Home only relayouts when the display actually changes.
 
 A USB disconnect removes every page under `/usb` from the stack, and closes the
 player if it is playing from there.
+
+## Overclocked build
+
+`esp32p4oc/` builds the same firmware with the CPU at 400 MHz and PSRAM at
+220 MHz from boot; `esp32p4/` stays at the 360/200 MHz Espressif guarantees for
+rev 1.x. It shares `main`, `sdkconfig.defaults`, the partition table and
+`dependencies.lock` with `esp32p4/` and only adds the two overrides. The gain
+did not justify a switch in the UI: H.264 decode got about 6% faster from the
+CPU, and PSRAM at 240 MHz took about 3% more off on top of that.
+
+Both clocks need esp-devkit's IDF patches. v6.1 lets Kconfig pick a 400 MHz CPU
+on rev 1.x but `rtc_clk.c` rejects it and aborts at boot. `CONFIG_SPIRAM_SPEED_220M`
+is the 250 MHz latency settings with MPLL at 440 MHz. At 250 MHz rev 1.x returns
+bursts with one byte lane a beat off and stray address bits on writes, and no
+DQS phase, delay line, read dummy or drive strength setting changes the rate.
+240 MHz runs on some chips and corrupts PSRAM on others, rev 1.3 included;
+220 MHz runs on every board at hand. A hash-checked decode is what catches it:
+the boot-time memory test and the IDF tuning pattern both pass at 250 MHz.
+
+After an IDF patch changes the IDF store path, an existing `build/bootloader`
+CMake cache still points at the old path and the configure step fails; delete
+that directory (or `fullclean`). `flake.lock` pins esp-devkit by commit, so a
+patch takes effect only after esp-devkit is committed and
+`nix flake update esp-devkit` is run.
 
 ## SD card
 

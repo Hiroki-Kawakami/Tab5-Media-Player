@@ -909,7 +909,10 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   the edge is not drawn (YUV420 blocks round to even pixels too), so up to two
   scaled source pixels next to the bar stay black. Entering the mode clears a
   band that wide along each clip edge inside the video, so no stale picture is
-  left there.
+  left there. An edge that lands on a source pixel pair at an integer scale
+  leaves no gap, and the band is skipped there: its CPU write-back covers whole
+  cache lines, and the part of a line across the edge can overwrite bar pixels
+  LVGL has just blitted with stale ones. Other scales still race this way.
 - **Ordering is what keeps the two writers apart.** `set_ui_insets()` waits for
   the worker to apply it, so the bar is only made visible once the video no
   longer draws there, and hiding waits for LVGL's last blit

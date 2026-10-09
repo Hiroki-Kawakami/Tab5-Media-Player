@@ -157,6 +157,13 @@ static void fill_black(uint8_t *framebuffer, bsp_rect_t area) {
 #endif
 }
 
+/* No gap to clear there; the band's write-back covers whole cache lines and can
+ * put stale pixels over bar pixels LVGL just blitted across the edge. */
+static bool edge_on_pixel_pair(int offset, uint32_t scale_n) {
+    if (scale_n % kScaleDenominator) return false;
+    return offset % (int)(2 * (scale_n / kScaleDenominator)) == 0;
+}
+
 static void clear_outside(int index, const RenderTarget &target) {
     auto *framebuffer = (uint8_t *)bsp_display_get_frame_buffer(index);
     if (!framebuffer) return;
@@ -176,16 +183,21 @@ static void clear_outside(int index, const RenderTarget &target) {
                                    std::min(visible.size.width, visible.size.height));
     const int visible_right = visible.origin.x + visible.size.width;
     const int visible_bottom = visible.origin.y + visible.size.height;
-    if (visible.origin.y > rect.origin.y) {
+    const bool swap = swaps_axes(target.rotation);
+    const uint32_t scale_x = swap ? target.scale_n_y : target.scale_n;
+    const uint32_t scale_y = swap ? target.scale_n : target.scale_n_y;
+    if (visible.origin.y > rect.origin.y &&
+        !edge_on_pixel_pair(visible.origin.y - rect.origin.y, scale_y)) {
         fill_black(framebuffer, { visible.origin, { visible.size.width, band } });
     }
-    if (visible_bottom < bottom) {
+    if (visible_bottom < bottom && !edge_on_pixel_pair(bottom - visible_bottom, scale_y)) {
         fill_black(framebuffer, { { visible.origin.x, visible_bottom - band }, { visible.size.width, band } });
     }
-    if (visible.origin.x > rect.origin.x) {
+    if (visible.origin.x > rect.origin.x &&
+        !edge_on_pixel_pair(visible.origin.x - rect.origin.x, scale_x)) {
         fill_black(framebuffer, { visible.origin, { band, visible.size.height } });
     }
-    if (visible_right < right) {
+    if (visible_right < right && !edge_on_pixel_pair(right - visible_right, scale_x)) {
         fill_black(framebuffer, { { visible_right - band, visible.origin.y }, { band, visible.size.height } });
     }
 }

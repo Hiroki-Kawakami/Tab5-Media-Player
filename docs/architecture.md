@@ -352,6 +352,17 @@ that directory (or `fullclean`). `flake.lock` pins esp-devkit by commit, so a
 patch takes effect only after esp-devkit is committed and
 `nix flake update esp-devkit` is run.
 
+## CI build
+
+`.github/workflows/firmware.yml` (run by hand or on a `v*` tag) builds
+`esp32p4/` and `esp32p4oc/` with esp-devkit's CI actions
+(`esp-devkit/docs/ci.md`) and uploads the merged binary for M5Burner, the ELF
+and the sdkconfig per target. A tag also publishes a release of that name with
+only the two merged binaries attached. The image adds `RESGEN_PYTHON`; its tag
+hashes the whole `flake.nix`, so devShell-only edits there rebuild it too. CI
+sees only committed state: `sdkconfig` comes from `sdkconfig.defaults`, and
+esp-devkit changes need `nix flake update esp-devkit` as for local builds.
+
 ## SD card
 
 The card is mounted at `/sdcard` when the Home screen's SD Card button is

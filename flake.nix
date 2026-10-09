@@ -17,6 +17,12 @@
         pkgs = nixpkgs.legacyPackages.${system};
         resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
       in {
+        packages.fw-image = esp-devkit.lib.${system}.mkFwImage {
+          name = "tab5-media-player-fw";
+          extraPackages = [ resgenPython ];
+          extraEnv.RESGEN_PYTHON = "${resgenPython}/bin/python3";
+        };
+
         devShells.default = pkgs.mkShell {
           inputsFrom = [ esp-devkit.devShells.${system}.default ];
           packages = [

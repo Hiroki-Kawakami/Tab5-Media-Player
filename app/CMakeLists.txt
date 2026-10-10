@@ -19,7 +19,7 @@ idf_component_register(
 
 file(GLOB APP_RESOURCES ${APP_GLOB_FLAGS} "${CMAKE_CURRENT_SOURCE_DIR}/resources/resources.json")
 if(APP_RESOURCES AND NOT CMAKE_SCRIPT_MODE_FILE)
-    resgen_add_resources(TARGET ${COMPONENT_LIB} DEFINITION ${APP_RESOURCES})
+    resgen_add_resources(TARGET ${COMPONENT_LIB} DEFINITION ${APP_RESOURCES} PARTITION resources)
 endif()
 
 if(ESP_PLATFORM AND H264_BENCH_CLIP)

@@ -10,8 +10,8 @@ would show placeholder boxes if Japanese ever reached them.
 ## Why a resgen pack and not an `lv_font_t`
 
 The 7141 glyph subset costs 783 KB at 24 px and 1410 KB at 38 px as 2 bpp packs,
-tables included — about 17 per cent under the same bitmaps stored raw, and the
-reason the factory partition went from 4M to 6M. Neither LVGL's
+tables included — about 17 per cent under the same bitmaps stored raw, and
+most of the `resources` partition (see [`resources.md`](resources.md)). Neither LVGL's
 `lv_font_fmt_txt` nor its compressed variant (`LV_USE_FONT_COMPRESSED`, which
 decompresses and `lv_malloc`s line buffers on *every* draw) keeps a decoded
 glyph around, so the pack is generated in its own format and drawn by

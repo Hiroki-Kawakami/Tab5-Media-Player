@@ -19,7 +19,6 @@ idf_component_register(
 
 file(GLOB APP_RESOURCES ${APP_GLOB_FLAGS} "${CMAKE_CURRENT_SOURCE_DIR}/resources/resources.json")
 if(APP_RESOURCES AND NOT CMAKE_SCRIPT_MODE_FILE)
-    include("${CMAKE_CURRENT_SOURCE_DIR}/../tools/resgen/resgen.cmake")
     resgen_add_resources(TARGET ${COMPONENT_LIB} DEFINITION ${APP_RESOURCES})
 endif()
 

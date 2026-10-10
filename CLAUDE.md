@@ -29,9 +29,8 @@ submodule.
 - [`docs/airplay.md`](docs/airplay.md) — the AirPlay 1 receiver: protocol facts
   the code relies on, clock sync and drift correction, track info/artwork and
   DACP remote control.
-- [`docs/resources.md`](docs/resources.md) — `tools/resgen`, which generates
-  LVGL fonts, icon fonts and images from `app/resources/resources.json` at
-  build time.
+- [`docs/resources.md`](docs/resources.md) — what `app/resources/` holds and
+  how it reaches resgen.
 - [`docs/fonts.md`](docs/fonts.md) — Japanese text: the Montserrat/NotoSansJP
   chain, which sizes are covered, and the compressed glyph pack behind them.
 - [`docs/converter.md`](docs/converter.md) — `tools/converter-rs`, the Rust CLI,
@@ -42,6 +41,8 @@ submodule.
   ISO conformance streams.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
+- `esp-devkit/docs/resgen.md` — resgen, which generates LVGL fonts, icon
+  fonts, images and compressed font packs from a JSON definition at build time.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button
   injection and panel capture, same script on simulator or board.
 - `esp-devkit/ui_framework/inc/display_manager.hpp` — the LVGL display/touch

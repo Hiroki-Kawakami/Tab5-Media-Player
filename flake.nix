@@ -15,12 +15,9 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        resgenPython = pkgs.python3.withPackages (ps: [ ps.freetype-py ps.pillow ps.resvg-py ps.fonttools ]);
       in {
         packages.fw-image = esp-devkit.lib.${system}.mkFwImage {
           name = "tab5-media-player-fw";
-          extraPackages = [ resgenPython ];
-          extraEnv.RESGEN_PYTHON = "${resgenPython}/bin/python3";
         };
 
         devShells.default = pkgs.mkShell {
@@ -37,7 +34,6 @@
             pkgs.wasm-bindgen-cli_0_2_126
           ];
           CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_LINKER = "${pkgs.lld}/bin/wasm-ld";
-          RESGEN_PYTHON = "${resgenPython}/bin/python3";
         };
       }
     );

@@ -10,8 +10,7 @@
 | `esp32p4oc/` | the same wrapper overclocked (CPU 400 MHz, PSRAM 220 MHz); see [Overclocked build](#overclocked-build) |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
-| `esp-devkit/` | submodule: BSP, LVGL port, `ui_framework`, harness |
-| `tools/resgen/` | build-time generator for LVGL fonts, icon fonts and images (see [`resources.md`](resources.md)) |
+| `esp-devkit/` | submodule: BSP, LVGL port, `ui_framework`, harness, resgen (see [`resources.md`](resources.md)) |
 | `tools/converter-rs/` | host CLI, desktop app and browser version that convert videos for the player (see [`converter.md`](converter.md)) |
 
 Everything shared lives in esp-devkit and is consumed through `devkit.cmake`

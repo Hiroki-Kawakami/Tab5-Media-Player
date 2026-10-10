@@ -5,6 +5,7 @@
 
 #include "ui_font.hpp"
 #include "packed_font.hpp"
+#include "resources.h"
 #include "widgets/fonts.hpp"
 #include "esp_heap_caps.h"
 #include <algorithm>

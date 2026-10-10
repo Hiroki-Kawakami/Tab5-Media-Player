@@ -14,10 +14,9 @@ tables included — about 17 per cent under the same bitmaps stored raw, and the
 reason the factory partition went from 4M to 6M. Neither LVGL's
 `lv_font_fmt_txt` nor its compressed variant (`LV_USE_FONT_COMPRESSED`, which
 decompresses and `lv_malloc`s line buffers on *every* draw) keeps a decoded
-glyph around, so the pack is generated in its own format and decoded by
-`app/packed_font.cpp`, which caches decoded glyphs as A8 masks in PSRAM and
-hands them to LVGL through the static-bitmap path (no per-draw allocation, no
-copy into a draw buffer).
+glyph around, so the pack is generated in its own format and drawn by
+esp-devkit's `PackedFont`, which caches decoded glyphs as A8 masks in PSRAM
+(format and decoder: `esp-devkit/docs/resgen.md`).
 
 Storing the 24 px pack raw (`"compress": false`) was tried and reverted: it
 costs the best part of 150 KB and buys nothing measurable. Scrolling a directory
@@ -30,35 +29,15 @@ measured (a 24 px glyph area-averaged from the 38 px master) and looks visibly
 softer than the native 24 px raster, so the two sizes the UI actually uses are
 each stored at their own size.
 
-## The pack format
+## Pack metrics
 
-`resgen.py` emits `resgen_font_pack_t` (declared in the generated
-`resources.h`): a sorted `uint16_t` codepoint table, a `resgen_glyph_t` per
-glyph, and one bitmap blob. Codepoints are limited to the BMP; the subset needs
-nothing above U+FF9F.
+Codepoints in a pack are limited to the BMP; the subset needs nothing above
+U+FF9F.
 
-`resgen_glyph_t::bitmap` is the byte offset into the blob, with bit 31 set when
-the glyph is RLE compressed. Glyphs that do not get smaller are stored raw
-(packed `bpp` bit rows, no row padding), so the decoder handles both regardless
-of what `compress` says.
-
-The RLE is the scheme LVGL uses for its own compressed fonts (see `decompress()`
-and `rle_next()` in `lv_font_fmt_txt.c`): every row is XORed with the row above
-it, a value costs `bpp` bits, a value equal to the previous one switches to
-repeat mode where each further repeat is a single 1 bit, a 0 bit ends the run,
-and the 11th repeat is followed by a 6 bit count. The count runs out on a
-value — not on a repeat — and the decoder does *not* re-enter repeat mode on
-that value; encoders that get this wrong produce streams that are one pixel
-short per long run. `resgen.py check <definition>` decodes every glyph back and
-compares, and is the way to verify a change to either side of the codec.
-
-The blob carries two zero bytes of slack at the end because the decoder reads a
-24 bit window.
-
-The pack also stores `max_ascent`/`max_descent` of the included glyphs. Noto's
-own line metrics (1.45 em) are far taller than Montserrat's box, so the chain in
-`app/ui_font.cpp` keeps Montserrat's metrics and grows them only far enough that
-no kanji is clipped: 1 px at 24 px, 2 px at 38 px.
+Noto's own line metrics (1.45 em) are far taller than Montserrat's box, so the
+chain in `app/ui_font.cpp` keeps Montserrat's metrics and grows them by the
+pack's `max_ascent`/`max_descent` only far enough that no kanji is clipped:
+1 px at 24 px, 2 px at 38 px.
 
 ## The font file
 
@@ -92,14 +71,10 @@ outside the list render as LVGL's placeholder box.
 
 ## Decomposed kana
 
-File names written by macOS and titles from some senders arrive in NFD: が is
-か followed by the combining U+3099. LVGL has no notion of combining marks and
-would draw U+3099/U+309A as glyphs of their own, so `PackedFont` looks at the
-`next` codepoint LVGL passes for kerning and returns the precomposed glyph for
-the base, and an empty zero-width glyph for the mark. That `next` is only
-passed when the top font of the chain has kerning enabled, which the built-in
-Montserrat does. A mark after a base with no precomposed form is dropped.
-Sorting still compares raw bytes, so NFD and NFC names do not interleave.
+File names written by macOS and titles from some senders arrive in NFD.
+`PackedFont` composes kana followed by U+3099/U+309A (see
+`esp-devkit/docs/resgen.md`). Sorting still compares raw bytes, so NFD and NFC
+names do not interleave.
 
 ## Checking it
 

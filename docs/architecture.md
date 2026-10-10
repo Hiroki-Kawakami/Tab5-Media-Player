@@ -17,7 +17,7 @@ Everything shared lives in esp-devkit and is consumed through `devkit.cmake`
 (`devkit_idf_init` / `devkit_simulator`). Reusable board/simulator/UI
 infrastructure is advanced in esp-devkit first, then this repo bumps the
 submodule pointer. Project-specific components go under a top-level
-`components/` and are added to both wrappers' `COMPONENT_DIRS`.
+`components/`, which both wrappers list in `COMPONENT_DIRS`.
 
 `app/CMakeLists.txt` globs its sources with `CONFIGURE_DEPENDS`: the
 simulator's Ninja build otherwise never re-scans the tree, and a newly added

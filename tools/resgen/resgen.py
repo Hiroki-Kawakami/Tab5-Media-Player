@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import ctypes
 import io
 import json
 import math
@@ -175,9 +176,12 @@ def utf8_literal(codepoint):
     return "".join(f"\\x{b:02X}" for b in chr(codepoint).encode("utf-8"))
 
 
+HEX_BYTES = [f"0x{b:02x}," for b in range(256)]
+
+
 def hex_rows(data, per_row=16):
     return "\n".join(
-        "    " + " ".join(f"0x{b:02x}," for b in data[i:i + per_row])
+        "    " + " ".join(map(HEX_BYTES.__getitem__, data[i:i + per_row]))
         for i in range(0, len(data), per_row))
 
 
@@ -208,33 +212,14 @@ typedef struct {
 """
 
 
-class BitWriter:
-    def __init__(self):
-        self.out = bytearray()
-        self.acc = 0
-        self.bits = 0
-
-    def write(self, value, count):
-        self.acc = (self.acc << count) | value
-        self.bits += count
-        while self.bits >= 8:
-            self.bits -= 8
-            self.out.append((self.acc >> self.bits) & 0xFF)
-        self.acc &= (1 << self.bits) - 1
-
-    def bytes(self):
-        if self.bits == 0:
-            return bytes(self.out)
-        return bytes(self.out) + bytes(((self.acc << (8 - self.bits)) & 0xFF,))
-
-
 # A value costs bpp bits. A value equal to the previous one switches to repeat
 # mode, where every further repeat is a single 1 bit, a 0 bit ends the run and
 # is followed by the next value, and the 11th repeat is followed by a 6 bit
 # count. The count runs out on a value, not on a repeat, and the decoder does
 # not re-enter repeat mode on that value.
 def rle_encode(levels, bpp):
-    writer = BitWriter()
+    acc = 0
+    bits = 0
     total = len(levels)
     index = 0
     previous = None
@@ -243,13 +228,15 @@ def rle_encode(levels, bpp):
     while index < total:
         if not repeating:
             value = levels[index]
-            writer.write(value, bpp)
+            acc = (acc << bpp) | value
+            bits += bpp
             index += 1
             repeating = previous is not None and value == previous
             repeats = 0
             previous = value
-        elif index < total and levels[index] == previous:
-            writer.write(1, 1)
+        elif levels[index] == previous:
+            acc = (acc << 1) | 1
+            bits += 1
             repeats += 1
             index += 1
             if repeats == 11:
@@ -257,17 +244,21 @@ def rle_encode(levels, bpp):
                 while index + run < total and levels[index + run] == previous:
                     run += 1
                 length = min(run + 1, 63)
-                writer.write(length, 6)
+                acc = (acc << 6) | length
+                bits += 6
                 index += length - 1
                 if index < total:
-                    writer.write(levels[index], bpp)
                     previous = levels[index]
+                    acc = (acc << bpp) | previous
+                    bits += bpp
                     index += 1
                 repeating = False
         else:
-            writer.write(0, 1)
+            acc <<= 1
+            bits += 1
             repeating = False
-    return writer.bytes()
+    pad = -bits % 8
+    return (acc << pad).to_bytes((bits + pad) // 8, "big")
 
 
 def rle_decode(data, count, bpp):
@@ -336,13 +327,13 @@ def unprefilter_rows(levels, width, height):
 
 
 def prefilter_rows(levels, width, height):
-    out = []
-    previous = [0] * width
+    out = bytearray()
+    previous = 0
     for y in range(height):
-        row = levels[y * width:(y + 1) * width]
-        out += [a ^ b for a, b in zip(row, previous)]
+        row = int.from_bytes(levels[y * width:(y + 1) * width], "big")
+        out += (row ^ previous).to_bytes(width, "big")
         previous = row
-    return out
+    return bytes(out)
 
 
 def generate_header(definition):
@@ -390,18 +381,20 @@ class Glyph:
 
 def quantize(alpha, bpp):
     maxv = (1 << bpp) - 1
-    return [(a * maxv + 127) // 255 for a in alpha]
+    return alpha.translate(bytes((a * maxv + 127) // 255 for a in range(256)))
 
 
 def make_glyph(codepoint, adv_w, alpha, width, height, left, bottom, bpp):
     levels = quantize(alpha, bpp)
     rows = [levels[y * width:(y + 1) * width] for y in range(height)]
-    ys = [y for y, row in enumerate(rows) if any(row)]
+    ends = [len(row.rstrip(b"\0")) for row in rows]
+    ys = [y for y, end in enumerate(ends) if end]
     if not ys:
-        return Glyph(codepoint, adv_w, [], 0, 0, 0, 0)
-    xs = [x for x in range(width) if any(rows[y][x] for y in ys)]
-    x0, x1, y0, y1 = xs[0], xs[-1] + 1, ys[0], ys[-1] + 1
-    trimmed = [v for y in range(y0, y1) for v in rows[y][x0:x1]]
+        return Glyph(codepoint, adv_w, b"", 0, 0, 0, 0)
+    y0, y1 = ys[0], ys[-1] + 1
+    x0 = min(width - len(row.lstrip(b"\0")) for row in rows[y0:y1])
+    x1 = max(ends[y0:y1])
+    trimmed = b"".join(row[x0:x1] for row in rows[y0:y1])
     return Glyph(codepoint, adv_w, trimmed, x1 - x0, y1 - y0,
                  left + x0, bottom + (height - y1))
 
@@ -410,14 +403,14 @@ def pack_levels(levels, bpp):
     if bpp == 8:
         return bytes(levels)
     per_byte = 8 // bpp
-    out = bytearray()
-    for i in range(0, len(levels), per_byte):
-        chunk = levels[i:i + per_byte]
-        byte = 0
-        for j in range(per_byte):
-            byte = (byte << bpp) | (chunk[j] if j < len(chunk) else 0)
-        out.append(byte)
-    return bytes(out)
+    levels = bytes(levels) + bytes(-len(levels) % per_byte)
+    if bpp == 4:
+        return bytes((a << 4) | b for a, b in zip(levels[0::2], levels[1::2]))
+    if bpp == 2:
+        return bytes((a << 6) | (b << 4) | (c << 2) | d
+                     for a, b, c, d in zip(levels[0::4], levels[1::4], levels[2::4], levels[3::4]))
+    return bytes(sum(v << (7 - j) for j, v in enumerate(byte))
+                 for byte in zip(*(levels[j::8] for j in range(8))))
 
 
 def build_cmaps(codepoints):
@@ -550,7 +543,7 @@ def render_svg_alpha(path, width, height):
     image = Image.open(io.BytesIO(bytes(png))).convert("RGBA")
     if image.size != (width, height):
         image = image.resize((width, height), Image.Resampling.LANCZOS)
-    return list(image.getchannel("A").tobytes())
+    return image.getchannel("A").tobytes()
 
 
 def generate_icon_font(definition, name):
@@ -623,9 +616,9 @@ def render_ttf_glyphs(definition, name):
         face.load_char(cp, flags)
         slot = face.glyph
         bm = slot.bitmap
-        alpha = []
-        for y in range(bm.rows):
-            alpha += bm.buffer[y * bm.pitch:y * bm.pitch + bm.width]
+        # bm.buffer copies the whole bitmap element by element through ctypes on every access
+        buffer = ctypes.string_at(bm._FT_Bitmap.buffer, bm.rows * bm.pitch) if bm.rows else b""
+        alpha = b"".join(buffer[y * bm.pitch:y * bm.pitch + bm.width] for y in range(bm.rows))
         adv_w = round(slot.advance.x / 4)
         glyphs.append(make_glyph(cp, adv_w, alpha, bm.width, bm.rows,
                                  slot.bitmap_left, slot.bitmap_top - bm.rows, bpp))
@@ -653,14 +646,12 @@ def generate_ttf_font(definition, name):
 
 
 def encode_pack_glyph(glyph, bpp, compress, prefilter):
-    raw = pack_levels(glyph.levels, bpp)
-    if not compress:
-        return raw, False
-    source = prefilter_rows(glyph.levels, glyph.width, glyph.height) if prefilter else glyph.levels
-    rle = rle_encode(source, bpp)
-    if len(rle) < len(raw):
-        return rle, True
-    return raw, False
+    if compress:
+        source = prefilter_rows(glyph.levels, glyph.width, glyph.height) if prefilter else glyph.levels
+        rle = rle_encode(source, bpp)
+        if len(rle) < (len(glyph.levels) * bpp + 7) // 8:
+            return rle, True
+    return pack_levels(glyph.levels, bpp), False
 
 
 def generate_pack_c(name, font, glyphs, metrics, check=False):
@@ -682,7 +673,7 @@ def generate_pack_c(name, font, glyphs, metrics, check=False):
             if compressed:
                 if prefilter:
                     levels = unprefilter_rows(levels, g.width, g.height)
-                if levels != g.levels:
+                if bytes(levels) != g.levels:
                     raise DefinitionError(f"font.{name}: U+{g.codepoint:04X} does not decode back")
         if g.width > 255 or g.height > 255:
             raise DefinitionError(f"font.{name}: U+{g.codepoint:04X} is larger than 255 px")

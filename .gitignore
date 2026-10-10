@@ -12,5 +12,5 @@ __pycache__
 simulator/sdcard
 simulator/usb
 simulator/uvc
-simulator/nvs_data.json
+simulator/nvs_data.toml
 target

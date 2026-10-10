@@ -9,7 +9,7 @@ HARNESS="$HERE/esp-devkit/tools/harness/harness.py"
 export SIMULATOR_SDCARD_PATH="${SIMULATOR_SDCARD_PATH:-$SIM_DIR/sdcard}"
 export SIMULATOR_USBH_MSC_PATH="${SIMULATOR_USBH_MSC_PATH:-$SIM_DIR/usb}"
 export SIMULATOR_USBH_UVC_PATH="${SIMULATOR_USBH_UVC_PATH:-$SIM_DIR/uvc}"
-export SIMULATOR_NVS_PATH="${SIMULATOR_NVS_PATH:-$SIM_DIR/nvs_data.json}"
+export SIMULATOR_NVS_PATH="${SIMULATOR_NVS_PATH:-$SIM_DIR/nvs_data.toml}"
 
 sim_build() {
     [ -d "$SIM_BUILD" ] || cmake --fresh -S "$SIM_DIR" -B "$SIM_BUILD" -G Ninja

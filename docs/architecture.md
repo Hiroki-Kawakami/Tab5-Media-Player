@@ -314,9 +314,9 @@ cache disabled on both cores. The per-entry modified flag keeps a commit at
 zero flash access when nothing changed. Without an NVS partition the settings
 still work for the session and only the write is skipped.
 
-On the simulator NVS is esp-devkit's JSON-file store. Its default is relative
+On the simulator NVS is esp-devkit's text-file store. Its default is relative
 to the process cwd like the SD card redirect, so `run.sh` pins
-`SIMULATOR_NVS_PATH` to `simulator/nvs_data.json`. It outlives the process, so
+`SIMULATOR_NVS_PATH` to `simulator/nvs_data.toml`. It outlives the process, so
 whatever a verify script changes is still there for the next run; the rotation
 lock in particular has to be switched back off at the end, or every later script
 starts frozen in that orientation.
@@ -558,7 +558,7 @@ anything else that wants Wi-Fi state while the page exists has to share it.
 On the simulator `libs/wifi` runs its fake backend, driven by the `wifi-aps`,
 `wifi-connect-result`, `wifi-delay` and `wifi-drop` harness commands.
 `simulator/verify/wifi.txt` expects Wi-Fi off and switches it off again at the
-end, because the setting persists in `simulator/nvs_data.json`.
+end, because the setting persists in `simulator/nvs_data.toml`.
 
 ## Harness
 

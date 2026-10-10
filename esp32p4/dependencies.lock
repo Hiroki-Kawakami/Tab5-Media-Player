@@ -9,20 +9,6 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.5.0
-  espressif/esp_lvgl_port:
-    component_hash: d3c020b45c3dfc0d1706a83b63a1c34a6eb444a6e935f9afff79f92b7b94dcef
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=5.2'
-    - name: lvgl/lvgl
-      registry_url: https://components.espressif.com
-      require: public
-      version: '>=8,<10'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 2.9.0
   espressif/mdns:
     component_hash: b5b30022c46302eab89c1d2e3b6fb5918a627563a7462f0ee284b22b9a934967
     dependencies:
@@ -37,18 +23,9 @@ dependencies:
     source:
       type: idf
     version: 6.1.0
-  lvgl/lvgl:
-    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
-    dependencies: []
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 9.5.0
 direct_dependencies:
 - espressif/esp_audio_codec
-- espressif/esp_lvgl_port
 - espressif/mdns
-- lvgl/lvgl
-manifest_hash: 07d53181c906e124ac8e7c26ca5a3f0e45749280e3f5dc382370c98f3800901c
+manifest_hash: 4ef8874981cd55769dd0b57ffc429abcb39db44c5a1c26eda61e597756f20c66
 target: esp32p4
 version: 3.0.0

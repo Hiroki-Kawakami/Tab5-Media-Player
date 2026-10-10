@@ -424,11 +424,6 @@ Harness scripts plug and pull it with `usbh-msc-attach [dir]` /
 `usbh-msc-detach`; see `simulator/verify/usb.txt`. Those commands exist only
 on the simulator.
 
-Adding `usb_host_msc` made the component manager re-solve
-`esp32p4/dependencies.lock`, which moved LVGL to a 9.6 pre-release whose
-`lv_conf_internal.h` fails the build with `-Werror`. The lock keeps LVGL at
-9.5.0; watch for that bump whenever a managed dependency is added.
-
 ## USB audio
 
 A USB audio device on the USB-A port takes the output over while it is

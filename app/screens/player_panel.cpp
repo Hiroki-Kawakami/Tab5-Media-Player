@@ -107,7 +107,7 @@ lv_obj_t *player_panel_build(lv_obj_t *root, const char *title, std::function<vo
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(root, lv_color_white(), 0);
     lv_obj_set_flex_flow(root, LV_FLEX_FLOW_COLUMN);
-    lv_obj_remove_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root, false);
 
     build_header(root, title, std::move(on_close));
 

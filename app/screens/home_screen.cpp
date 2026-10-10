@@ -38,12 +38,12 @@ static lv_obj_t *pane_create(lv_obj_t *parent, lv_color_t bg_color) {
     auto pane = lv_container_create(parent, bg_color);
     lv_obj_set_flex_flow(pane, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_size(pane, LV_PCT(100), LV_PCT(100));
-    lv_obj_remove_flag(pane, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(pane, false);
     return pane;
 }
 
 void HomeScreen::build() {
-    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root_, false);
     lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(root_, 0, 0);
     lv_obj_set_style_pad_column(root_, 0, 0);
@@ -152,9 +152,9 @@ std::vector<const HomeScreen::MenuItem *> HomeScreen::menu_items() const {
 void HomeScreen::layout() {
     landscape_ = is_landscape();
     lv_obj_set_width(menu_pane_, landscape_ ? kMenuWidth : LV_PCT(100));
-    lv_obj_set_flag(menu_pane_, LV_OBJ_FLAG_HIDDEN, !landscape_ && !stack_.empty());
-    lv_obj_set_flag(separator_, LV_OBJ_FLAG_HIDDEN, !landscape_);
-    lv_obj_set_flag(page_pane_, LV_OBJ_FLAG_HIDDEN, !landscape_ && stack_.empty());
+    lv_obj_set_hidden(menu_pane_, !landscape_ && !stack_.empty());
+    lv_obj_set_hidden(separator_, !landscape_);
+    lv_obj_set_hidden(page_pane_, !landscape_ && stack_.empty());
     update_menu_rows();
     build_page();
 }

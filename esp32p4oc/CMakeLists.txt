@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_SOURCE_DIR}/../esp32p4/sdkconfig.defaults;${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.defaults")
 include(${CMAKE_CURRENT_SOURCE_DIR}/../esp-devkit/devkit.cmake)
-devkit_idf_init(UI_FRAMEWORK COMPONENT_DIRS ../esp32p4/main ../components/media_buffer ../components/media_tags ../components/riff_demux ../components/es_audio_demux ../components/mkv_demux ../components/mp4_demux ../components/vdec_common ../components/h264_dec ../components/mpeg2_dec ../components/airplay ../app)
+devkit_idf_init(COMPONENT_DIRS ../esp32p4/main ../components/media_buffer ../components/media_tags ../components/riff_demux ../components/es_audio_demux ../components/mkv_demux ../components/mp4_demux ../components/vdec_common ../components/h264_dec ../components/mpeg2_dec ../components/airplay ../app)
 idf_build_set_property(DEPENDENCIES_LOCK ${CMAKE_CURRENT_SOURCE_DIR}/../esp32p4/dependencies.lock)
 project(tab5-media-player-oc)

@@ -119,7 +119,7 @@ void BgmPickerScreen::show(const std::string &path) {
     lv_obj_clean(contents_);
     lv_obj_set_style_bg_color(contents_, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(contents_, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(contents_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(contents_, false);
 
     bool opened = true;
     if (path_.empty()) {
@@ -142,8 +142,8 @@ void BgmPickerScreen::show(const std::string &path) {
         }
     }
     lv_obj_set_state(use_button_, LV_STATE_DISABLED, path_.empty());
-    lv_obj_set_flag(lv_obj_get_child(back_button_, 0), LV_OBJ_FLAG_HIDDEN, path_.empty());
-    lv_obj_set_flag(back_button_, LV_OBJ_FLAG_CLICKABLE, !path_.empty());
+    lv_obj_set_hidden(lv_obj_get_child(back_button_, 0), path_.empty());
+    lv_obj_set_clickable(back_button_, !path_.empty());
 
     if (!opened || entries_.empty()) {
         lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
@@ -205,10 +205,10 @@ lv_obj_t *BgmPickerScreen::createRow(lv_obj_t *parent) {
     lv_obj_set_style_pad_hor(row, 24, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_t *separator = lv_hor_separator_create(row);
-    lv_obj_add_flag(separator, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_remove_flag(separator, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ignore_layout(separator, true);
+    lv_obj_set_clickable(separator, false);
     lv_obj_align(separator, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(row, true);
     return row;
 }
 
@@ -219,7 +219,7 @@ void BgmPickerScreen::bindRow(lv_obj_t *row, std::size_t index) {
         : (strcmp(storages_[index], kUsbMountPoint) == 0 ? LV_SYMBOL_USB : LV_SYMBOL_SD_CARD);
     lv_label_set_text(lv_obj_get_child(row, 0), icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
-    lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
+    lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
 }
 
 void BgmPickerScreen::openStorage(const char *mount_point) {

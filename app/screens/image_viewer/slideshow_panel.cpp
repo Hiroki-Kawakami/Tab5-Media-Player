@@ -49,13 +49,13 @@ struct PanelState {
 
     void show_direction() const {
         const bool hidden = !transition_has_direction(values.transition);
-        lv_obj_set_flag(direction_separator, LV_OBJ_FLAG_HIDDEN, hidden);
-        lv_obj_set_flag(direction_row, LV_OBJ_FLAG_HIDDEN, hidden);
+        lv_obj_set_hidden(direction_separator, hidden);
+        lv_obj_set_hidden(direction_row, hidden);
     }
 
     void show_bgm() const {
         lv_label_set_text(source_value, bgm_source_text(values.bgm_path));
-        for (lv_obj_t *row : bgm_rows) lv_obj_set_flag(row, LV_OBJ_FLAG_HIDDEN, !values.bgm);
+        for (lv_obj_t *row : bgm_rows) lv_obj_set_hidden(row, !values.bgm);
         lv_obj_update_layout(contents);
         lv_obj_readjust_scroll(contents, LV_ANIM_OFF);
     }
@@ -126,7 +126,7 @@ void image_slideshow_panel_build(lv_obj_t *root, const SlideshowPanelValues &val
     state->bgm_rows[1] = row;
     lv_obj_set_height(row, kSourceRowHeight);
     lv_obj_set_style_pad_column(row, 8, 0);
-    lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(row, true);
     lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [on_choose_bgm](lv_event_t *) { on_choose_bgm(); });
     lv_obj_set_flex_grow(lv_obj_get_child(row, 0), 0);
     state->source_value = lv_setting_value_create(row, &kPanelColors);

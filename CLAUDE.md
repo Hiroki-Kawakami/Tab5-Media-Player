@@ -45,7 +45,7 @@ submodule.
   fonts, images and compressed font packs from a JSON definition at build time.
 - `esp-devkit/docs/harness.md` — scripted UI verification: touch/button
   injection and panel capture, same script on simulator or board.
-- `esp-devkit/ui_framework/inc/display_manager.hpp` — the LVGL display/touch
+- `esp-devkit/libs/ui_framework/inc/display_manager.hpp` — the LVGL display/touch
   manager; app code calls `display_manager.create_display` once and otherwise
   treats it as infrastructure.
 

@@ -171,7 +171,7 @@ lv_obj_t *AudioPlayerScreen::buildArtwork(lv_obj_t *parent, int32_t side) {
     lv_obj_set_size(artwork_, side, side);
     lv_obj_set_style_radius(artwork_, kArtworkRadius, 0);
     lv_obj_set_style_clip_corner(artwork_, true, 0);
-    lv_obj_remove_flag(artwork_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(artwork_, false);
 
     resetArtwork();
     applyArtwork();

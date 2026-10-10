@@ -176,7 +176,7 @@ void AirPlayReceiverScreen::buildArtwork(lv_obj_t *parent) {
     lv_obj_set_size(artwork_, kArtworkSide, kArtworkSide);
     lv_obj_set_style_radius(artwork_, kArtworkRadius, 0);
     lv_obj_set_style_clip_corner(artwork_, true, 0);
-    lv_obj_remove_flag(artwork_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(artwork_, false);
 }
 
 void AirPlayReceiverScreen::showArtworkIcon(const char *icon) {
@@ -290,7 +290,7 @@ void AirPlayReceiverScreen::buildSeekRow(lv_obj_t *parent) {
     seek_ = media_slider(row, kSeekRange, lv_color_hex(kForegroundColor),
                          lv_color_hex(kTrackColor));
     lv_obj_set_flex_grow(seek_, 1);
-    lv_obj_remove_flag(seek_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(seek_, false);
     lv_obj_set_style_opa(seek_, LV_OPA_TRANSP, LV_PART_KNOB);
 
     total_label_ = lv_label_create(row);
@@ -335,11 +335,11 @@ void AirPlayReceiverScreen::buildVolumeRow(lv_obj_t *parent) {
     lv_obj_set_size(left, kTimeWidth, LV_SIZE_CONTENT);
     lv_obj_t *icon = media_icon_button(left, kIconButton, &icon_36, TABLER_VOLUME, foreground,
                                        &volume_label_);
-    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(icon, false);
 
     volume_slider_ = media_slider(row, kVolumeRange, foreground, lv_color_hex(kTrackColor));
     lv_obj_set_flex_grow(volume_slider_, 1);
-    lv_obj_remove_flag(volume_slider_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(volume_slider_, false);
     lv_obj_set_style_opa(volume_slider_, LV_OPA_TRANSP, LV_PART_KNOB);
 
     lv_spacer_create(row, kTimeWidth, 1);

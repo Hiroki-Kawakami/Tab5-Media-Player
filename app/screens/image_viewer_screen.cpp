@@ -70,7 +70,7 @@ static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_
     lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
     lv_obj_set_size(bar, width, height);
     lv_obj_align(bar, align, 0, 0);
-    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(bar, false);
     return bar;
 }
 
@@ -83,7 +83,7 @@ void ImageViewerScreen::build() {
     lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(root_, lv_color_white(), 0);
     lv_obj_set_style_pad_all(root_, 0, 0);
-    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(root_, false);
     lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
         if ((lv_obj_get_width(root_) > lv_obj_get_height(root_)) == landscape_) return;
         lv_async_call([this] {
@@ -104,7 +104,7 @@ void ImageViewerScreen::buildUi() {
 
     stage_ = lv_container_create(root_);
     lv_obj_set_size(stage_, lv_pct(100), lv_pct(100));
-    lv_obj_remove_flag(stage_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(stage_, false);
     lv_obj_add_event_fn(stage_, LV_EVENT_PRESSED, [this](lv_event_t *event) { handlePress(event); });
     lv_obj_add_event_fn(stage_, LV_EVENT_PRESSING, [this](lv_event_t *event) { handleMove(event); });
     lv_obj_add_event_fn(stage_, LV_EVENT_CLICKED, [this](lv_event_t *) {
@@ -131,11 +131,11 @@ void ImageViewerScreen::buildUi() {
     buildBottomBar(bottom_bar_);
     buildPanels();
 
-    lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
-    lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
-    lv_obj_set_flag(slideshow_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Slideshow);
-    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
-    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
+    lv_obj_set_hidden(top_bar_, mode_ != UiMode::Bars);
+    lv_obj_set_hidden(bottom_bar_, mode_ != UiMode::Bars);
+    lv_obj_set_hidden(slideshow_, mode_ != UiMode::Slideshow);
+    lv_obj_set_hidden(settings_, mode_ != UiMode::Settings);
+    lv_obj_set_hidden(info_, mode_ != UiMode::Info);
     lv_obj_update_layout(root_);
 
     if (shown_fb_ >= 0) createImage();
@@ -168,7 +168,7 @@ void ImageViewerScreen::buildBottomBar(lv_obj_t *parent) {
                         [this](lv_event_t *) { requestMode(UiMode::Settings); });
 
     counter_label_ = lv_label_create(parent);
-    lv_obj_add_flag(counter_label_, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_ignore_layout(counter_label_, true);
     lv_obj_set_font_role(counter_label_, LV_WIDGETS_FONT_BODY);
     lv_obj_align(counter_label_, LV_ALIGN_CENTER, 0, 0);
 
@@ -254,11 +254,11 @@ void ImageViewerScreen::setMode(UiMode mode) {
     if (!top_bar_) return;
     if (mode == UiMode::Info) populateInfo();
     if (mode == UiMode::Settings) lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
-    lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
-    lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Bars);
-    lv_obj_set_flag(slideshow_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Slideshow);
-    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Settings);
-    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode != UiMode::Info);
+    lv_obj_set_hidden(top_bar_, mode != UiMode::Bars);
+    lv_obj_set_hidden(bottom_bar_, mode != UiMode::Bars);
+    lv_obj_set_hidden(slideshow_, mode != UiMode::Slideshow);
+    lv_obj_set_hidden(settings_, mode != UiMode::Settings);
+    lv_obj_set_hidden(info_, mode != UiMode::Info);
 }
 
 void ImageViewerScreen::requestMode(UiMode mode) {
@@ -306,13 +306,13 @@ void ImageViewerScreen::setMessage(const std::string &message, bool failed) {
     if (!message_) return;
     lv_label_set_text(message_, message.c_str());
     lv_obj_set_style_text_color(message_, failed ? lv_color_hex(kMessageColor) : lv_color_white(), 0);
-    lv_obj_set_flag(message_, LV_OBJ_FLAG_HIDDEN, message.empty());
+    lv_obj_set_hidden(message_, message.empty());
 }
 
 void ImageViewerScreen::createImage() {
     image_ = image_object_create(stage_, framebuffer(shown_fb_), shown_size_, panel_rgb888());
     if (!image_) return;
-    lv_obj_remove_flag(image_, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_clickable(image_, false);
     lv_obj_move_to_index(image_, 0);
 }
 

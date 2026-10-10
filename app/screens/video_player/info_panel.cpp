@@ -187,7 +187,7 @@ static void cache_contents(lv_obj_t *contents) {
     });
 
     lv_obj_t *page = lv_display_get_screen_active(offscreen);
-    lv_obj_remove_flag(page, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(page, false);
     lv_obj_set_flex_flow(page, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_text_color(page, lv_color_white(), 0);
     lv_setting_page_style(page, &kPanelColors);

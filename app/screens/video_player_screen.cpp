@@ -73,7 +73,7 @@ static lv_obj_t *create_bar(lv_obj_t *parent, int32_t width, int32_t height, lv_
     lv_obj_t *bar = lv_container_create(parent, lv_color_hex(kBarColor));
     lv_obj_set_size(bar, width, height);
     lv_obj_align(bar, align, 0, 0);
-    lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(bar, false);
     return bar;
 }
 
@@ -166,7 +166,7 @@ void VideoPlayerScreen::buildUi() {
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(screen, lv_color_white(), 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
-    lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(screen, false);
 
     shown_elapsed_s_ = -2;
     shown_total_s_ = -2;
@@ -176,7 +176,7 @@ void VideoPlayerScreen::buildUi() {
     /* Styleless, so a press changes nothing and never invalidates the video. */
     lv_obj_t *video = lv_container_create(screen);
     lv_obj_set_size(video, lv_pct(100), lv_pct(100));
-    lv_obj_remove_flag(video, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(video, false);
     lv_obj_add_event_fn(video, LV_EVENT_CLICKED, [this](lv_event_t *) {
         requestMode(mode_ == UiMode::Hidden ? UiMode::Bars : UiMode::Hidden);
     });
@@ -197,10 +197,10 @@ void VideoPlayerScreen::buildUi() {
         : create_bar(screen, kLandscapePanelWidth, lv_pct(100), LV_ALIGN_RIGHT_MID);
     if (mode_ == UiMode::Info) populateInfo();
 
-    lv_obj_set_flag(top_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
-    lv_obj_set_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Bars);
-    lv_obj_set_flag(settings_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Settings);
-    lv_obj_set_flag(info_, LV_OBJ_FLAG_HIDDEN, mode_ != UiMode::Info);
+    lv_obj_set_hidden(top_bar_, mode_ != UiMode::Bars);
+    lv_obj_set_hidden(bottom_bar_, mode_ != UiMode::Bars);
+    lv_obj_set_hidden(settings_, mode_ != UiMode::Settings);
+    lv_obj_set_hidden(info_, mode_ != UiMode::Info);
 
     /* A bar sits where it was created until the layout runs, and every area it
      * leaves on the way is painted with the screen behind it -- black, over the
@@ -224,11 +224,11 @@ void VideoPlayerScreen::setMode(UiMode mode) {
      * back, and the video has to be clipped out of an area before the UI is
      * drawn into it. */
     if (mode != UiMode::Bars) {
-        lv_obj_add_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(top_bar_, true);
+        lv_obj_set_hidden(bottom_bar_, true);
     }
-    if (mode != UiMode::Settings) lv_obj_add_flag(settings_, LV_OBJ_FLAG_HIDDEN);
-    if (mode != UiMode::Info) lv_obj_add_flag(info_, LV_OBJ_FLAG_HIDDEN);
+    if (mode != UiMode::Settings) lv_obj_set_hidden(settings_, true);
+    if (mode != UiMode::Info) lv_obj_set_hidden(info_, true);
     lv_refr_now(ui_);
     bsp_display_wait_draw();
     video_presenter_set_ui_insets(insets());
@@ -236,14 +236,14 @@ void VideoPlayerScreen::setMode(UiMode mode) {
 
     if (mode == UiMode::Bars) {
         media_volume_show(volume_label_, volume_slider_, audio_output_volume());
-        lv_obj_remove_flag(top_bar_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(top_bar_, false);
+        lv_obj_set_hidden(bottom_bar_, false);
     } else if (mode == UiMode::Settings) {
         lv_obj_send_event(settings_, LV_EVENT_REFRESH, nullptr);
-        lv_obj_remove_flag(settings_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(settings_, false);
     } else if (mode == UiMode::Info) {
         populateInfo();
-        lv_obj_remove_flag(info_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_hidden(info_, false);
     }
     if (mode == UiMode::Hidden) return;
     lv_display_trigger_activity(ui_);

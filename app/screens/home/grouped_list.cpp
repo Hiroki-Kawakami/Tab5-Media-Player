@@ -104,5 +104,5 @@ lv_obj_t *lv_grouped_row_create(lv_obj_t *section, const char *icon, const char 
 }
 
 void lv_grouped_row_set_arrow_visible(lv_obj_t *row, bool visible) {
-    lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !visible);
+    lv_obj_set_hidden(lv_obj_get_child(row, 2), !visible);
 }

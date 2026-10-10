@@ -200,18 +200,18 @@ void WifiPage::update_status() {
     lv_obj_set_style_text_color(status_, lv_color_hex(color), 0);
 
     const bool has_ip = status.state == wifi::State::Connected && !status.ip.empty();
-    lv_obj_set_flag(ip_row_, LV_OBJ_FLAG_HIDDEN, !has_ip);
+    lv_obj_set_hidden(ip_row_, !has_ip);
     if (has_ip) lv_label_set_text(ip_value_, status.ip.c_str());
 
     const std::string mac = wifi::manager().mac_address();
-    lv_obj_set_flag(mac_row_, LV_OBJ_FLAG_HIDDEN, mac.empty());
+    lv_obj_set_hidden(mac_row_, mac.empty());
     if (!mac.empty()) lv_label_set_text(mac_value_, mac.c_str());
 }
 
 void WifiPage::rebuild_list() {
     if (!list_) return;
     lv_obj_clean(list_);
-    lv_obj_set_flag(list_, LV_OBJ_FLAG_HIDDEN, !scanning_ && !wifi::manager().enabled());
+    lv_obj_set_hidden(list_, !scanning_ && !wifi::manager().enabled());
 
     if (scanning_) {
         auto row = list_message_create(list_, "Searching for networks...");
@@ -249,7 +249,7 @@ void WifiPage::rebuild_list() {
             lv_obj_set_style_text_font(trailing, &icon_36, 0);
             lv_label_set_text(trailing, TABLER_LOCK);
         } else {
-            lv_obj_add_flag(trailing, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_hidden(trailing, true);
         }
         lv_obj_add_event_fn(row, LV_EVENT_CLICKED, [this, ssid, secured](lv_event_t *) {
             select(ssid, secured);
@@ -296,7 +296,7 @@ void WifiPage::open_password(const std::string &ssid) {
     lv_modal_button_create(buttons, "Connect", LV_MODAL_BUTTON_TYPE_PRIMARY, submit);
 
     keyboard_ = lv_keyboard_create(screen);
-    lv_obj_add_flag(keyboard_, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_ignore_layout(keyboard_, true);
     lv_obj_set_size(keyboard_, LV_PCT(100), LV_PCT(40));
     lv_obj_set_font_role(keyboard_, LV_WIDGETS_FONT_BODY);
     lv_obj_align(keyboard_, LV_ALIGN_BOTTOM_MID, 0, 0);

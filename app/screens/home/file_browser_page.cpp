@@ -125,7 +125,7 @@ void FileBrowserPage::meta_ready(const std::string &path) {
 void FileBrowserPage::build(lv_obj_t *contents) {
     lv_obj_set_style_bg_color(contents, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(contents, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(contents, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollable(contents, false);
     list_ = nullptr;
 
     if (!loaded_) {
@@ -216,8 +216,8 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
     lv_obj_set_style_pad_hor(row, 24, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_t *separator = lv_hor_separator_create(row);
-    lv_obj_add_flag(separator, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_remove_flag(separator, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ignore_layout(separator, true);
+    lv_obj_set_clickable(separator, false);
     lv_obj_align(separator, LV_ALIGN_BOTTOM_MID, 0, 0);
     return row;
 }
@@ -234,15 +234,15 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     lv_obj_t *label = lv_obj_get_child(row, 0);
     lv_label_set_text(label, icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
-    lv_obj_set_flag(lv_obj_get_child(row, 2), LV_OBJ_FLAG_HIDDEN, !entry.directory);
-    lv_obj_set_flag(row, LV_OBJ_FLAG_CLICKABLE,
-                    entry.directory || entry.kind != MediaKind::None);
+    lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
+    lv_obj_set_clickable(row,
+                         entry.directory || entry.kind != MediaKind::None);
 
     std::shared_ptr<const ImagePixels> pixels;
     if (!entry.directory && has_thumbnail(entry.kind)) {
         pixels = media_cache_thumbnail(entry_path(index), kThumbBox);
     }
-    lv_obj_set_flag(label, LV_OBJ_FLAG_HIDDEN, pixels != nullptr);
+    lv_obj_set_hidden(label, pixels != nullptr);
     /* Inserted first so flex puts it where the icon was; everything indexed
        above is therefore read before this point. */
     if (lv_obj_t *image = pixels ? image_object_create(row, std::move(pixels)) : nullptr) {

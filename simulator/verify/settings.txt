@@ -1,3 +1,6 @@
+reset
+imu rot0
+wait 500
 settle
 tap 360 618
 settle

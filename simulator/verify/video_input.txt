@@ -1,3 +1,6 @@
+reset
+imu rot0
+wait 500
 settle
 usbh-msc-detach
 usbh-uvc-detach

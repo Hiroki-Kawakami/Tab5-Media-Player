@@ -1,5 +1,8 @@
 # Tagged samples: Music/z_tag_* (ID3v2.4 + JPEG cover, ID3v2.3 + wide PNG cover,
 # ID3v1 only, MP4 ilst + covr, WAVE LIST INFO) and Movies/z_tag.mkv.
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

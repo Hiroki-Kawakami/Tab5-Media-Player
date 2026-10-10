@@ -7,6 +7,9 @@
 #   綺麗な絆と煌めきの凛.mp4
 #   薔薇と檸檬の儚い夢.mp4
 #   音楽ファイル　日本語タイトル.m4a
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

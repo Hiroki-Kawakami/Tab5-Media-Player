@@ -3,6 +3,9 @@
 # where the image files are. l_exif_thumb_3000.jpg carries an EXIF thumbnail of
 # a different picture than its own on purpose, so the capture shows which of the
 # two paths served the row.
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

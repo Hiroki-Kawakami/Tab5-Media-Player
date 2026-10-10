@@ -1,2 +1,5 @@
+reset
+imu rot0
+wait 500
 settle
 capture home.jpg

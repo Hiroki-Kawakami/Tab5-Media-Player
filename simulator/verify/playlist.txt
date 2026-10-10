@@ -1,6 +1,9 @@
 # Music/ is the audio playlist: a_aac, b_opus, c_alac (unplayable), d_pcm ...
 # Movies/Anime holds a single unplayable file, which is where a one-entry
 # playlist and a manual open that fails are checked.
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

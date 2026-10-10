@@ -10,6 +10,9 @@
 # back, and Cancel leaves the source as it was. The transition is set to Fade first so the
 # rows sit where the script expects, and music is switched off at the end;
 # the chosen source stays in NVS.
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

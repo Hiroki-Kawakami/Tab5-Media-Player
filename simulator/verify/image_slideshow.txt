@@ -9,6 +9,9 @@
 # Fade first, checks 10 s and the others last and puts 5 s, Fade and
 # left-to-right back. A list longer than it may be opens scrolled to the
 # selected item, so it is dragged to the top first.
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

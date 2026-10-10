@@ -3,6 +3,9 @@
 # take, a file that is not an image, a JPEG whose frame header sits past the
 # window the probe reads, a progressive JPEG big enough to need megabytes of
 # coefficients, and two pictures with EXIF (a JPEG APP1 and a PNG eXIf chunk).
+reset
+imu rot0
+wait 500
 settle
 tap 360 226
 settle

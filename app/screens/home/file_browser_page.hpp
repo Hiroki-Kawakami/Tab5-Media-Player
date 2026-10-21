@@ -9,8 +9,10 @@
 #include <string>
 #include <vector>
 #include "home_page.hpp"
+#include "media/image_codec.hpp"
 #include "media/media_directory.hpp"
 #include "playback/playlist.hpp"
+#include "settings.hpp"
 #include "widgets.hpp"
 
 class FileBrowserPage : public HomePage, private ListDataSource {
@@ -26,12 +28,11 @@ public:
     bool is_under(const std::string &mount_point) const override;
 
 private:
-    enum class Layout { Compact, List, Grid };
-
     std::string path_;
     std::string title_;
     PsramVector<DirectoryEntry> entries_;
-    Layout layout_ = Layout::Compact;
+    BrowserLayout layout_ = BrowserLayout::Compact;
+    lv_obj_t *contents_ = nullptr;
     bool loaded_ = false;
     bool opened_ = false;
     lv_obj_t *list_ = nullptr;
@@ -43,6 +44,8 @@ private:
     PsramVector<PsramString> visible_;
 
     void open_menu(lv_obj_t *anchor);
+    void set_layout(BrowserLayout layout);
+    ImageSize thumb_box() const;
     std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
     std::string entry_path(std::size_t index) const;
     void request_visible();

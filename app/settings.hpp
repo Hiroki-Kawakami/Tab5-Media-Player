@@ -19,6 +19,9 @@ inline constexpr int kDefaultUsbVolume = 40;
 inline constexpr int kMinSlideshowInterval = 5;
 inline constexpr int kMaxSlideshowInterval = 3600;
 
+enum class BrowserLayout : uint8_t { Compact, List, Grid };
+inline constexpr int kBrowserLayouts = 3;
+
 void settings_init();
 void settings_apply();
 void settings_commit();
@@ -86,3 +89,6 @@ void settings_set_video_input_format(uint16_t width, uint16_t height, uint32_t i
 
 bool settings_video_input_stretch();
 void settings_set_video_input_stretch(bool stretch);
+
+BrowserLayout settings_browser_layout();
+void settings_set_browser_layout(BrowserLayout layout);

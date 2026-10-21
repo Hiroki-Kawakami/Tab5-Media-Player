@@ -21,6 +21,9 @@
 static constexpr int32_t kRowHeight = 80;
 static constexpr int32_t kThumbSide = 56;
 static constexpr ImageSize kThumbBox = { kThumbSide, kThumbSide };
+static constexpr int32_t kListRowHeight = 132;
+static constexpr ImageSize kListThumbBox = { 192, 108 };
+static constexpr uint32_t kListThumbColor = 0xeeeeee;
 static constexpr std::size_t kLookahead = 2;
 static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
@@ -71,7 +74,7 @@ void FileBrowserPage::request_visible() {
     if (first == requested_first_) return;
     requested_first_ = first;
     const int32_t height = lv_obj_get_height(list_);
-    const std::size_t rows = height > 0 ? (std::size_t)(height / kRowHeight) + 1 : 1;
+    const std::size_t rows = height > 0 ? (std::size_t)(height / rowHeight()) + 1 : 1;
     const std::size_t start = first > kLookahead ? first - kLookahead : 0;
     const std::size_t end = std::min(entries_.size(), first + rows + kLookahead);
 
@@ -93,7 +96,7 @@ void FileBrowserPage::request_visible() {
     }
     for (std::size_t i = start; i < end; i++) {
         if (entries_[i].directory || !has_thumbnail(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, kThumbBox,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, thumb_box(),
                             MetaPriority::Visible, token_);
     }
     prefetch_rest();
@@ -105,7 +108,7 @@ void FileBrowserPage::prefetch_rest() {
     std::size_t queued = 0;
     for (std::size_t i = 0; i < entries_.size() && queued < kPrefetchLimit; i++) {
         if (entries_[i].directory || entries_[i].kind != MediaKind::Audio) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, kThumbBox,
+        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, thumb_box(),
                             MetaPriority::Idle, idle_token_);
         queued++;
     }
@@ -131,32 +134,53 @@ void FileBrowserPage::build_navigation(lv_obj_t *navigation) {
 
 void FileBrowserPage::open_menu(lv_obj_t *anchor) {
     struct LayoutItem {
-        Layout layout;
+        BrowserLayout layout;
         const char *icon;
         const char *label;
     };
     static constexpr LayoutItem kLayouts[] = {
-        {Layout::Compact, TABLER_LIST, "Compact"},
-        {Layout::List, TABLER_LAYOUT_LIST, "List"},
-        {Layout::Grid, TABLER_LAYOUT_GRID, "Grid"},
+        {BrowserLayout::Compact, TABLER_LIST, "Compact"},
+        {BrowserLayout::List, TABLER_LIST_DETAILS, "List"},
+        {BrowserLayout::Grid, TABLER_LAYOUT_GRID, "Grid"},
     };
 
     auto popover = lv_popover_open(anchor);
     lv_popover_heading_create(popover, "Layout");
     for (const LayoutItem &item : kLayouts) {
         auto row = lv_popover_row_create(popover, item.icon, &icon_36, item.label,
-                                         [this, layout = item.layout](lv_event_t *) { layout_ = layout; });
-        lv_popover_row_set_checked(row, layout_ == item.layout);
+                                         [this, layout = item.layout](lv_event_t *) { set_layout(layout); });
+        lv_popover_row_set_checked(row, settings_browser_layout() == item.layout);
     }
     lv_popover_separator_create(popover);
     lv_popover_row_create(popover, TABLER_PENCIL, &icon_36, "Edit", nullptr);
+}
+
+void FileBrowserPage::set_layout(BrowserLayout layout) {
+    if (layout == settings_browser_layout()) return;
+    settings_set_browser_layout(layout);
+    settings_commit();
+    if (!list_) return;
+
+    const std::size_t first = lv_list_first_visible_row(list_);
+    release_requests();
+    lv_obj_clean(contents_);
+    scroll_y_ = 0;
+    prefetched_ = false;
+    build(contents_);
+    if (list_ && first != SIZE_MAX) lv_list_show_row(list_, first);
+}
+
+ImageSize FileBrowserPage::thumb_box() const {
+    return layout_ == BrowserLayout::List ? kListThumbBox : kThumbBox;
 }
 
 void FileBrowserPage::build(lv_obj_t *contents) {
     lv_obj_set_style_bg_color(contents, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(contents, LV_OPA_COVER, 0);
     lv_obj_set_scrollable(contents, false);
+    contents_ = contents;
     list_ = nullptr;
+    layout_ = settings_browser_layout();
 
     if (!loaded_) {
         opened_ = media_directory_list(path_, &entries_);
@@ -202,6 +226,7 @@ void FileBrowserPage::on_disappear() {
 
 void FileBrowserPage::save_state() {
     release_requests();
+    contents_ = nullptr;
     if (!list_) return;
     scroll_y_ = lv_obj_get_scroll_y(list_);
     list_ = nullptr;
@@ -216,23 +241,39 @@ std::size_t FileBrowserPage::rowCount() const {
 }
 
 int32_t FileBrowserPage::rowHeight() const {
-    return kRowHeight;
+    return layout_ == BrowserLayout::List ? kListRowHeight : kRowHeight;
 }
 
 lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
+    const bool list = layout_ == BrowserLayout::List;
     lv_obj_t *row = lv_list_row_create(parent);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 24, 0);
 
-    lv_obj_t *icon = lv_label_create(row);
+    lv_obj_t *frame = row;
+    if (list) {
+        frame = lv_container_create(row, lv_color_hex(kListThumbColor));
+        lv_obj_set_size(frame, kListThumbBox.width, kListThumbBox.height);
+        lv_obj_set_style_radius(frame, 6, 0);
+        lv_obj_set_style_clip_corner(frame, true, 0);
+        lv_obj_set_clickable(frame, false);
+    }
+    lv_obj_t *icon = lv_label_create(frame);
     lv_obj_set_width(icon, kThumbSide);
     lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(icon, &icon_36, 0);
+    lv_obj_set_style_text_font(icon, list ? &icon_48 : &icon_36, 0);
+    if (list) lv_obj_center(icon);
 
+    const int32_t line_height = lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
     lv_obj_t *name = lv_label_create(row);
     lv_obj_set_flex_grow(name, 1);
-    lv_obj_set_height(name, lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)));
+    if (list) {
+        lv_obj_set_height(name, LV_SIZE_CONTENT);
+        lv_obj_set_style_max_height(name, 2 * line_height, 0);
+    } else {
+        lv_obj_set_height(name, line_height);
+    }
     lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_font_role(name, LV_WIDGETS_FONT_BODY);
 
@@ -259,9 +300,11 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
                      : entry.kind == MediaKind::Audio ? TABLER_MUSIC
                      : entry.kind == MediaKind::Image ? TABLER_PHOTO
                                                       : TABLER_FILE;
-    lv_obj_t *first = lv_obj_get_child(row, 0);
+    const bool list = layout_ == BrowserLayout::List;
+    lv_obj_t *frame = list ? lv_obj_get_child(row, 0) : row;
+    lv_obj_t *first = lv_obj_get_child(frame, 0);
     if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
-    lv_obj_t *label = lv_obj_get_child(row, 0);
+    lv_obj_t *label = lv_obj_get_child(frame, 0);
     lv_label_set_text(label, icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
@@ -270,16 +313,19 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
 
     std::shared_ptr<const ImagePixels> pixels;
     if (!entry.directory && has_thumbnail(entry.kind)) {
-        pixels = media_cache_thumbnail(entry_path(index), kThumbBox);
+        pixels = media_cache_thumbnail(entry_path(index), thumb_box());
     }
     lv_obj_set_hidden(label, pixels != nullptr);
     /* Inserted first so flex puts it where the icon was; everything indexed
        above is therefore read before this point. */
-    if (lv_obj_t *image = pixels ? image_object_create(row, std::move(pixels)) : nullptr) {
-        lv_obj_set_size(image, kThumbSide, kThumbSide);
+    if (lv_obj_t *image = pixels ? image_object_create(frame, std::move(pixels)) : nullptr) {
+        const ImageSize box = thumb_box();
+        lv_obj_set_size(image, box.width, box.height);
         lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
-        lv_obj_set_style_radius(image, 6, 0);
-        lv_obj_set_style_clip_corner(image, true, 0);
+        if (!list) {
+            lv_obj_set_style_radius(image, 6, 0);
+            lv_obj_set_style_clip_corner(image, true, 0);
+        }
         lv_obj_move_to_index(image, 0);
     }
 }

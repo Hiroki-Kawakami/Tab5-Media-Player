@@ -208,6 +208,10 @@ Setting<"vinheight", uint16_t> s_video_input_height{0};
 Setting<"vininterval", uint32_t> s_video_input_interval{0};
 Setting<"vinstretch", uint8_t, sanitize_flag> s_video_input_stretch{0};
 
+Setting<"browserlayout", uint8_t, +[](int layout) -> uint8_t {
+    return layout >= 0 && layout < kBrowserLayouts ? layout : 0;
+}> s_browser_layout{(uint8_t)BrowserLayout::Compact};
+
 template <typename Fn>
 void for_each_setting(Fn &&fn) {
     fn(s_display_brightness);
@@ -234,6 +238,7 @@ void for_each_setting(Fn &&fn) {
     fn(s_video_input_height);
     fn(s_video_input_interval);
     fn(s_video_input_stretch);
+    fn(s_browser_layout);
 }
 
 }  // namespace
@@ -449,4 +454,12 @@ bool settings_video_input_stretch() {
 
 void settings_set_video_input_stretch(bool stretch) {
     s_video_input_stretch.set(stretch);
+}
+
+BrowserLayout settings_browser_layout() {
+    return (BrowserLayout)s_browser_layout.get();
+}
+
+void settings_set_browser_layout(BrowserLayout layout) {
+    s_browser_layout.set((int)layout);
 }

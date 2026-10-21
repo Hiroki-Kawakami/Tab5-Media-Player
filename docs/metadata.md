@@ -180,10 +180,10 @@ file the user tapped failed with "cannot open the file". So:
 | thumbnails | `image_id` + box | RGB565 pixels | 2 MB |
 | pictures | `image_id` + box | the fitted picture, re-encoded as JPEG | 4 MB |
 
-A request carries the box it has to fit inside, not a side: a thumbnail and the
-artwork are squares (56 and 552 px), but a picture on screen is 720x1280 or
-1280x720 and fitting it into a square of the longer side would be a different
-picture. It also says which of the two it wants. `MetaWantThumbnail` pixels are
+A request carries the box it has to fit inside, not a side: a Compact row's
+thumbnail and the artwork are squares (56 and 552 px), but a List row's
+thumbnail is 192x108 and a picture on screen is 720x1280 or 1280x720, and
+fitting either into a square of the longer side would be a different picture. It also says which of the two it wants. `MetaWantThumbnail` pixels are
 handed straight to LVGL. `MetaWantImage` pictures are re-encoded with the JPEG
 hardware at quality 90, which turns a 608 KB artwork into 40-60 KB, and
 `media_cache_read_image()` expands one into the caller's buffer on the

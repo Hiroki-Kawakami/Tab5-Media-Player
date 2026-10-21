@@ -20,7 +20,12 @@
         "TABLER_PLAYER_TRACK_PREV": "tabler/player-track-prev.svg",
         "TABLER_PLAYER_TRACK_NEXT": "tabler/player-track-next.svg",
         "TABLER_CIRCLE_ARROW_LEFT": "tabler/circle-arrow-left.svg",
-        "TABLER_CIRCLE_ARROW_RIGHT": "tabler/circle-arrow-right.svg"
+        "TABLER_CIRCLE_ARROW_RIGHT": "tabler/circle-arrow-right.svg",
+        "TABLER_FOLDER_FILLED": "tabler/folder-filled.svg",
+        "TABLER_MUSIC": "tabler/music.svg",
+        "TABLER_PHOTO": "tabler/photo.svg",
+        "TABLER_MOVIE": "tabler/movie.svg",
+        "TABLER_FILE": "tabler/file.svg"
       }
     },
     "icon_36": {
@@ -56,7 +61,7 @@
         "TABLER_FILE": "tabler/file.svg",
         "TABLER_DOTS": "tabler/dots.svg",
         "TABLER_LIST": "tabler/list.svg",
-        "TABLER_LAYOUT_LIST": "tabler/layout-list.svg",
+        "TABLER_LIST_DETAILS": "tabler/list-details.svg",
         "TABLER_LAYOUT_GRID": "tabler/layout-grid.svg",
         "TABLER_PENCIL": "tabler/pencil.svg"
       }

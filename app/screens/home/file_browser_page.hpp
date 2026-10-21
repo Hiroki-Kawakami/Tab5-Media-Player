@@ -18,6 +18,7 @@ public:
     FileBrowserPage(std::string path, std::string title);
     ~FileBrowserPage() override;
     const std::string &title() const override { return title_; }
+    void build_navigation(lv_obj_t *navigation) override;
     void build(lv_obj_t *contents) override;
     void save_state() override;
     void on_appear() override;
@@ -25,9 +26,12 @@ public:
     bool is_under(const std::string &mount_point) const override;
 
 private:
+    enum class Layout { Compact, List, Grid };
+
     std::string path_;
     std::string title_;
     PsramVector<DirectoryEntry> entries_;
+    Layout layout_ = Layout::Compact;
     bool loaded_ = false;
     bool opened_ = false;
     lv_obj_t *list_ = nullptr;
@@ -38,6 +42,7 @@ private:
     bool prefetched_ = false;
     PsramVector<PsramString> visible_;
 
+    void open_menu(lv_obj_t *anchor);
     std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
     std::string entry_path(std::size_t index) const;
     void request_visible();

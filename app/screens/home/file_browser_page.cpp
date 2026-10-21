@@ -123,6 +123,35 @@ void FileBrowserPage::meta_ready(const std::string &path) {
     }
 }
 
+void FileBrowserPage::build_navigation(lv_obj_t *navigation) {
+    auto button = lv_button_create(lv_navigation_actions(navigation), LV_BUTTON_STYLE_NAVIGATION);
+    lv_button_set_text(button, TABLER_DOTS, &icon_36);
+    lv_obj_add_event_fn(button, LV_EVENT_CLICKED, [this, button](lv_event_t *) { open_menu(button); });
+}
+
+void FileBrowserPage::open_menu(lv_obj_t *anchor) {
+    struct LayoutItem {
+        Layout layout;
+        const char *icon;
+        const char *label;
+    };
+    static constexpr LayoutItem kLayouts[] = {
+        {Layout::Compact, TABLER_LIST, "Compact"},
+        {Layout::List, TABLER_LAYOUT_LIST, "List"},
+        {Layout::Grid, TABLER_LAYOUT_GRID, "Grid"},
+    };
+
+    auto popover = lv_popover_open(anchor);
+    lv_popover_heading_create(popover, "Layout");
+    for (const LayoutItem &item : kLayouts) {
+        auto row = lv_popover_row_create(popover, item.icon, &icon_36, item.label,
+                                         [this, layout = item.layout](lv_event_t *) { layout_ = layout; });
+        lv_popover_row_set_checked(row, layout_ == item.layout);
+    }
+    lv_popover_separator_create(popover);
+    lv_popover_row_create(popover, TABLER_PENCIL, &icon_36, "Edit", nullptr);
+}
+
 void FileBrowserPage::build(lv_obj_t *contents) {
     lv_obj_set_style_bg_color(contents, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(contents, LV_OPA_COVER, 0);

@@ -53,7 +53,12 @@
         "TABLER_MUSIC": "tabler/music.svg",
         "TABLER_PHOTO": "tabler/photo.svg",
         "TABLER_MOVIE": "tabler/movie.svg",
-        "TABLER_FILE": "tabler/file.svg"
+        "TABLER_FILE": "tabler/file.svg",
+        "TABLER_DOTS": "tabler/dots.svg",
+        "TABLER_LIST": "tabler/list.svg",
+        "TABLER_LAYOUT_LIST": "tabler/layout-list.svg",
+        "TABLER_LAYOUT_GRID": "tabler/layout-grid.svg",
+        "TABLER_PENCIL": "tabler/pencil.svg"
       }
     },
     "noto_sans_jp_24": {

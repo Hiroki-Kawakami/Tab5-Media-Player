@@ -5,6 +5,7 @@
 
 #include "bgm_picker_screen.hpp"
 #include "media_player.hpp"
+#include "resources.h"
 #include "screen_manager.hpp"
 #include "bsp.h"
 #include "usb_host_msc.hpp"
@@ -187,7 +188,7 @@ lv_obj_t *BgmPickerScreen::createRow(lv_obj_t *parent) {
     lv_obj_t *icon = lv_label_create(row);
     lv_obj_set_width(icon, kIconWidth);
     lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(icon, LV_WIDGETS_FONT_BODY);
+    lv_obj_set_style_text_font(icon, &icon_36, 0);
 
     lv_obj_t *name = lv_label_create(row);
     lv_obj_set_flex_grow(name, 1);
@@ -215,8 +216,8 @@ lv_obj_t *BgmPickerScreen::createRow(lv_obj_t *parent) {
 void BgmPickerScreen::bindRow(lv_obj_t *row, std::size_t index) {
     const DirectoryEntry &entry = entries_[index];
     const char *icon = !path_.empty()
-        ? (entry.directory ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_AUDIO)
-        : (strcmp(storages_[index], kUsbMountPoint) == 0 ? LV_SYMBOL_USB : LV_SYMBOL_SD_CARD);
+        ? (entry.directory ? TABLER_FOLDER_FILLED : TABLER_MUSIC)
+        : (strcmp(storages_[index], kUsbMountPoint) == 0 ? TABLER_DEVICE_USB : TABLER_DEVICE_SD_CARD);
     lv_label_set_text(lv_obj_get_child(row, 0), icon);
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);

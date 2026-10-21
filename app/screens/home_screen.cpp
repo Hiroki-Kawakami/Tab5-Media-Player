@@ -22,8 +22,9 @@
 static constexpr int32_t kMenuWidth = 400;
 
 const HomeScreen::MenuItem HomeScreen::kMenu[] = {
-    {MenuId::SdCard, "Device", LV_SYMBOL_SD_CARD, nullptr, "SD Card", &HomeScreen::open_sd_card},
-    {MenuId::UsbDrive, "Device", LV_SYMBOL_USB, nullptr, "USB Drive",
+    {MenuId::SdCard, "Device", TABLER_DEVICE_SD_CARD, &icon_36, "SD Card",
+     &HomeScreen::open_sd_card},
+    {MenuId::UsbDrive, "Device", TABLER_DEVICE_USB, &icon_36, "USB Drive",
      &HomeScreen::open_usb_drive},
     {MenuId::VideoInput, "Device", TABLER_VIDEO, &icon_36, "Video Input",
      &HomeScreen::open_video_input},

@@ -46,7 +46,14 @@
         "TABLER_LOCK": "tabler/lock.svg",
         "TABLER_REFRESH": "tabler/refresh.svg",
         "TABLER_CAST": "tabler/cast.svg",
-        "TABLER_VIDEO": "tabler/video.svg"
+        "TABLER_VIDEO": "tabler/video.svg",
+        "TABLER_DEVICE_SD_CARD": "tabler/device-sd-card.svg",
+        "TABLER_DEVICE_USB": "tabler/device-usb.svg",
+        "TABLER_FOLDER_FILLED": "tabler/folder-filled.svg",
+        "TABLER_MUSIC": "tabler/music.svg",
+        "TABLER_PHOTO": "tabler/photo.svg",
+        "TABLER_MOVIE": "tabler/movie.svg",
+        "TABLER_FILE": "tabler/file.svg"
       }
     },
     "noto_sans_jp_24": {

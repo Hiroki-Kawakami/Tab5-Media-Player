@@ -8,6 +8,7 @@
 #include "media/demuxer.hpp"
 #include "media/media_cache.hpp"
 #include "media_player.hpp"
+#include "resources.h"
 #include "screen_manager.hpp"
 #include "screens/audio_player_screen.hpp"
 #include "screens/image_object.hpp"
@@ -198,7 +199,7 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
     lv_obj_t *icon = lv_label_create(row);
     lv_obj_set_width(icon, kThumbSide);
     lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(icon, LV_WIDGETS_FONT_BODY);
+    lv_obj_set_style_text_font(icon, &icon_36, 0);
 
     lv_obj_t *name = lv_label_create(row);
     lv_obj_set_flex_grow(name, 1);
@@ -224,11 +225,11 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
 
 void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     const DirectoryEntry &entry = entries_[index];
-    const char *icon = entry.directory                ? LV_SYMBOL_DIRECTORY
-                     : entry.kind == MediaKind::Video ? LV_SYMBOL_VIDEO
-                     : entry.kind == MediaKind::Audio ? LV_SYMBOL_AUDIO
-                     : entry.kind == MediaKind::Image ? LV_SYMBOL_IMAGE
-                                                      : LV_SYMBOL_FILE;
+    const char *icon = entry.directory                ? TABLER_FOLDER_FILLED
+                     : entry.kind == MediaKind::Video ? TABLER_MOVIE
+                     : entry.kind == MediaKind::Audio ? TABLER_MUSIC
+                     : entry.kind == MediaKind::Image ? TABLER_PHOTO
+                                                      : TABLER_FILE;
     lv_obj_t *first = lv_obj_get_child(row, 0);
     if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
     lv_obj_t *label = lv_obj_get_child(row, 0);

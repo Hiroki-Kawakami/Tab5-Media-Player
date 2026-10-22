@@ -24,6 +24,11 @@ static constexpr ImageSize kThumbBox = { kThumbSide, kThumbSide };
 static constexpr int32_t kListRowHeight = 132;
 static constexpr ImageSize kListThumbBox = { 192, 108 };
 static constexpr uint32_t kListThumbColor = 0xeeeeee;
+static constexpr ImageSize kGridThumbBox = { 200, 150 };
+static constexpr int32_t kGridMinGap = 12;
+static constexpr int32_t kGridNameGap = 8;
+static constexpr int32_t kGridRowGap = 24;
+static constexpr int32_t kGridHighlightPad = 8;
 static constexpr std::size_t kLookahead = 2;
 static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
@@ -36,6 +41,15 @@ static bool has_tags(MediaKind kind) {
 
 static bool has_thumbnail(MediaKind kind) {
     return has_tags(kind) || kind == MediaKind::Image;
+}
+
+static int32_t body_line_height() {
+    return lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
+}
+
+static void drop_thumbnail(lv_obj_t *frame) {
+    lv_obj_t *first = lv_obj_get_child(frame, 0);
+    if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
 }
 
 FileBrowserPage::FileBrowserPage(std::string path, std::string title)
@@ -69,14 +83,18 @@ std::string FileBrowserPage::entry_path(std::size_t index) const {
 void FileBrowserPage::request_visible() {
     if (!list_ || entries_.empty()) return;
 
-    std::size_t first = lv_list_first_visible_row(list_);
+    std::size_t first = first_visible_entry();
     if (first == SIZE_MAX) first = 0;
     if (first == requested_first_) return;
     requested_first_ = first;
+    const bool grid = layout_ == BrowserLayout::Grid;
+    const std::size_t columns = grid ? lv_grid_column_count(list_) : 1;
+    const int32_t row_height = grid ? cellHeight() + rowSpacing() : rowHeight();
     const int32_t height = lv_obj_get_height(list_);
-    const std::size_t rows = height > 0 ? (std::size_t)(height / rowHeight()) + 1 : 1;
-    const std::size_t start = first > kLookahead ? first - kLookahead : 0;
-    const std::size_t end = std::min(entries_.size(), first + rows + kLookahead);
+    const std::size_t rows = height > 0 ? (std::size_t)(height / row_height) + 1 : 1;
+    const std::size_t first_row = first / columns;
+    const std::size_t start = (first_row > kLookahead ? first_row - kLookahead : 0) * columns;
+    const std::size_t end = std::min(entries_.size(), (first_row + rows + kLookahead) * columns);
 
     /* What is left of the range the last scroll asked for is kept rather than
        cancelled and asked for again: a thumbnail that is still on screen would
@@ -121,7 +139,11 @@ void FileBrowserPage::meta_ready(const std::string &path) {
 
     for (std::size_t i = 0; i < page->entries_.size(); i++) {
         if (page->entry_path(i) != path) continue;
-        if (lv_obj_t *row = lv_list_row_for_index(page->list_, i)) page->bindRow(row, i);
+        if (page->layout_ == BrowserLayout::Grid) {
+            lv_grid_reload_cell(page->list_, i);
+        } else if (lv_obj_t *row = lv_list_row_for_index(page->list_, i)) {
+            page->bindRow(row, i);
+        }
         return;
     }
 }
@@ -161,17 +183,34 @@ void FileBrowserPage::set_layout(BrowserLayout layout) {
     settings_commit();
     if (!list_) return;
 
-    const std::size_t first = lv_list_first_visible_row(list_);
+    const std::size_t first = first_visible_entry();
     release_requests();
     lv_obj_clean(contents_);
     scroll_y_ = 0;
     prefetched_ = false;
     build(contents_);
-    if (list_ && first != SIZE_MAX) lv_list_show_row(list_, first);
+    if (list_ && first != SIZE_MAX) show_entry(first);
+}
+
+std::size_t FileBrowserPage::first_visible_entry() const {
+    return layout_ == BrowserLayout::Grid ? lv_grid_first_visible_cell(list_)
+                                          : lv_list_first_visible_row(list_);
+}
+
+void FileBrowserPage::show_entry(std::size_t index) {
+    if (layout_ == BrowserLayout::Grid) {
+        lv_grid_show_cell(list_, index);
+    } else {
+        lv_list_show_row(list_, index);
+    }
 }
 
 ImageSize FileBrowserPage::thumb_box() const {
-    return layout_ == BrowserLayout::List ? kListThumbBox : kThumbBox;
+    switch (layout_) {
+    case BrowserLayout::List: return kListThumbBox;
+    case BrowserLayout::Grid: return kGridThumbBox;
+    default: return kThumbBox;
+    }
 }
 
 void FileBrowserPage::build(lv_obj_t *contents) {
@@ -196,7 +235,8 @@ void FileBrowserPage::build(lv_obj_t *contents) {
         return;
     }
 
-    list_ = lv_list_create(contents, this);
+    list_ = layout_ == BrowserLayout::Grid ? lv_grid_create(contents, this)
+                                           : lv_list_create(contents, this);
     if (scroll_y_ > 0) lv_obj_scroll_to_y(list_, scroll_y_, LV_ANIM_OFF);
 
     s_visible = this;
@@ -265,7 +305,7 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
     lv_obj_set_style_text_font(icon, list ? &icon_48 : &icon_36, 0);
     if (list) lv_obj_center(icon);
 
-    const int32_t line_height = lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
+    const int32_t line_height = body_line_height();
     lv_obj_t *name = lv_label_create(row);
     lv_obj_set_flex_grow(name, 1);
     if (list) {
@@ -295,34 +335,120 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
 
 void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     const DirectoryEntry &entry = entries_[index];
+    lv_obj_t *frame = layout_ == BrowserLayout::List ? lv_obj_get_child(row, 0) : row;
+    drop_thumbnail(frame);
+    lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
+    lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
+    lv_obj_set_clickable(row,
+                         entry.directory || entry.kind != MediaKind::None);
+    bind_thumbnail(frame, index);
+}
+
+std::size_t FileBrowserPage::cellCount() const {
+    return entries_.size();
+}
+
+int32_t FileBrowserPage::cellWidth() const {
+    return kGridThumbBox.width;
+}
+
+int32_t FileBrowserPage::cellHeight() const {
+    return kGridThumbBox.height + kGridNameGap + 2 * body_line_height();
+}
+
+int32_t FileBrowserPage::columnSpacing() const {
+    return kGridMinGap;
+}
+
+int32_t FileBrowserPage::rowSpacing() const {
+    return kGridRowGap;
+}
+
+lv_obj_t *FileBrowserPage::createCell(lv_obj_t *parent) {
+    lv_obj_t *cell = lv_container_create(parent);
+    lv_obj_set_scrollable(cell, false);
+    /* OVERFLOW_VISIBLE only lets children past the cell by its ext draw size. */
+    lv_obj_add_flag(cell, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_add_event_fn(cell, LV_EVENT_REFR_EXT_DRAW_SIZE, [](lv_event_t *e) {
+        lv_event_set_ext_draw_size(e, kGridHighlightPad);
+    });
+    lv_obj_refresh_ext_draw_size(cell);
+    lv_obj_add_flag(cell, LV_OBJ_FLAG_STATE_TRICKLE);
+
+    lv_obj_t *body = lv_container_create(cell);
+    lv_obj_set_clickable(body, false);
+    lv_obj_set_scrollable(body, false);
+    lv_obj_set_pos(body, -kGridHighlightPad, -kGridHighlightPad);
+    lv_obj_set_size(body, kGridThumbBox.width + 2 * kGridHighlightPad, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(body, kGridHighlightPad, 0);
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(body, kGridNameGap, 0);
+    lv_obj_set_style_radius(body, 6 + kGridHighlightPad, 0);
+    lv_obj_set_style_bg_color(body, lv_color_black(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(body, 35, LV_STATE_PRESSED);
+
+    lv_obj_t *frame = lv_container_create(body, lv_color_hex(kListThumbColor));
+    lv_obj_set_size(frame, kGridThumbBox.width, kGridThumbBox.height);
+    lv_obj_set_style_radius(frame, 6, 0);
+    lv_obj_set_style_clip_corner(frame, true, 0);
+    lv_obj_set_clickable(frame, false);
+
+    lv_obj_t *icon = lv_label_create(frame);
+    lv_obj_set_style_text_font(icon, &icon_48, 0);
+    lv_obj_center(icon);
+
+    lv_obj_t *name = lv_label_create(body);
+    lv_obj_set_width(name, LV_PCT(100));
+    lv_obj_set_style_max_height(name, 2 * body_line_height(), 0);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_font_role(name, LV_WIDGETS_FONT_BODY);
+    return cell;
+}
+
+void FileBrowserPage::bindCell(lv_obj_t *cell, std::size_t index) {
+    const DirectoryEntry &entry = entries_[index];
+    lv_obj_t *body = lv_obj_get_child(cell, 0);
+    lv_obj_t *frame = lv_obj_get_child(body, 0);
+    drop_thumbnail(frame);
+    lv_obj_set_clickable(cell, entry.directory || entry.kind != MediaKind::None);
+    lv_label_set_text(lv_obj_get_child(body, 1), entry.name.c_str());
+    bind_thumbnail(frame, index);
+}
+
+void FileBrowserPage::didSelectCell(std::size_t index) {
+    didSelectRow(index);
+}
+
+void FileBrowserPage::bind_thumbnail(lv_obj_t *frame, std::size_t index) {
+    const DirectoryEntry &entry = entries_[index];
     const char *icon = entry.directory                ? TABLER_FOLDER_FILLED
                      : entry.kind == MediaKind::Video ? TABLER_MOVIE
                      : entry.kind == MediaKind::Audio ? TABLER_MUSIC
                      : entry.kind == MediaKind::Image ? TABLER_PHOTO
                                                       : TABLER_FILE;
-    const bool list = layout_ == BrowserLayout::List;
-    lv_obj_t *frame = list ? lv_obj_get_child(row, 0) : row;
-    lv_obj_t *first = lv_obj_get_child(frame, 0);
-    if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
     lv_obj_t *label = lv_obj_get_child(frame, 0);
     lv_label_set_text(label, icon);
-    lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
-    lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
-    lv_obj_set_clickable(row,
-                         entry.directory || entry.kind != MediaKind::None);
 
     std::shared_ptr<const ImagePixels> pixels;
     if (!entry.directory && has_thumbnail(entry.kind)) {
         pixels = media_cache_thumbnail(entry_path(index), thumb_box());
     }
     lv_obj_set_hidden(label, pixels != nullptr);
-    /* Inserted first so flex puts it where the icon was; everything indexed
-       above is therefore read before this point. */
+    if (layout_ == BrowserLayout::Grid) {
+        lv_obj_set_width(frame, pixels ? kGridThumbBox.width : kGridThumbBox.height);
+        lv_obj_set_style_bg_opa(frame, pixels ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
+    }
+    /* Inserted first so flex puts it where the icon was; callers read the
+       row's children by index before this point. */
     if (lv_obj_t *image = pixels ? image_object_create(frame, std::move(pixels)) : nullptr) {
-        const ImageSize box = thumb_box();
-        lv_obj_set_size(image, box.width, box.height);
-        lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
-        if (!list) {
+        if (layout_ != BrowserLayout::Grid) {
+            const ImageSize box = thumb_box();
+            lv_obj_set_size(image, box.width, box.height);
+            lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
+        }
+        if (layout_ != BrowserLayout::List) {
             lv_obj_set_style_radius(image, 6, 0);
             lv_obj_set_style_clip_corner(image, true, 0);
         }

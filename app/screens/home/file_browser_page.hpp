@@ -15,7 +15,7 @@
 #include "settings.hpp"
 #include "widgets.hpp"
 
-class FileBrowserPage : public HomePage, private ListDataSource {
+class FileBrowserPage : public HomePage, private ListDataSource, private GridDataSource {
 public:
     FileBrowserPage(std::string path, std::string title);
     ~FileBrowserPage() override;
@@ -46,6 +46,9 @@ private:
     void open_menu(lv_obj_t *anchor);
     void set_layout(BrowserLayout layout);
     ImageSize thumb_box() const;
+    std::size_t first_visible_entry() const;
+    void show_entry(std::size_t index);
+    void bind_thumbnail(lv_obj_t *frame, std::size_t index);
     std::shared_ptr<Playlist> make_playlist(std::size_t index) const;
     std::string entry_path(std::size_t index) const;
     void request_visible();
@@ -59,4 +62,13 @@ private:
     lv_obj_t *createRow(lv_obj_t *parent) override;
     void bindRow(lv_obj_t *row, std::size_t index) override;
     void didSelectRow(std::size_t index) override;
+
+    std::size_t cellCount() const override;
+    int32_t cellWidth() const override;
+    int32_t cellHeight() const override;
+    int32_t columnSpacing() const override;
+    int32_t rowSpacing() const override;
+    lv_obj_t *createCell(lv_obj_t *parent) override;
+    void bindCell(lv_obj_t *cell, std::size_t index) override;
+    void didSelectCell(std::size_t index) override;
 };

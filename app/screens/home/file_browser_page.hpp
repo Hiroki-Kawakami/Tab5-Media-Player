@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include "home_page.hpp"
+#include "media/file_operation.hpp"
 #include "media/image_codec.hpp"
 #include "media/media_directory.hpp"
 #include "playback/playlist.hpp"
@@ -52,6 +53,11 @@ private:
     lv_obj_t *copy_button_ = nullptr;
     lv_obj_t *rename_button_ = nullptr;
     lv_obj_t *delete_button_ = nullptr;
+    std::vector<std::string> operation_paths_;
+    lv_obj_t *progress_modal_ = nullptr;
+    lv_obj_t *progress_label_ = nullptr;
+    lv_obj_t *progress_bar_ = nullptr;
+    lv_timer_t *progress_timer_ = nullptr;
 
     void open_menu(lv_obj_t *anchor);
     void set_selecting(bool selecting);
@@ -61,6 +67,14 @@ private:
     void build_toolbar();
     void reload_entries();
     void rebind_entry(std::size_t index);
+    std::vector<std::string> selected_paths() const;
+    void confirm_delete();
+    void start_delete();
+    void open_progress(const char *title);
+    void close_progress();
+    void poll_operation();
+    void finish_operation(const FileOperationStatus &status, const char *failure);
+    void reload_directory();
     void set_layout(BrowserLayout layout);
     ImageSize thumb_box() const;
     std::size_t first_visible_entry() const;

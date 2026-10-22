@@ -35,6 +35,8 @@ static constexpr uint32_t kResolveTimeoutMs = 700;
 static constexpr uint32_t kSelectedColor = 0xd6eafd;
 static constexpr int32_t kToolbarPadding = 24;
 static constexpr int32_t kToolbarButtonHeight = 72;
+static constexpr int32_t kModalPadding = 16;
+static constexpr uint32_t kProgressPeriodMs = 100;
 
 static FileBrowserPage *s_visible;
 
@@ -60,6 +62,7 @@ FileBrowserPage::FileBrowserPage(std::string path, std::string title)
 
 FileBrowserPage::~FileBrowserPage() {
     release_requests();
+    close_progress();
 }
 
 void FileBrowserPage::release_requests() {
@@ -281,6 +284,135 @@ void FileBrowserPage::build_toolbar() {
     copy_button_ = add("Copy", LV_BUTTON_STYLE_SECONDARY);
     rename_button_ = add("Rename", LV_BUTTON_STYLE_SECONDARY);
     delete_button_ = add("Delete", LV_BUTTON_STYLE_DESTRUCTIVE);
+    lv_obj_add_event_fn(delete_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { confirm_delete(); });
+}
+
+std::vector<std::string> FileBrowserPage::selected_paths() const {
+    std::vector<std::string> paths;
+    for (std::size_t i = 0; i < entries_.size(); i++) {
+        if (selected_[i]) paths.push_back(entry_path(i));
+    }
+    return paths;
+}
+
+void FileBrowserPage::confirm_delete() {
+    if (selected_count_ == 0) return;
+    std::string target;
+    if (selected_count_ == 1) {
+        const std::string path = selected_paths().front();
+        target = "\"" + path.substr(path.rfind('/') + 1) + "\"";
+    } else {
+        target = std::to_string(selected_count_) + " items";
+    }
+    const std::string message =
+        "Are you sure you want to delete " + target + "?\nThis can't be undone.";
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(modal, "Delete Permanently");
+    lv_modal_message_create(modal, message.c_str());
+    auto buttons = lv_container_create(modal, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(buttons, kModalPadding, 0);
+    lv_modal_button_create(buttons, "Cancel", LV_MODAL_BUTTON_TYPE_SECONDARY,
+                           [modal](lv_event_t *) { lv_modal_close(modal); });
+    lv_modal_button_create(buttons, "Delete", LV_MODAL_BUTTON_TYPE_DESTRUCTIVE,
+                           [this, modal](lv_event_t *) {
+                               lv_modal_close(modal);
+                               start_delete();
+                           });
+}
+
+void FileBrowserPage::start_delete() {
+    std::vector<std::string> paths = selected_paths();
+    if (!file_operation_delete(paths)) {
+        auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+        lv_modal_title_create(modal, "Cannot delete");
+        lv_modal_message_create(modal, "Another file operation is running");
+        lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
+                               [modal](lv_event_t *) { lv_modal_close(modal); });
+        return;
+    }
+    release_requests();
+    operation_paths_ = std::move(paths);
+    open_progress("Deleting");
+}
+
+void FileBrowserPage::open_progress(const char *title) {
+    progress_modal_ = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(progress_modal_, title);
+    progress_label_ = lv_modal_message_create(progress_modal_, "");
+    lv_label_set_long_mode(progress_label_, LV_LABEL_LONG_MODE_DOTS);
+
+    progress_bar_ = lv_bar_create(progress_modal_);
+    lv_obj_set_size(progress_bar_, LV_PCT(100), 12);
+    lv_obj_set_style_radius(progress_bar_, 6, 0);
+    lv_obj_set_style_radius(progress_bar_, 6, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(progress_bar_, lv_color_hex(0xe0e0e0), 0);
+    lv_obj_set_style_bg_opa(progress_bar_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(progress_bar_, lv_color_hex(0x2196f3), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(progress_bar_, LV_OPA_COVER, LV_PART_INDICATOR);
+
+    lv_modal_button_create(progress_modal_, "Cancel", LV_MODAL_BUTTON_TYPE_SECONDARY,
+                           [](lv_event_t *e) {
+                               file_operation_cancel();
+                               lv_obj_set_state(lv_event_get_target_obj(e), LV_STATE_DISABLED, true);
+                           });
+    progress_timer_ = lv_timer_create([](lv_timer_t *timer) {
+        static_cast<FileBrowserPage *>(lv_timer_get_user_data(timer))->poll_operation();
+    }, kProgressPeriodMs, this);
+    poll_operation();
+}
+
+void FileBrowserPage::close_progress() {
+    if (progress_timer_) lv_timer_delete(progress_timer_);
+    if (progress_modal_) lv_modal_close(progress_modal_);
+    progress_timer_ = nullptr;
+    progress_modal_ = progress_label_ = progress_bar_ = nullptr;
+}
+
+void FileBrowserPage::poll_operation() {
+    const FileOperationStatus status = file_operation_status();
+    if (status.finished) {
+        finish_operation(status, "Delete failed");
+        return;
+    }
+    const std::size_t step = std::min(status.done + 1, status.total);
+    const std::string text = std::to_string(step) + " / " + std::to_string(status.total) + "  " +
+                             status.current;
+    lv_label_set_text(progress_label_, text.c_str());
+    lv_bar_set_range(progress_bar_, 0, (int32_t)status.total);
+    lv_bar_set_value(progress_bar_, (int32_t)status.done, LV_ANIM_OFF);
+}
+
+void FileBrowserPage::finish_operation(const FileOperationStatus &status, const char *failure) {
+    close_progress();
+    for (const std::string &path : operation_paths_) media_cache_forget(path);
+    operation_paths_.clear();
+    reload_directory();
+    if (status.error == 0 || !contents_) return;
+
+    const std::string name = status.failed_path.substr(status.failed_path.rfind('/') + 1);
+    const std::string message = name + "\n" + strerror(status.error);
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(modal, failure);
+    lv_modal_message_create(modal, message.c_str());
+    lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
+                           [modal](lv_event_t *) { lv_modal_close(modal); });
+}
+
+void FileBrowserPage::reload_directory() {
+    loaded_ = false;
+    selecting_ = false;
+    selected_.clear();
+    selected_count_ = 0;
+    if (!contents_) return;
+
+    const std::size_t first = list_ ? first_visible_entry() : SIZE_MAX;
+    release_requests();
+    lv_obj_clean(contents_);
+    scroll_y_ = 0;
+    prefetched_ = false;
+    build(contents_);
+    if (list_ && first != SIZE_MAX) show_entry(std::min(first, entries_.size() - 1));
+    if (home_) home_->refresh_navigation();
 }
 
 void FileBrowserPage::set_layout(BrowserLayout layout) {

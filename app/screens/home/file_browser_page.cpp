@@ -5,13 +5,12 @@
 
 #include "file_browser_page.hpp"
 #include "screens/home_screen.hpp"
-#include "media/demuxer.hpp"
 #include "media/media_cache.hpp"
 #include "media_player.hpp"
 #include "resources.h"
 #include "screen_manager.hpp"
 #include "screens/audio_player_screen.hpp"
-#include "screens/image_object.hpp"
+#include "screens/file_picker_screen.hpp"
 #include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
 #include "esp_log.h"
@@ -24,53 +23,15 @@
 
 static const char *TAG = "file_browser";
 
-static constexpr int32_t kRowHeight = 80;
-static constexpr int32_t kThumbSide = 56;
-static constexpr ImageSize kThumbBox = { kThumbSide, kThumbSide };
-static constexpr int32_t kListRowHeight = 132;
-static constexpr ImageSize kListThumbBox = { 192, 108 };
-static constexpr uint32_t kListThumbColor = 0xeeeeee;
-static constexpr ImageSize kGridThumbBox = { 200, 150 };
-static constexpr int32_t kGridMinGap = 12;
-static constexpr int32_t kGridNameGap = 8;
-static constexpr int32_t kGridRowGap = 24;
-static constexpr int32_t kGridHighlightPad = 8;
-static constexpr std::size_t kLookahead = 2;
-static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
-static constexpr uint32_t kSelectedColor = 0xd6eafd;
 static constexpr int32_t kToolbarPadding = 24;
 static constexpr int32_t kToolbarButtonHeight = 72;
 static constexpr int32_t kModalPadding = 16;
 static constexpr uint32_t kProgressPeriodMs = 100;
 static constexpr const char *kInvalidNameChars = "/\\:*?\"<>|";
 
-static FileBrowserPage *s_visible;
-
-static bool has_tags(MediaKind kind) {
-    return kind == MediaKind::Audio || kind == MediaKind::Video;
-}
-
-static bool has_thumbnail(MediaKind kind) {
-    return has_tags(kind) || kind == MediaKind::Image;
-}
-
-static int32_t body_line_height() {
-    return lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
-}
-
-static void drop_thumbnail(lv_obj_t *frame) {
-    lv_obj_t *first = lv_obj_get_child(frame, 0);
-    if (lv_obj_check_type(first, &lv_image_class)) lv_obj_delete(first);
-}
-
-FileBrowserPage::FileBrowserPage(std::string path, std::string title)
-    : path_(std::move(path)), title_(std::move(title)) {}
-
-FileBrowserPage::~FileBrowserPage() {
-    release_requests();
-    close_progress();
-    close_rename();
+static std::string name_of(const std::string &path) {
+    return path.substr(path.rfind('/') + 1);
 }
 
 static std::size_t utf8_length(const std::string &text) {
@@ -81,111 +42,49 @@ static std::size_t utf8_length(const std::string &text) {
     return length;
 }
 
-void FileBrowserPage::release_requests() {
-    if (s_visible == this) s_visible = nullptr;
-    visible_.clear();
-    if (!token_) return;
-    media_cache_unobserve(token_);
-    media_cache_cancel(token_);
-    media_cache_cancel(idle_token_);
+static bool exists(const std::string &path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0;
 }
 
-bool FileBrowserPage::keep_visible(const char *path, void *ctx) {
-    auto *page = static_cast<FileBrowserPage *>(ctx);
-    for (const PsramString &kept : page->visible_) {
-        if (strcmp(kept.c_str(), path) == 0) return true;
-    }
-    return false;
+static bool is_directory(const std::string &path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-std::string FileBrowserPage::entry_path(std::size_t index) const {
-    return path_ + "/" + entries_[index].name.c_str();
-}
-
-void FileBrowserPage::request_visible() {
-    if (!list_ || entries_.empty()) return;
-
-    std::size_t first = first_visible_entry();
-    if (first == SIZE_MAX) first = 0;
-    if (first == requested_first_) return;
-    requested_first_ = first;
-    const bool grid = layout_ == BrowserLayout::Grid;
-    const std::size_t columns = grid ? lv_grid_column_count(list_) : 1;
-    const int32_t row_height = grid ? cellHeight() + rowSpacing() : rowHeight();
-    const int32_t height = lv_obj_get_height(list_);
-    const std::size_t rows = height > 0 ? (std::size_t)(height / row_height) + 1 : 1;
-    const std::size_t first_row = first / columns;
-    const std::size_t start = (first_row > kLookahead ? first_row - kLookahead : 0) * columns;
-    const std::size_t end = std::min(entries_.size(), (first_row + rows + kLookahead) * columns);
-
-    /* What is left of the range the last scroll asked for is kept rather than
-       cancelled and asked for again: a thumbnail that is still on screen would
-       otherwise restart from the card on every row the finger travels, and one
-       that has scrolled off is withdrawn even if it is already being read. */
-    visible_.clear();
-    for (std::size_t i = start; i < end; i++) visible_.push_back(PsramString(entry_path(i).c_str()));
-    media_cache_retain(token_, keep_visible, this);
-
-    /* Titles first for the whole visible range, then the thumbnails: reading a
-       tag without its cover art is a fraction of the cost, so the rows fill in
-       with text while the pictures are still coming. An image file has no
-       title to show, so it only takes part in the second pass. */
-    for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || !has_tags(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo, {}, MetaPriority::Visible, token_);
-    }
-    for (std::size_t i = start; i < end; i++) {
-        if (entries_[i].directory || !has_thumbnail(entries_[i].kind)) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, thumb_box(),
-                            MetaPriority::Visible, token_);
-    }
-    prefetch_rest();
-}
-
-void FileBrowserPage::prefetch_rest() {
-    if (prefetched_) return;
-    prefetched_ = true;
-    std::size_t queued = 0;
-    for (std::size_t i = 0; i < entries_.size() && queued < kPrefetchLimit; i++) {
-        if (entries_[i].directory || entries_[i].kind != MediaKind::Audio) continue;
-        media_cache_request(entry_path(i), MetaWantInfo | MetaWantThumbnail, thumb_box(),
-                            MetaPriority::Idle, idle_token_);
-        queued++;
+static std::string unused_name(const std::string &directory, const std::string &name, bool folder) {
+    std::size_t dot = folder ? std::string::npos : name.rfind('.');
+    if (dot == 0) dot = std::string::npos;
+    const std::string stem = name.substr(0, dot);
+    const std::string extension = dot == std::string::npos ? "" : name.substr(dot);
+    for (int n = 2;; n++) {
+        std::string candidate = stem + " (" + std::to_string(n) + ")" + extension;
+        if (!exists(directory + "/" + candidate)) return candidate;
     }
 }
 
-void FileBrowserPage::meta_ready(const std::string &path) {
-    FileBrowserPage *page = s_visible;
-    if (!page || !page->list_) return;
-    if (path.compare(0, page->path_.size(), page->path_) != 0) return;
-
-    for (std::size_t i = 0; i < page->entries_.size(); i++) {
-        if (page->entry_path(i) != path) continue;
-        page->rebind_entry(i);
-        return;
-    }
+FileBrowserPage::FileBrowserPage(const std::string &path) {
+    browser_.open(path, path);
 }
 
-void FileBrowserPage::rebind_entry(std::size_t index) {
-    if (layout_ == BrowserLayout::Grid) {
-        lv_grid_reload_cell(list_, index);
-    } else if (lv_obj_t *row = lv_list_row_for_index(list_, index)) {
-        bindRow(row, index);
-    }
+FileBrowserPage::~FileBrowserPage() {
+    close_progress();
+    close_rename();
 }
 
-void FileBrowserPage::reload_entries() {
-    if (!list_) return;
-    if (layout_ == BrowserLayout::Grid) {
-        lv_grid_reload_data(list_, true);
-    } else {
-        lv_list_reload_data(list_, true);
-    }
+const std::string &FileBrowserPage::title() const {
+    return browser_.selecting() ? selection_title_ : browser_.title();
+}
+
+void FileBrowserPage::post(std::function<void(FileBrowserPage &)> fn) {
+    lv_async_call([weak = weak_from_this(), fn = std::move(fn)] {
+        if (auto self = weak.lock()) fn(*self);
+    });
 }
 
 void FileBrowserPage::build_navigation(lv_obj_t *navigation) {
     lv_obj_t *actions = lv_navigation_actions(navigation);
-    if (selecting_) {
+    if (browser_.selecting()) {
         lv_obj_set_style_pad_column(actions, kToolbarPadding, 0);
         auto add = [actions](const char *text, lv_button_style_t style) {
             auto button = lv_button_create(actions, style);
@@ -194,9 +93,10 @@ void FileBrowserPage::build_navigation(lv_obj_t *navigation) {
             lv_button_set_text(button, text);
             return button;
         };
-        const bool deselect = selected_count_ == entries_.size();
+        const bool deselect = browser_.selected_count() == browser_.entries().size();
         auto all = add(deselect ? "Deselect All" : "Select All", LV_BUTTON_STYLE_SECONDARY);
-        lv_obj_add_event_fn(all, LV_EVENT_CLICKED, [this, deselect](lv_event_t *) { select_all(!deselect); });
+        lv_obj_add_event_fn(all, LV_EVENT_CLICKED,
+                            [this, deselect](lv_event_t *) { browser_.select_all(!deselect); });
         auto done = add("Done", LV_BUTTON_STYLE_PRIMARY);
         lv_obj_add_event_fn(done, LV_EVENT_CLICKED, [this](lv_event_t *) { set_selecting(false); });
         return;
@@ -222,7 +122,7 @@ void FileBrowserPage::open_menu(lv_obj_t *anchor) {
     lv_popover_heading_create(popover, "Layout");
     for (const LayoutItem &item : kLayouts) {
         auto row = lv_popover_row_create(popover, item.icon, &icon_36, item.label,
-                                         [this, layout = item.layout](lv_event_t *) { set_layout(layout); });
+                                         [this, layout = item.layout](lv_event_t *) { browser_.set_layout(layout); });
         lv_popover_row_set_checked(row, settings_browser_layout() == item.layout);
     }
     lv_popover_separator_create(popover);
@@ -231,49 +131,24 @@ void FileBrowserPage::open_menu(lv_obj_t *anchor) {
 }
 
 void FileBrowserPage::set_selecting(bool selecting) {
-    if (selecting && !list_) return;
-    selecting_ = selecting;
-    selected_.assign(selecting ? entries_.size() : 0, false);
-    selected_count_ = 0;
     if (selecting) {
-        build_toolbar();
-    } else if (toolbar_) {
-        lv_obj_delete(toolbar_);
-        toolbar_ = nullptr;
+        browser_.set_selecting(true);
+        if (browser_.selecting()) build_toolbar();
+        return;
     }
-    reload_entries();
-    update_selection();
-}
-
-void FileBrowserPage::toggle_selected(std::size_t index) {
-    selected_[index] = !selected_[index];
-    if (selected_[index]) {
-        selected_count_++;
-    } else {
-        selected_count_--;
-    }
-    rebind_entry(index);
-    update_selection();
-}
-
-void FileBrowserPage::select_all(bool selected) {
-    selected_.assign(entries_.size(), selected);
-    selected_count_ = selected ? entries_.size() : 0;
-    reload_entries();
-    update_selection();
+    if (toolbar_) lv_obj_delete(toolbar_);
+    toolbar_ = nullptr;
+    browser_.set_selecting(false);
 }
 
 void FileBrowserPage::update_selection() {
-    if (selected_count_ == 0) {
-        selection_title_ = "Select Items";
-    } else {
-        selection_title_ = std::to_string(selected_count_) + " Selected";
-    }
+    const std::size_t count = browser_.selected_count();
+    selection_title_ = count == 0 ? "Select Items" : std::to_string(count) + " Selected";
     if (toolbar_) {
-        lv_obj_set_state(move_button_, LV_STATE_DISABLED, selected_count_ == 0);
-        lv_obj_set_state(copy_button_, LV_STATE_DISABLED, selected_count_ == 0);
-        lv_obj_set_state(rename_button_, LV_STATE_DISABLED, selected_count_ != 1);
-        lv_obj_set_state(delete_button_, LV_STATE_DISABLED, selected_count_ == 0);
+        lv_obj_set_state(move_button_, LV_STATE_DISABLED, count == 0);
+        lv_obj_set_state(copy_button_, LV_STATE_DISABLED, count == 0);
+        lv_obj_set_state(rename_button_, LV_STATE_DISABLED, count != 1);
+        lv_obj_set_state(delete_button_, LV_STATE_DISABLED, count == 0);
     }
     if (home_) home_->refresh_navigation();
 }
@@ -300,23 +175,36 @@ void FileBrowserPage::build_toolbar() {
     copy_button_ = add("Copy", LV_BUTTON_STYLE_SECONDARY);
     rename_button_ = add("Rename", LV_BUTTON_STYLE_SECONDARY);
     delete_button_ = add("Delete", LV_BUTTON_STYLE_DESTRUCTIVE);
-    lv_obj_add_event_fn(delete_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { confirm_delete(); });
+    lv_obj_add_event_fn(move_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { open_move(); });
     lv_obj_add_event_fn(rename_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { open_rename(); });
+    lv_obj_add_event_fn(delete_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { confirm_delete(); });
+    update_selection();
 }
 
-void FileBrowserPage::post(std::function<void(FileBrowserPage &)> fn) {
-    lv_async_call([weak = weak_from_this(), fn = std::move(fn)] {
-        if (auto self = weak.lock()) fn(*self);
-    });
+void FileBrowserPage::reload_directory() {
+    if (toolbar_) lv_obj_delete(toolbar_);
+    toolbar_ = nullptr;
+    file_browser_invalidate();
+    browser_.reload();
+    if (home_) home_->refresh_navigation();
+}
+
+void FileBrowserPage::show_error(const char *title, const std::string &path, int error) {
+    if (!contents_) return;
+    const std::string message = name_of(path) + "\n" + strerror(error);
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(modal, title);
+    lv_modal_message_create(modal, message.c_str());
+    lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
+                           [modal](lv_event_t *) { lv_modal_close(modal); });
 }
 
 void FileBrowserPage::open_rename() {
-    if (selected_count_ != 1 || rename_modal_) return;
-    const std::string path = selected_paths().front();
-    const std::string name = path.substr(path.rfind('/') + 1);
+    if (browser_.selected_count() != 1 || rename_modal_) return;
+    const std::string path = browser_.selected_paths().front();
+    const std::string name = name_of(path);
     std::size_t stem = name.size();
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
+    if (!is_directory(path)) {
         const std::size_t dot = name.rfind('.');
         if (dot != std::string::npos && dot > 0) stem = dot;
     }
@@ -371,12 +259,11 @@ void FileBrowserPage::close_rename() {
 
 void FileBrowserPage::submit_rename(const std::string &name) {
     if (!rename_modal_) return;
-    const std::string from = selected_paths().front();
-    const std::string old_name = from.substr(from.rfind('/') + 1);
-    const std::string to = path_ + "/" + name;
+    const std::string from = browser_.selected_paths().front();
+    const std::string old_name = name_of(from);
+    const std::string to = browser_.path() + "/" + name;
 
     std::string error;
-    struct stat st;
     if (name.empty()) {
         error = "Enter a name.";
     } else if (name == "." || name == "..") {
@@ -386,7 +273,7 @@ void FileBrowserPage::submit_rename(const std::string &name) {
     } else if (name == old_name) {
         close_rename();
         return;
-    } else if (strcasecmp(name.c_str(), old_name.c_str()) != 0 && stat(to.c_str(), &st) == 0) {
+    } else if (strcasecmp(name.c_str(), old_name.c_str()) != 0 && exists(to)) {
         error = "\"" + name + "\" already exists.";
     } else if (rename(from.c_str(), to.c_str()) != 0) {
         error = strerror(errno);
@@ -403,23 +290,11 @@ void FileBrowserPage::submit_rename(const std::string &name) {
     reload_directory();
 }
 
-std::vector<std::string> FileBrowserPage::selected_paths() const {
-    std::vector<std::string> paths;
-    for (std::size_t i = 0; i < entries_.size(); i++) {
-        if (selected_[i]) paths.push_back(entry_path(i));
-    }
-    return paths;
-}
-
 void FileBrowserPage::confirm_delete() {
-    if (selected_count_ == 0) return;
-    std::string target;
-    if (selected_count_ == 1) {
-        const std::string path = selected_paths().front();
-        target = "\"" + path.substr(path.rfind('/') + 1) + "\"";
-    } else {
-        target = std::to_string(selected_count_) + " items";
-    }
+    const std::size_t count = browser_.selected_count();
+    if (count == 0) return;
+    const std::string target = count == 1 ? "\"" + name_of(browser_.selected_paths().front()) + "\""
+                                          : std::to_string(count) + " items";
     const std::string message =
         "Are you sure you want to delete " + target + "?\nThis can't be undone.";
     auto modal = lv_modal_open(lv_obj_get_screen(contents_));
@@ -437,7 +312,7 @@ void FileBrowserPage::confirm_delete() {
 }
 
 void FileBrowserPage::start_delete() {
-    std::vector<std::string> paths = selected_paths();
+    std::vector<std::string> paths = browser_.selected_paths();
     if (!file_operation_delete(paths)) {
         auto modal = lv_modal_open(lv_obj_get_screen(contents_));
         lv_modal_title_create(modal, "Cannot delete");
@@ -446,7 +321,7 @@ void FileBrowserPage::start_delete() {
                                [modal](lv_event_t *) { lv_modal_close(modal); });
         return;
     }
-    release_requests();
+    browser_.on_disappear();
     operation_paths_ = std::move(paths);
     open_progress("Deleting");
 }
@@ -503,362 +378,141 @@ void FileBrowserPage::finish_operation(const FileOperationStatus &status, const 
     for (const std::string &path : operation_paths_) media_cache_forget(path);
     operation_paths_.clear();
     reload_directory();
-    if (status.error == 0 || !contents_) return;
-
-    const std::string name = status.failed_path.substr(status.failed_path.rfind('/') + 1);
-    const std::string message = name + "\n" + strerror(status.error);
-    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
-    lv_modal_title_create(modal, failure);
-    lv_modal_message_create(modal, message.c_str());
-    lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
-                           [modal](lv_event_t *) { lv_modal_close(modal); });
+    if (status.error != 0) show_error(failure, status.failed_path, status.error);
 }
 
-void FileBrowserPage::reload_directory() {
-    loaded_ = false;
-    selecting_ = false;
-    selected_.clear();
-    selected_count_ = 0;
-    if (!contents_) return;
+void FileBrowserPage::open_move() {
+    if (browser_.selected_count() == 0) return;
+    std::vector<std::string> sources = browser_.selected_paths();
+    FilePickerOptions options;
+    options.start = browser_.path();
+    options.root = browser_.root();
+    options.confirm = "Move Here";
+    options.excluded = sources;
+    options.can_pick = [source = browser_.path()](const std::string &path) { return path != source; };
+    options.on_pick = [weak = weak_from_this(), sources](const std::string &destination) {
+        if (auto page = weak.lock()) page->start_move(sources, destination);
+    };
+    screen_manager.push(std::make_shared<FilePickerScreen>(std::move(options)));
+}
 
-    if (toolbar_) lv_obj_delete(toolbar_);
-    toolbar_ = nullptr;
-    opened_ = media_directory_list(path_, &entries_);
-    loaded_ = true;
-    release_requests();
-    prefetched_ = false;
-    if (list_ && opened_ && !entries_.empty()) {
-        reload_entries();
-        s_visible = this;
-        requested_first_ = SIZE_MAX;
-        media_cache_observe(token_, meta_ready);
-        request_visible();
-    } else {
-        lv_obj_clean(contents_);
-        scroll_y_ = 0;
-        build(contents_);
+void FileBrowserPage::start_move(const std::vector<std::string> &sources,
+                                 const std::string &destination) {
+    std::vector<std::string> existing;
+    for (const std::string &source : sources) {
+        const std::string name = name_of(source);
+        if (exists(destination + "/" + name)) existing.push_back(name);
     }
-    if (home_) home_->refresh_navigation();
-}
-
-void FileBrowserPage::set_layout(BrowserLayout layout) {
-    if (layout == settings_browser_layout()) return;
-    settings_set_browser_layout(layout);
-    settings_commit();
-    if (!list_) return;
-
-    const std::size_t first = first_visible_entry();
-    release_requests();
-    lv_obj_clean(contents_);
-    scroll_y_ = 0;
-    prefetched_ = false;
-    build(contents_);
-    if (list_ && first != SIZE_MAX) show_entry(first);
-}
-
-std::size_t FileBrowserPage::first_visible_entry() const {
-    return layout_ == BrowserLayout::Grid ? lv_grid_first_visible_cell(list_)
-                                          : lv_list_first_visible_row(list_);
-}
-
-void FileBrowserPage::show_entry(std::size_t index) {
-    if (layout_ == BrowserLayout::Grid) {
-        lv_grid_show_cell(list_, index);
-    } else {
-        lv_list_show_row(list_, index);
-    }
-}
-
-ImageSize FileBrowserPage::thumb_box() const {
-    switch (layout_) {
-    case BrowserLayout::List: return kListThumbBox;
-    case BrowserLayout::Grid: return kGridThumbBox;
-    default: return kThumbBox;
-    }
-}
-
-void FileBrowserPage::build(lv_obj_t *contents) {
-    lv_obj_set_style_bg_color(contents, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(contents, LV_OPA_COVER, 0);
-    lv_obj_set_scrollable(contents, false);
-    contents_ = contents;
-    list_ = nullptr;
-    toolbar_ = nullptr;
-    layout_ = settings_browser_layout();
-
-    if (!loaded_) {
-        opened_ = media_directory_list(path_, &entries_);
-        loaded_ = true;
-    }
-    if (!opened_ || entries_.empty()) {
-        lv_obj_set_flex_align(contents, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                              LV_FLEX_ALIGN_CENTER);
-        auto label = lv_label_create(contents);
-        lv_label_set_text(label, opened_ ? "No files" : "Cannot open directory");
-        lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
-        lv_obj_set_style_text_color(label, lv_color_hex(0x808080), 0);
+    if (existing.empty()) {
+        run_move(sources, destination, false);
         return;
     }
 
-    list_ = layout_ == BrowserLayout::Grid ? lv_grid_create(contents, this)
-                                           : lv_list_create(contents, this);
-    if (scroll_y_ > 0) lv_obj_scroll_to_y(list_, scroll_y_, LV_ANIM_OFF);
-
-    s_visible = this;
-    requested_first_ = SIZE_MAX;
-    if (!token_) {
-        token_ = media_cache_token();
-        idle_token_ = media_cache_token();
-    }
-    media_cache_observe(token_, meta_ready);
-    lv_obj_add_event_fn(list_, LV_EVENT_SCROLL, [this](lv_event_t *) { request_visible(); });
-    if (selecting_) {
-        build_toolbar();
-        update_selection();
-    }
-    lv_obj_update_layout(contents);
-    request_visible();
+    const std::string place = file_browser_title(destination);
+    const std::string message =
+        existing.size() == 1
+            ? "An item named \"" + existing.front() + "\" already exists in \"" + place + "\"."
+            : std::to_string(existing.size()) + " items with the same names already exist in \"" +
+                  place + "\".";
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(modal, existing.size() == 1 ? "Item Already Exists" : "Items Already Exist");
+    lv_modal_message_create(modal, message.c_str());
+    auto buttons = lv_container_create(modal, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(buttons, kModalPadding, 0);
+    lv_modal_button_create(buttons, "Cancel", LV_MODAL_BUTTON_TYPE_SECONDARY,
+                           [modal](lv_event_t *) { lv_modal_close(modal); });
+    lv_modal_button_create(buttons, "Skip", LV_MODAL_BUTTON_TYPE_SECONDARY,
+                           [this, modal, sources, destination](lv_event_t *) {
+                               lv_modal_close(modal);
+                               run_move(sources, destination, true);
+                           });
+    lv_modal_button_create(buttons, "Keep Both", LV_MODAL_BUTTON_TYPE_PRIMARY,
+                           [this, modal, sources, destination](lv_event_t *) {
+                               lv_modal_close(modal);
+                               run_move(sources, destination, false);
+                           });
 }
 
-void FileBrowserPage::on_appear() {
-    if (!list_) return;
-    s_visible = this;
-    requested_first_ = SIZE_MAX;
-    prefetched_ = false;
-    media_cache_observe(token_, meta_ready);
-    request_visible();
-}
-
-void FileBrowserPage::on_disappear() {
-    release_requests();
-}
-
-void FileBrowserPage::save_state() {
-    release_requests();
-    contents_ = nullptr;
-    toolbar_ = nullptr;
-    if (!list_) return;
-    scroll_y_ = lv_obj_get_scroll_y(list_);
-    list_ = nullptr;
-}
-
-bool FileBrowserPage::is_under(const std::string &mount_point) const {
-    return path_is_under(path_, mount_point);
-}
-
-std::size_t FileBrowserPage::rowCount() const {
-    return entries_.size();
-}
-
-int32_t FileBrowserPage::rowHeight() const {
-    return layout_ == BrowserLayout::List ? kListRowHeight : kRowHeight;
-}
-
-lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
-    const bool list = layout_ == BrowserLayout::List;
-    lv_obj_t *row = lv_list_row_create(parent);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(row, 24, 0);
-
-    lv_obj_t *frame = row;
-    if (list) {
-        frame = lv_container_create(row, lv_color_hex(kListThumbColor));
-        lv_obj_set_size(frame, kListThumbBox.width, kListThumbBox.height);
-        lv_obj_set_style_radius(frame, 6, 0);
-        lv_obj_set_style_clip_corner(frame, true, 0);
-        lv_obj_set_clickable(frame, false);
-    }
-    lv_obj_t *icon = lv_label_create(frame);
-    lv_obj_set_width(icon, kThumbSide);
-    lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(icon, list ? &icon_48 : &icon_36, 0);
-    if (list) lv_obj_center(icon);
-
-    const int32_t line_height = body_line_height();
-    lv_obj_t *name = lv_label_create(row);
-    lv_obj_set_flex_grow(name, 1);
-    if (list) {
-        lv_obj_set_height(name, LV_SIZE_CONTENT);
-        lv_obj_set_style_max_height(name, 2 * line_height, 0);
-    } else {
-        lv_obj_set_height(name, line_height);
-    }
-    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_font_role(name, LV_WIDGETS_FONT_BODY);
-
-    lv_obj_t *arrow = lv_label_create(row);
-    lv_obj_set_width(arrow, 48);
-    lv_obj_set_style_text_align(arrow, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(arrow, LV_SYMBOL_RIGHT);
-    lv_obj_set_font_role(arrow, LV_WIDGETS_FONT_BODY);
-    lv_obj_set_style_text_color(arrow, lv_color_hex(0x808080), 0);
-
-    lv_obj_set_style_pad_hor(row, 24, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_bg_color(row, lv_color_hex(kSelectedColor), LV_STATE_CHECKED);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_CHECKED);
-    lv_obj_t *separator = lv_hor_separator_create(row);
-    lv_obj_set_ignore_layout(separator, true);
-    lv_obj_set_clickable(separator, false);
-    lv_obj_align(separator, LV_ALIGN_BOTTOM_MID, 0, 0);
-    return row;
-}
-
-void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
-    const DirectoryEntry &entry = entries_[index];
-    lv_obj_t *frame = layout_ == BrowserLayout::List ? lv_obj_get_child(row, 0) : row;
-    drop_thumbnail(frame);
-    lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
-    lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
-    lv_obj_set_clickable(row,
-                         selecting_ || entry.directory || entry.kind != MediaKind::None);
-    lv_obj_set_state(row, LV_STATE_CHECKED, selecting_ && selected_[index]);
-    bind_thumbnail(frame, index);
-}
-
-std::size_t FileBrowserPage::cellCount() const {
-    return entries_.size();
-}
-
-int32_t FileBrowserPage::cellWidth() const {
-    return kGridThumbBox.width;
-}
-
-int32_t FileBrowserPage::cellHeight() const {
-    return kGridThumbBox.height + kGridNameGap + 2 * body_line_height();
-}
-
-int32_t FileBrowserPage::columnSpacing() const {
-    return kGridMinGap;
-}
-
-int32_t FileBrowserPage::rowSpacing() const {
-    return kGridRowGap;
-}
-
-lv_obj_t *FileBrowserPage::createCell(lv_obj_t *parent) {
-    lv_obj_t *cell = lv_container_create(parent);
-    lv_obj_set_scrollable(cell, false);
-    /* OVERFLOW_VISIBLE only lets children past the cell by its ext draw size. */
-    lv_obj_set_overflow_visible(cell, true);
-    lv_obj_add_event_fn(cell, LV_EVENT_REFR_EXT_DRAW_SIZE, [](lv_event_t *e) {
-        lv_event_set_ext_draw_size(e, kGridHighlightPad);
-    });
-    lv_obj_refresh_ext_draw_size(cell);
-    lv_obj_set_state_trickle(cell, true);
-
-    lv_obj_t *body = lv_container_create(cell);
-    lv_obj_set_clickable(body, false);
-    lv_obj_set_scrollable(body, false);
-    lv_obj_set_pos(body, -kGridHighlightPad, -kGridHighlightPad);
-    lv_obj_set_size(body, kGridThumbBox.width + 2 * kGridHighlightPad, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_all(body, kGridHighlightPad, 0);
-    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(body, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(body, kGridNameGap, 0);
-    lv_obj_set_style_radius(body, 6 + kGridHighlightPad, 0);
-    lv_obj_set_style_bg_color(body, lv_color_black(), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(body, 35, LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(body, lv_color_hex(kSelectedColor), LV_STATE_CHECKED);
-    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, LV_STATE_CHECKED);
-
-    lv_obj_t *frame = lv_container_create(body, lv_color_hex(kListThumbColor));
-    lv_obj_set_size(frame, kGridThumbBox.width, kGridThumbBox.height);
-    lv_obj_set_style_radius(frame, 6, 0);
-    lv_obj_set_style_clip_corner(frame, true, 0);
-    lv_obj_set_clickable(frame, false);
-
-    lv_obj_t *icon = lv_label_create(frame);
-    lv_obj_set_style_text_font(icon, &icon_48, 0);
-    lv_obj_center(icon);
-
-    lv_obj_t *name = lv_label_create(body);
-    lv_obj_set_width(name, LV_PCT(100));
-    lv_obj_set_style_max_height(name, 2 * body_line_height(), 0);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(name, LV_WIDGETS_FONT_BODY);
-    return cell;
-}
-
-void FileBrowserPage::bindCell(lv_obj_t *cell, std::size_t index) {
-    const DirectoryEntry &entry = entries_[index];
-    lv_obj_t *body = lv_obj_get_child(cell, 0);
-    lv_obj_t *frame = lv_obj_get_child(body, 0);
-    drop_thumbnail(frame);
-    lv_obj_set_clickable(cell, selecting_ || entry.directory || entry.kind != MediaKind::None);
-    lv_obj_set_state(cell, LV_STATE_CHECKED, selecting_ && selected_[index]);
-    lv_label_set_text(lv_obj_get_child(body, 1), entry.name.c_str());
-    bind_thumbnail(frame, index);
-}
-
-void FileBrowserPage::didSelectCell(std::size_t index) {
-    didSelectRow(index);
-}
-
-void FileBrowserPage::bind_thumbnail(lv_obj_t *frame, std::size_t index) {
-    const DirectoryEntry &entry = entries_[index];
-    const char *icon = entry.directory                ? TABLER_FOLDER_FILLED
-                     : entry.kind == MediaKind::Video ? TABLER_MOVIE
-                     : entry.kind == MediaKind::Audio ? TABLER_MUSIC
-                     : entry.kind == MediaKind::Image ? TABLER_PHOTO
-                                                      : TABLER_FILE;
-    lv_obj_t *label = lv_obj_get_child(frame, 0);
-    lv_label_set_text(label, icon);
-
-    std::shared_ptr<const ImagePixels> pixels;
-    if (!entry.directory && has_thumbnail(entry.kind)) {
-        pixels = media_cache_thumbnail(entry_path(index), thumb_box());
-    }
-    lv_obj_set_hidden(label, pixels != nullptr);
-    if (layout_ == BrowserLayout::Grid) {
-        lv_obj_set_width(frame, pixels ? kGridThumbBox.width : kGridThumbBox.height);
-        lv_obj_set_style_bg_opa(frame, pixels ? LV_OPA_TRANSP : LV_OPA_COVER, 0);
-    }
-    /* Inserted first so flex puts it where the icon was; callers read the
-       row's children by index before this point. */
-    if (lv_obj_t *image = pixels ? image_object_create(frame, std::move(pixels)) : nullptr) {
-        if (layout_ != BrowserLayout::Grid) {
-            const ImageSize box = thumb_box();
-            lv_obj_set_size(image, box.width, box.height);
-            lv_image_set_inner_align(image, LV_IMAGE_ALIGN_CENTER);
+void FileBrowserPage::run_move(const std::vector<std::string> &sources,
+                               const std::string &destination, bool skip_existing) {
+    std::string failed;
+    int error = 0;
+    for (const std::string &source : sources) {
+        std::string name = name_of(source);
+        if (exists(destination + "/" + name)) {
+            if (skip_existing) continue;
+            name = unused_name(destination, name, is_directory(source));
         }
-        if (layout_ != BrowserLayout::List) {
-            lv_obj_set_style_radius(image, 6, 0);
-            lv_obj_set_style_clip_corner(image, true, 0);
+        const std::string target = destination + "/" + name;
+        if (rename(source.c_str(), target.c_str()) != 0) {
+            failed = source;
+            error = errno;
+            ESP_LOGE(TAG, "rename %s -> %s: %s", source.c_str(), target.c_str(), strerror(error));
+            break;
         }
-        lv_obj_move_to_index(image, 0);
+        media_cache_forget(source);
     }
+    reload_directory();
+    if (error != 0) show_error("Move failed", failed, error);
 }
 
 std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) const {
-    const MediaKind kind = entries_[index].kind;
+    const PsramVector<DirectoryEntry> &entries = browser_.entries();
+    const MediaKind kind = entries[index].kind;
     std::vector<PlaylistItem> items;
     std::size_t current = 0;
-    for (std::size_t i = 0; i < entries_.size(); i++) {
-        const DirectoryEntry &entry = entries_[i];
+    for (std::size_t i = 0; i < entries.size(); i++) {
+        const DirectoryEntry &entry = entries[i];
         if (entry.directory || entry.kind != kind) continue;
         if (i == index) current = items.size();
-        items.push_back({ entry.name.c_str(), entry_path(i) });
+        items.push_back({ entry.name.c_str(), browser_.entry_path(i) });
     }
     return std::make_shared<Playlist>(std::move(items), current);
 }
 
-void FileBrowserPage::didSelectRow(std::size_t index) {
-    if (selecting_) {
-        toggle_selected(index);
-        return;
-    }
-    const DirectoryEntry &entry = entries_[index];
-    if (entry.directory) {
-        home_->push(std::make_shared<FileBrowserPage>(entry_path(index), entry.name.c_str()));
-    } else if (entry.kind == MediaKind::Audio) {
-        media_cache_resolve(entry_path(index), MetaWantInfo, {}, kResolveTimeoutMs);
+void FileBrowserPage::did_open_file(std::size_t index) {
+    const DirectoryEntry &entry = browser_.entries()[index];
+    if (entry.kind == MediaKind::Audio) {
+        media_cache_resolve(browser_.entry_path(index), MetaWantInfo, {}, kResolveTimeoutMs);
         screen_manager.push(std::make_shared<AudioPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Video) {
         screen_manager.push(std::make_shared<VideoPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Image) {
         screen_manager.push(std::make_shared<ImageViewerScreen>(make_playlist(index)));
     }
+}
+
+void FileBrowserPage::did_change_directory() {
+    if (home_) home_->refresh_navigation();
+}
+
+void FileBrowserPage::did_change_selection() {
+    update_selection();
+}
+
+void FileBrowserPage::build(lv_obj_t *contents) {
+    contents_ = contents;
+    toolbar_ = nullptr;
+    lv_obj_set_style_bg_color(contents, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(contents, LV_OPA_COVER, 0);
+    browser_.build(contents);
+    if (browser_.selecting()) build_toolbar();
+}
+
+void FileBrowserPage::on_appear() {
+    browser_.on_appear();
+}
+
+void FileBrowserPage::on_disappear() {
+    browser_.on_disappear();
+}
+
+void FileBrowserPage::save_state() {
+    browser_.save_state();
+    contents_ = nullptr;
+    toolbar_ = nullptr;
+}
+
+bool FileBrowserPage::is_under(const std::string &mount_point) const {
+    return path_is_under(browser_.root(), mount_point);
 }

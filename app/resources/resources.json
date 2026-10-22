@@ -25,7 +25,9 @@
         "TABLER_MUSIC": "tabler/music.svg",
         "TABLER_PHOTO": "tabler/photo.svg",
         "TABLER_MOVIE": "tabler/movie.svg",
-        "TABLER_FILE": "tabler/file.svg"
+        "TABLER_FILE": "tabler/file.svg",
+        "TABLER_DEVICE_SD_CARD": "tabler/device-sd-card.svg",
+        "TABLER_DEVICE_USB": "tabler/device-usb.svg"
       }
     },
     "icon_36": {

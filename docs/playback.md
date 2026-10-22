@@ -785,7 +785,7 @@ what both screens are constructed with, so a screen has no path of its own —
 `step(delta, repeat)`, which is also the single place the wrap rule lives.
 
 - **The screens' list comes from the file browser, not from a second scan.**
-  `FileBrowserPage` already holds the directory listing, and on FAT another
+  `FileBrowser` already holds the directory listing, and on FAT another
   `opendir` walk over a few hundred files is not free. It hands over the
   entries of the same `MediaKind` as the file that was tapped, in the order it
   shows them, so a music file plays the directory's music and a video its

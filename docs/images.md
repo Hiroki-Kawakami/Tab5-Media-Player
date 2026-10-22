@@ -204,7 +204,7 @@ no LVGL display of its own either.
 ### Music
 
 The panel's BGM section switches music on and picks its source, one audio
-file or a directory, with `BgmPickerScreen`.
+file or a directory, with `FilePickerScreen`.
 
 - **The slideshow task plays it through the player**, the same one the audio
   screen uses. The first item is opened as the task starts, and the player is

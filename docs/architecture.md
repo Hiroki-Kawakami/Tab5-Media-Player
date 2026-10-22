@@ -229,9 +229,28 @@ The menu pane and the page pane are built once; rotation only resizes and hides
 them. Every navigation, rotation and eject rebuilds the page pane on the next
 LVGL tick rather than in place. Navigation is triggered from a back button that
 the rebuild deletes, and the list calls back into the page that a pop destroys,
-so neither can happen inside the event. Pages outlive their views: a
-`FileBrowserPage` keeps its entries and scroll offset, so going back or
-rotating does not re-read the directory.
+so neither can happen inside the event. Pages outlive their views, so rotating
+does not re-read anything.
+
+A folder is not a page of its own. `FileBrowser` (`app/screens/file_browser.*`)
+keeps the levels from the top of the tree down to the open folder, each with
+its listing and scroll offset, and one `FileBrowserPage` wraps it; the back
+button asks the page first and pops it only from the top level. The same
+browser is what `FilePickerScreen` shows, which has no page stack and has to
+open deep in a tree and still go up from there. Going back does not re-read a
+directory: a change to the files calls `file_browser_invalidate()`, and every
+level listed before it is read again when it is next shown.
+
+The selection mode's operations live in `FileBrowserPage`. Rename and Move are
+a `rename()` on the UI thread; Move stays within the storage it started on (its
+picker's root is the mount point), so it never has to copy. Names that already
+exist at the destination are found before anything moves, and one modal asks
+Skip or Keep Both (`name (2).ext`) for all of them. Delete runs on the task in
+`app/media/file_operation.*` behind a progress modal the page polls; its stack
+is in internal RAM, which is free while Home is up because the decoders' task
+stacks are gone. FATFS is built without file locking, so the page withdraws its
+cache requests before deleting rather than letting a reader hold a file that is
+being unlinked, and every path it changed is dropped from `media_cache`.
 
 The menu is never rebuilt by navigation, so selecting a row in landscape keeps
 its scroll position. `refresh_menu()` rebuilds only the rows, for when the set
@@ -368,7 +387,7 @@ The card is mounted at `/sdcard` when the Home screen's SD Card button is
 pressed, not at boot, so a card inserted after power-on still works and a
 missing card surfaces as a modal rather than a log line. It is never unmounted.
 
-`FileBrowserPage` classifies entries by `dirent::d_type` rather than `stat`:
+`media_directory_list()` classifies entries by `dirent::d_type` rather than `stat`:
 on FAT every `stat` is another directory scan, which adds up on a folder of
 hundreds of files. Entries starting with `.` are skipped, which also hides the
 `._*` AppleDouble files macOS leaves on cards.
@@ -401,7 +420,7 @@ Home screen's USB Drive button like the SD card. `app_entry()` switches VBUS on
 and installs the host stack at boot so a drive plugged in later is seen.
 
 `app_entry()` keeps the first connected `MscDevice` and drops it on its
-disconnect. The USB Drive row in the Home menu and in the BGM picker's storage
+disconnect. The USB Drive row in the Home menu and in the file picker's storage
 list exists only while it is held; both lists are rebuilt from the connect and
 disconnect callbacks. Pulling a mounted drive sends `player_eject("/usb")`, which stops
 reading at once, then closes a player on a `/usb` file and drops the `/usb`

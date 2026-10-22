@@ -469,7 +469,7 @@ pixels while the reader is already on the next file. One job may be queued
 between them — enough to hide the decode behind the read without holding a
 third picture in PSRAM.
 
-`FileBrowserPage` asks for the visible range twice: once for tags alone, then
+`FileBrowser` asks for the visible range twice: once for tags alone, then
 for tags and thumbnails. Since the queue is FIFO within a priority, every row
 gets its title before any picture is read, which is what makes a folder look
 answered while the thumbnails are still arriving. An image file has no title to

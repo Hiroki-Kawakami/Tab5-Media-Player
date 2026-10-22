@@ -60,16 +60,19 @@ void HomeScreen::build() {
     layout();
 }
 
-void HomeScreen::push(std::shared_ptr<HomePage> page) {
-    page->home_ = this;
-    navigate([this, page] { stack_.push_back(page); });
-}
-
 void HomeScreen::pop() {
     navigate([this] {
         if (!stack_.empty()) stack_.pop_back();
         if (stack_.empty()) selected_.reset();
     });
+}
+
+void HomeScreen::back() {
+    if (visible_ && visible_->can_go_back()) {
+        visible_->go_back();
+    } else {
+        pop();
+    }
 }
 
 void HomeScreen::eject(const std::string &mount_point) {
@@ -197,9 +200,9 @@ void HomeScreen::build_page() {
 void HomeScreen::build_navigation(HomePage *page) {
     navigation_ = lv_navigation_create(page_pane_, LV_NAVIGATION_STYLE_LIST);
     lv_obj_move_to_index(navigation_, 0);
-    if (page->shows_back() && (!landscape_ || stack_.size() > 1)) {
+    if (page->shows_back() && (!landscape_ || stack_.size() > 1 || page->can_go_back())) {
         lv_navigation_back_create(navigation_, page->title().c_str(),
-                                  [this](lv_event_t *) { pop(); });
+                                  [this](lv_event_t *) { back(); });
     } else {
         lv_navigation_title_create(navigation_, page->title().c_str());
     }
@@ -218,7 +221,10 @@ void HomeScreen::refresh_navigation() {
 
 void HomeScreen::select(const MenuItem &item) {
     if (selected_ == item.id && !stack_.empty()) {
-        navigate([this] { stack_.resize(1); });
+        navigate([this] {
+            stack_.resize(1);
+            stack_.front()->go_to_root();
+        });
         return;
     }
     auto page = (this->*item.open)();
@@ -236,7 +242,7 @@ std::shared_ptr<HomePage> HomeScreen::open_sd_card() {
         show_mount_error("SD Card", "Failed to mount SD card", err);
         return nullptr;
     }
-    return std::make_shared<FileBrowserPage>(kSdMountPoint, "SD Card");
+    return std::make_shared<FileBrowserPage>(kSdMountPoint);
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
@@ -249,7 +255,7 @@ std::shared_ptr<HomePage> HomeScreen::open_usb_drive() {
         show_mount_error("USB Drive", "Failed to mount USB drive", err);
         return nullptr;
     }
-    return std::make_shared<FileBrowserPage>(kUsbMountPoint, "USB Drive");
+    return std::make_shared<FileBrowserPage>(kUsbMountPoint);
 }
 
 std::shared_ptr<HomePage> HomeScreen::open_video_input() {

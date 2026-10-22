@@ -7,7 +7,7 @@
 #include "media/image_codec.hpp"
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
-#include "screens/image_viewer/bgm_picker_screen.hpp"
+#include "screens/file_picker_screen.hpp"
 #include "screens/image_viewer/info_panel.hpp"
 #include "screens/image_viewer/slideshow_panel.hpp"
 #include "screens/media_controls.hpp"
@@ -210,13 +210,16 @@ void ImageViewerScreen::buildPanels() {
 
 void ImageViewerScreen::chooseBgm() {
     const std::string &saved = settings_slideshow_bgm_path();
-    screen_manager.push(std::make_shared<BgmPickerScreen>(
-        saved.empty() ? path() : saved, [this](const std::string &picked) {
-            settings_set_slideshow_bgm_path(picked);
-            settings_commit();
-            const SlideshowPanelValues values = slideshow_values();
-            if (slideshow_) lv_obj_send_event(slideshow_, LV_EVENT_REFRESH, (void *)&values);
-        }));
+    FilePickerOptions options;
+    options.start = saved.empty() ? path() : saved;
+    options.file_kind = MediaKind::Audio;
+    options.on_pick = [this](const std::string &picked) {
+        settings_set_slideshow_bgm_path(picked);
+        settings_commit();
+        const SlideshowPanelValues values = slideshow_values();
+        if (slideshow_) lv_obj_send_event(slideshow_, LV_EVENT_REFRESH, (void *)&values);
+    };
+    screen_manager.push(std::make_shared<FilePickerScreen>(std::move(options)));
 }
 
 void ImageViewerScreen::refreshInfo() {

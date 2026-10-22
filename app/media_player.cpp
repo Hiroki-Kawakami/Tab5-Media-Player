@@ -18,7 +18,7 @@
 #include "screen_manager.hpp"
 #include "screens/home_screen.hpp"
 #include "screens/audio_player_screen.hpp"
-#include "screens/image_viewer/bgm_picker_screen.hpp"
+#include "screens/file_picker_screen.hpp"
 #include "screens/image_viewer_screen.hpp"
 #include "screens/video_input_screen.hpp"
 #include "screens/video_player_screen.hpp"
@@ -189,7 +189,7 @@ void app_entry() {
         }
         lv_lock();
         lv_async_call([] {
-            BgmPickerScreen::refresh_storages();
+            FilePickerScreen::refresh_storages();
             if (auto home = s_home.lock()) home->refresh_menu();
         });
         lv_unlock();
@@ -206,9 +206,9 @@ void app_entry() {
             media_cache_forget(kUsbMountPoint);
             AudioPlayerScreen::eject(kUsbMountPoint);
             VideoPlayerScreen::eject(kUsbMountPoint);
-            BgmPickerScreen::eject(kUsbMountPoint);
+            FilePickerScreen::eject(kUsbMountPoint);
             ImageViewerScreen::eject(kUsbMountPoint);
-            BgmPickerScreen::refresh_storages();
+            FilePickerScreen::refresh_storages();
             if (auto home = s_home.lock()) {
                 home->eject(kUsbMountPoint);
                 home->refresh_menu();

@@ -5,6 +5,7 @@
 
 #pragma once
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,7 +17,10 @@
 #include "settings.hpp"
 #include "widgets.hpp"
 
-class FileBrowserPage : public HomePage, private ListDataSource, private GridDataSource {
+class FileBrowserPage : public HomePage,
+                        public std::enable_shared_from_this<FileBrowserPage>,
+                        private ListDataSource,
+                        private GridDataSource {
 public:
     FileBrowserPage(std::string path, std::string title);
     ~FileBrowserPage() override;
@@ -58,6 +62,9 @@ private:
     lv_obj_t *progress_label_ = nullptr;
     lv_obj_t *progress_bar_ = nullptr;
     lv_timer_t *progress_timer_ = nullptr;
+    lv_obj_t *rename_modal_ = nullptr;
+    lv_obj_t *rename_error_ = nullptr;
+    lv_obj_t *keyboard_ = nullptr;
 
     void open_menu(lv_obj_t *anchor);
     void set_selecting(bool selecting);
@@ -75,6 +82,10 @@ private:
     void poll_operation();
     void finish_operation(const FileOperationStatus &status, const char *failure);
     void reload_directory();
+    void open_rename();
+    void close_rename();
+    void submit_rename(const std::string &name);
+    void post(std::function<void(FileBrowserPage &)> fn);
     void set_layout(BrowserLayout layout);
     ImageSize thumb_box() const;
     std::size_t first_visible_entry() const;

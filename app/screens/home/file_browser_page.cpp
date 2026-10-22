@@ -14,9 +14,15 @@
 #include "screens/image_object.hpp"
 #include "screens/image_viewer_screen.hpp"
 #include "screens/video_player_screen.hpp"
+#include "esp_log.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
+#include <strings.h>
+#include <sys/stat.h>
+
+static const char *TAG = "file_browser";
 
 static constexpr int32_t kRowHeight = 80;
 static constexpr int32_t kThumbSide = 56;
@@ -37,6 +43,7 @@ static constexpr int32_t kToolbarPadding = 24;
 static constexpr int32_t kToolbarButtonHeight = 72;
 static constexpr int32_t kModalPadding = 16;
 static constexpr uint32_t kProgressPeriodMs = 100;
+static constexpr const char *kInvalidNameChars = "/\\:*?\"<>|";
 
 static FileBrowserPage *s_visible;
 
@@ -63,6 +70,15 @@ FileBrowserPage::FileBrowserPage(std::string path, std::string title)
 FileBrowserPage::~FileBrowserPage() {
     release_requests();
     close_progress();
+    close_rename();
+}
+
+static std::size_t utf8_length(const std::string &text) {
+    std::size_t length = 0;
+    for (unsigned char c : text) {
+        if ((c & 0xc0) != 0x80) length++;
+    }
+    return length;
 }
 
 void FileBrowserPage::release_requests() {
@@ -285,6 +301,106 @@ void FileBrowserPage::build_toolbar() {
     rename_button_ = add("Rename", LV_BUTTON_STYLE_SECONDARY);
     delete_button_ = add("Delete", LV_BUTTON_STYLE_DESTRUCTIVE);
     lv_obj_add_event_fn(delete_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { confirm_delete(); });
+    lv_obj_add_event_fn(rename_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { open_rename(); });
+}
+
+void FileBrowserPage::post(std::function<void(FileBrowserPage &)> fn) {
+    lv_async_call([weak = weak_from_this(), fn = std::move(fn)] {
+        if (auto self = weak.lock()) fn(*self);
+    });
+}
+
+void FileBrowserPage::open_rename() {
+    if (selected_count_ != 1 || rename_modal_) return;
+    const std::string path = selected_paths().front();
+    const std::string name = path.substr(path.rfind('/') + 1);
+    std::size_t stem = name.size();
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
+        const std::size_t dot = name.rfind('.');
+        if (dot != std::string::npos && dot > 0) stem = dot;
+    }
+
+    auto screen = lv_obj_get_screen(contents_);
+    rename_modal_ = lv_modal_open(screen);
+    lv_modal_title_create(rename_modal_, "Rename");
+
+    auto textarea = lv_textarea_create(rename_modal_);
+    lv_textarea_set_one_line(textarea, true);
+    lv_textarea_set_text(textarea, name.c_str());
+    lv_textarea_set_cursor_pos(textarea, (int32_t)utf8_length(name.substr(0, stem)));
+    lv_obj_set_width(textarea, LV_PCT(100));
+    lv_obj_set_font_role(textarea, LV_WIDGETS_FONT_BODY);
+
+    rename_error_ = lv_modal_message_create(rename_modal_, "");
+    lv_obj_set_style_text_color(rename_error_, lv_color_hex(0xd32f2f), 0);
+    lv_obj_set_hidden(rename_error_, true);
+
+    auto buttons = lv_container_create(rename_modal_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(buttons, kModalPadding, 0);
+
+    /* Deleting the keyboard inside its own event hangs LVGL, so closing goes through post(). */
+    auto cancel = [this](lv_event_t *) { post([](FileBrowserPage &page) { page.close_rename(); }); };
+    auto submit = [this, textarea](lv_event_t *) {
+        std::string text = lv_textarea_get_text(textarea);
+        post([text](FileBrowserPage &page) { page.submit_rename(text); });
+    };
+    lv_modal_button_create(buttons, "Cancel", LV_MODAL_BUTTON_TYPE_SECONDARY, cancel);
+    lv_modal_button_create(buttons, "Rename", LV_MODAL_BUTTON_TYPE_PRIMARY, submit);
+
+    keyboard_ = lv_keyboard_create(screen);
+    lv_obj_set_ignore_layout(keyboard_, true);
+    lv_obj_set_size(keyboard_, LV_PCT(100), LV_PCT(40));
+    lv_obj_set_font_role(keyboard_, LV_WIDGETS_FONT_BODY);
+    lv_obj_align(keyboard_, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(keyboard_, textarea);
+    lv_obj_add_event_fn(keyboard_, LV_EVENT_READY, submit);
+    lv_obj_add_event_fn(keyboard_, LV_EVENT_CANCEL, cancel);
+
+    lv_obj_update_layout(screen);
+    const int32_t above = lv_obj_get_height(screen) - lv_obj_get_height(keyboard_);
+    lv_obj_align(rename_modal_, LV_ALIGN_TOP_MID, 0,
+                 std::max<int32_t>(0, (above - lv_obj_get_height(rename_modal_)) / 2));
+}
+
+void FileBrowserPage::close_rename() {
+    if (keyboard_) lv_obj_delete(keyboard_);
+    if (rename_modal_) lv_modal_close(rename_modal_);
+    keyboard_ = rename_modal_ = rename_error_ = nullptr;
+}
+
+void FileBrowserPage::submit_rename(const std::string &name) {
+    if (!rename_modal_) return;
+    const std::string from = selected_paths().front();
+    const std::string old_name = from.substr(from.rfind('/') + 1);
+    const std::string to = path_ + "/" + name;
+
+    std::string error;
+    struct stat st;
+    if (name.empty()) {
+        error = "Enter a name.";
+    } else if (name == "." || name == "..") {
+        error = "This name is not allowed.";
+    } else if (name.find_first_of(kInvalidNameChars) != std::string::npos) {
+        error = "A name can't contain / \\ : * ? \" < > |";
+    } else if (name == old_name) {
+        close_rename();
+        return;
+    } else if (strcasecmp(name.c_str(), old_name.c_str()) != 0 && stat(to.c_str(), &st) == 0) {
+        error = "\"" + name + "\" already exists.";
+    } else if (rename(from.c_str(), to.c_str()) != 0) {
+        error = strerror(errno);
+        ESP_LOGE(TAG, "rename %s -> %s: %s", from.c_str(), to.c_str(), error.c_str());
+    }
+    if (!error.empty()) {
+        lv_label_set_text(rename_error_, error.c_str());
+        lv_obj_set_hidden(rename_error_, false);
+        return;
+    }
+
+    close_rename();
+    media_cache_forget(from);
+    reload_directory();
 }
 
 std::vector<std::string> FileBrowserPage::selected_paths() const {
@@ -405,13 +521,23 @@ void FileBrowserPage::reload_directory() {
     selected_count_ = 0;
     if (!contents_) return;
 
-    const std::size_t first = list_ ? first_visible_entry() : SIZE_MAX;
+    if (toolbar_) lv_obj_delete(toolbar_);
+    toolbar_ = nullptr;
+    opened_ = media_directory_list(path_, &entries_);
+    loaded_ = true;
     release_requests();
-    lv_obj_clean(contents_);
-    scroll_y_ = 0;
     prefetched_ = false;
-    build(contents_);
-    if (list_ && first != SIZE_MAX) show_entry(std::min(first, entries_.size() - 1));
+    if (list_ && opened_ && !entries_.empty()) {
+        reload_entries();
+        s_visible = this;
+        requested_first_ = SIZE_MAX;
+        media_cache_observe(token_, meta_ready);
+        request_visible();
+    } else {
+        lv_obj_clean(contents_);
+        scroll_y_ = 0;
+        build(contents_);
+    }
     if (home_) home_->refresh_navigation();
 }
 

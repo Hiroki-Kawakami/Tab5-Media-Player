@@ -245,10 +245,19 @@ The selection mode's operations live in `FileBrowserPage`. Rename and Move are
 a `rename()` on the UI thread; Move stays within the storage it started on (its
 picker's root is the mount point), so it never has to copy. Names that already
 exist at the destination are found before anything moves, and one modal asks
-Skip or Keep Both (`name (2).ext`) for all of them. Delete runs on the task in
-`app/media/file_operation.*` behind a progress modal the page polls; its stack
-is in internal RAM, which is free while Home is up because the decoders' task
-stacks are gone. FATFS is built without file locking, so the page withdraws its
+Skip or Keep Both (`name (2).ext`) for all of them; Copy asks the same way.
+Delete and Copy run on the task in `app/media/file_operation.*` behind a
+progress modal the page polls; its stack is in internal RAM, which is free while
+Home is up because the decoders' task stacks are gone. Copy reaches every
+storage and measures the bytes before it starts so the bar can follow them.
+A second task reads while the operation's task writes, through two 1 MB PSRAM
+buffers that exist only while it runs (the decoders' PSRAM is not in use while
+Home is up either): between the SD card and a USB drive the two sides overlap,
+which took 100 MB from 4.7 to 7.2 MB/s on the board; on one storage they
+cannot, and SD to SD stays at 3.5 MB/s, bound by the card's writes. The
+buffers are 64-byte aligned so FATFS hands them to DMA instead of bouncing
+every sector through internal RAM, which alone took the same copy from 3.2 to
+4.7 MB/s. A cancelled or failed copy removes the file it was writing. FATFS is built without file locking, so the page withdraws its
 cache requests before deleting rather than letting a reader hold a file that is
 being unlinked, and every path it changed is dropped from `media_cache`.
 

@@ -78,7 +78,8 @@ private:
     std::vector<Level> levels_;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     BrowserLayout layout_ = BrowserLayout::Compact;
-    lv_obj_t *view_ = nullptr;
+    lv_obj_t *contents_ = nullptr;
+    lv_obj_t *body_ = nullptr;
     lv_obj_t *list_ = nullptr;
     std::size_t requested_first_ = SIZE_MAX;
     uint32_t token_ = 0;

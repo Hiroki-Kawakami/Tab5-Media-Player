@@ -28,6 +28,7 @@ static constexpr int32_t kToolbarPadding = 24;
 static constexpr int32_t kToolbarButtonHeight = 72;
 static constexpr int32_t kModalPadding = 16;
 static constexpr uint32_t kProgressPeriodMs = 100;
+static constexpr int32_t kProgressSteps = 1000;
 static constexpr const char *kInvalidNameChars = "/\\:*?\"<>|";
 
 static std::string name_of(const std::string &path) {
@@ -175,7 +176,10 @@ void FileBrowserPage::build_toolbar() {
     copy_button_ = add("Copy", LV_BUTTON_STYLE_SECONDARY);
     rename_button_ = add("Rename", LV_BUTTON_STYLE_SECONDARY);
     delete_button_ = add("Delete", LV_BUTTON_STYLE_DESTRUCTIVE);
-    lv_obj_add_event_fn(move_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { open_move(); });
+    lv_obj_add_event_fn(move_button_, LV_EVENT_CLICKED,
+                        [this](lv_event_t *) { open_destination("Move Here", false); });
+    lv_obj_add_event_fn(copy_button_, LV_EVENT_CLICKED,
+                        [this](lv_event_t *) { open_destination("Copy Here", true); });
     lv_obj_add_event_fn(rename_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { open_rename(); });
     lv_obj_add_event_fn(delete_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { confirm_delete(); });
     update_selection();
@@ -311,22 +315,27 @@ void FileBrowserPage::confirm_delete() {
                            });
 }
 
+void FileBrowserPage::show_busy(const char *title) {
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
+    lv_modal_title_create(modal, title);
+    lv_modal_message_create(modal, "Another file operation is running.");
+    lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
+                           [modal](lv_event_t *) { lv_modal_close(modal); });
+}
+
 void FileBrowserPage::start_delete() {
     std::vector<std::string> paths = browser_.selected_paths();
     if (!file_operation_delete(paths)) {
-        auto modal = lv_modal_open(lv_obj_get_screen(contents_));
-        lv_modal_title_create(modal, "Cannot delete");
-        lv_modal_message_create(modal, "Another file operation is running");
-        lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,
-                               [modal](lv_event_t *) { lv_modal_close(modal); });
+        show_busy("Cannot Delete");
         return;
     }
     browser_.on_disappear();
     operation_paths_ = std::move(paths);
-    open_progress("Deleting");
+    open_progress("Deleting", "Delete failed");
 }
 
-void FileBrowserPage::open_progress(const char *title) {
+void FileBrowserPage::open_progress(const char *title, const char *failure) {
+    operation_failure_ = failure;
     progress_modal_ = lv_modal_open(lv_obj_get_screen(contents_));
     lv_modal_title_create(progress_modal_, title);
     progress_label_ = lv_modal_message_create(progress_modal_, "");
@@ -362,18 +371,25 @@ void FileBrowserPage::close_progress() {
 void FileBrowserPage::poll_operation() {
     const FileOperationStatus status = file_operation_status();
     if (status.finished) {
-        finish_operation(status, "Delete failed");
+        finish_operation(status);
         return;
     }
     const std::size_t step = std::min(status.done + 1, status.total);
     const std::string text = std::to_string(step) + " / " + std::to_string(status.total) + "  " +
                              status.current;
     lv_label_set_text(progress_label_, text.c_str());
-    lv_bar_set_range(progress_bar_, 0, (int32_t)status.total);
-    lv_bar_set_value(progress_bar_, (int32_t)status.done, LV_ANIM_OFF);
+    if (status.bytes_total > 0) {
+        lv_bar_set_range(progress_bar_, 0, kProgressSteps);
+        lv_bar_set_value(progress_bar_, (int32_t)(status.bytes_done * kProgressSteps / status.bytes_total),
+                         LV_ANIM_OFF);
+    } else {
+        lv_bar_set_range(progress_bar_, 0, (int32_t)status.total);
+        lv_bar_set_value(progress_bar_, (int32_t)status.done, LV_ANIM_OFF);
+    }
 }
 
-void FileBrowserPage::finish_operation(const FileOperationStatus &status, const char *failure) {
+void FileBrowserPage::finish_operation(const FileOperationStatus &status) {
+    const char *failure = operation_failure_;
     close_progress();
     for (const std::string &path : operation_paths_) media_cache_forget(path);
     operation_paths_.clear();
@@ -381,30 +397,41 @@ void FileBrowserPage::finish_operation(const FileOperationStatus &status, const 
     if (status.error != 0) show_error(failure, status.failed_path, status.error);
 }
 
-void FileBrowserPage::open_move() {
+void FileBrowserPage::open_destination(const char *confirm, bool copy) {
     if (browser_.selected_count() == 0) return;
     std::vector<std::string> sources = browser_.selected_paths();
     FilePickerOptions options;
     options.start = browser_.path();
-    options.root = browser_.root();
-    options.confirm = "Move Here";
+    options.confirm = confirm;
     options.excluded = sources;
-    options.can_pick = [source = browser_.path()](const std::string &path) { return path != source; };
-    options.on_pick = [weak = weak_from_this(), sources](const std::string &destination) {
-        if (auto page = weak.lock()) page->start_move(sources, destination);
+    if (!copy) {
+        options.root = browser_.root();
+        options.can_pick = [source = browser_.path()](const std::string &path) { return path != source; };
+    }
+    options.on_pick = [weak = weak_from_this(), sources, copy](const std::string &destination) {
+        auto page = weak.lock();
+        if (!page) return;
+        page->check_existing(sources, destination, [page, sources, destination, copy](bool skip) {
+            if (copy) {
+                page->run_copy(sources, destination, skip);
+            } else {
+                page->run_move(sources, destination, skip);
+            }
+        });
     };
     screen_manager.push(std::make_shared<FilePickerScreen>(std::move(options)));
 }
 
-void FileBrowserPage::start_move(const std::vector<std::string> &sources,
-                                 const std::string &destination) {
+void FileBrowserPage::check_existing(const std::vector<std::string> &sources,
+                                     const std::string &destination,
+                                     std::function<void(bool skip_existing)> run) {
     std::vector<std::string> existing;
     for (const std::string &source : sources) {
         const std::string name = name_of(source);
         if (exists(destination + "/" + name)) existing.push_back(name);
     }
     if (existing.empty()) {
-        run_move(sources, destination, false);
+        run(false);
         return;
     }
 
@@ -422,14 +449,14 @@ void FileBrowserPage::start_move(const std::vector<std::string> &sources,
     lv_modal_button_create(buttons, "Cancel", LV_MODAL_BUTTON_TYPE_SECONDARY,
                            [modal](lv_event_t *) { lv_modal_close(modal); });
     lv_modal_button_create(buttons, "Skip", LV_MODAL_BUTTON_TYPE_SECONDARY,
-                           [this, modal, sources, destination](lv_event_t *) {
+                           [modal, run](lv_event_t *) {
                                lv_modal_close(modal);
-                               run_move(sources, destination, true);
+                               run(true);
                            });
     lv_modal_button_create(buttons, "Keep Both", LV_MODAL_BUTTON_TYPE_PRIMARY,
-                           [this, modal, sources, destination](lv_event_t *) {
+                           [modal, run](lv_event_t *) {
                                lv_modal_close(modal);
-                               run_move(sources, destination, false);
+                               run(false);
                            });
 }
 
@@ -454,6 +481,29 @@ void FileBrowserPage::run_move(const std::vector<std::string> &sources,
     }
     reload_directory();
     if (error != 0) show_error("Move failed", failed, error);
+}
+
+void FileBrowserPage::run_copy(const std::vector<std::string> &sources,
+                               const std::string &destination, bool skip_existing) {
+    std::vector<FileCopy> copies;
+    for (const std::string &source : sources) {
+        std::string name = name_of(source);
+        if (exists(destination + "/" + name)) {
+            if (skip_existing) continue;
+            name = unused_name(destination, name, is_directory(source));
+        }
+        copies.push_back({ source, destination + "/" + name });
+    }
+    if (copies.empty()) {
+        set_selecting(false);
+        return;
+    }
+    if (!file_operation_copy(std::move(copies))) {
+        show_busy("Cannot Copy");
+        return;
+    }
+    browser_.on_disappear();
+    open_progress("Copying", "Copy failed");
 }
 
 std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) const {

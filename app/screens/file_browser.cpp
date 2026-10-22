@@ -149,34 +149,33 @@ void FileBrowser::list(Level &level) {
 void FileBrowser::build(lv_obj_t *contents) {
     lv_obj_set_scrollable(contents, false);
     layout_ = settings_browser_layout();
-    view_ = lv_container_create(contents, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_width(view_, LV_PCT(100));
-    lv_obj_set_flex_grow(view_, 1);
-    lv_obj_set_scrollable(view_, false);
-    lv_obj_set_style_bg_color(view_, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(view_, LV_OPA_COVER, 0);
+    contents_ = contents;
+    body_ = nullptr;
     if (level().generation != s_generation) list(level());
     build_view();
 }
 
 void FileBrowser::build_view() {
-    lv_obj_clean(view_);
-    list_ = nullptr;
+    if (body_) lv_obj_delete(body_);
+    body_ = list_ = nullptr;
     const Level &current = level();
     if (!current.opened || current.entries.empty()) {
-        lv_obj_set_flex_align(view_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+        lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                               LV_FLEX_ALIGN_CENTER);
-        auto label = lv_label_create(view_);
-        lv_label_set_text(label, current.opened ? "No files" : "Cannot open directory");
-        lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
-        lv_obj_set_style_text_color(label, lv_color_hex(0x808080), 0);
+        body_ = lv_label_create(contents_);
+        lv_obj_move_to_index(body_, 0);
+        lv_label_set_text(body_, current.opened ? "No files" : "Cannot open directory");
+        lv_obj_set_font_role(body_, LV_WIDGETS_FONT_BODY);
+        lv_obj_set_style_text_color(body_, lv_color_hex(0x808080), 0);
         return;
     }
-    lv_obj_set_flex_align(view_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    list_ = layout_ == BrowserLayout::Grid ? lv_grid_create(view_, this)
-                                           : lv_list_create(view_, this);
+    lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    list_ = layout_ == BrowserLayout::Grid ? lv_grid_create(contents_, this)
+                                           : lv_list_create(contents_, this);
+    body_ = list_;
+    lv_obj_move_to_index(list_, 0);
     lv_obj_add_event_fn(list_, LV_EVENT_SCROLL, [this](lv_event_t *) { request_visible(); });
-    lv_obj_update_layout(view_);
+    lv_obj_update_layout(contents_);
     if (current.scroll_y > 0) lv_obj_scroll_to_y(list_, current.scroll_y, LV_ANIM_OFF);
     observe();
 }
@@ -196,7 +195,7 @@ void FileBrowser::observe() {
 
 void FileBrowser::show_level() {
     if (level().generation != s_generation) list(level());
-    if (view_) {
+    if (contents_) {
         release_requests();
         if (list_ && !level().entries.empty()) {
             if (layout_ == BrowserLayout::Grid) {
@@ -257,7 +256,7 @@ void FileBrowser::reload() {
     selected_.clear();
     selected_count_ = 0;
     list(level());
-    if (!view_) return;
+    if (!contents_) return;
     release_requests();
     if (list_ && !level().entries.empty()) {
         reload_entries();
@@ -285,7 +284,7 @@ void FileBrowser::set_layout(BrowserLayout layout) {
 void FileBrowser::save_state() {
     release_requests();
     if (list_) level().scroll_y = lv_obj_get_scroll_y(list_);
-    list_ = view_ = nullptr;
+    list_ = body_ = contents_ = nullptr;
 }
 
 void FileBrowser::on_appear() {
@@ -307,7 +306,7 @@ void FileBrowser::open_storage(const char *mount_point) {
                      : usb                              ? "Failed to mount USB drive"
                                                         : "Failed to mount SD card";
     if (err != ESP_ERR_NOT_FOUND) text = text + "\n" + esp_err_to_name(err);
-    auto modal = lv_modal_open(lv_obj_get_screen(view_));
+    auto modal = lv_modal_open(lv_obj_get_screen(contents_));
     lv_modal_title_create(modal, storage_name(mount_point));
     lv_modal_message_create(modal, text.c_str());
     lv_modal_button_create(modal, "Close", LV_MODAL_BUTTON_TYPE_PRIMARY,

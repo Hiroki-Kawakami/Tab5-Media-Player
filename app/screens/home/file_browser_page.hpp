@@ -42,6 +42,7 @@ private:
     lv_obj_t *rename_button_ = nullptr;
     lv_obj_t *delete_button_ = nullptr;
     std::vector<std::string> operation_paths_;
+    const char *operation_failure_ = "";
     lv_obj_t *progress_modal_ = nullptr;
     lv_obj_t *progress_label_ = nullptr;
     lv_obj_t *progress_bar_ = nullptr;
@@ -65,14 +66,18 @@ private:
 
     void confirm_delete();
     void start_delete();
-    void open_progress(const char *title);
+    void open_progress(const char *title, const char *failure);
     void close_progress();
     void poll_operation();
-    void finish_operation(const FileOperationStatus &status, const char *failure);
+    void finish_operation(const FileOperationStatus &status);
+    void show_busy(const char *title);
 
-    void open_move();
-    void start_move(const std::vector<std::string> &sources, const std::string &destination);
+    void open_destination(const char *confirm, bool copy);
+    void check_existing(const std::vector<std::string> &sources, const std::string &destination,
+                        std::function<void(bool skip_existing)> run);
     void run_move(const std::vector<std::string> &sources, const std::string &destination,
+                  bool skip_existing);
+    void run_copy(const std::vector<std::string> &sources, const std::string &destination,
                   bool skip_existing);
 
     void did_open_file(std::size_t index) override;

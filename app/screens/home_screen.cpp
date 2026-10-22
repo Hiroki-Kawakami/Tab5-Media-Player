@@ -179,26 +179,41 @@ void HomeScreen::update_menu_rows() {
 }
 
 void HomeScreen::build_page() {
+    navigation_ = nullptr;
     if (stack_.empty()) {
         lv_obj_set_style_bg_color(page_pane_, lv_color_hex(0xeeeeee), 0);
         return;
     }
     lv_obj_set_style_bg_color(page_pane_, lv_color_white(), 0);
 
-    auto navigation = lv_navigation_create(page_pane_, LV_NAVIGATION_STYLE_LIST);
+    HomePage *page = stack_.back().get();
+    build_navigation(page);
     auto contents = lv_spacer_create(page_pane_, LV_PCT(100), LV_SIZE_CONTENT, 1);
     lv_obj_set_flex_flow(contents, LV_FLEX_FLOW_COLUMN);
-
-    HomePage *page = stack_.back().get();
-    if (!landscape_ || stack_.size() > 1) {
-        lv_navigation_back_create(navigation, page->title().c_str(),
-                                  [this](lv_event_t *) { pop(); });
-    } else {
-        lv_navigation_title_create(navigation, page->title().c_str());
-    }
-    page->build_navigation(navigation);
     page->build(contents);
     visible_ = page;
+}
+
+void HomeScreen::build_navigation(HomePage *page) {
+    navigation_ = lv_navigation_create(page_pane_, LV_NAVIGATION_STYLE_LIST);
+    lv_obj_move_to_index(navigation_, 0);
+    if (page->shows_back() && (!landscape_ || stack_.size() > 1)) {
+        lv_navigation_back_create(navigation_, page->title().c_str(),
+                                  [this](lv_event_t *) { pop(); });
+    } else {
+        lv_navigation_title_create(navigation_, page->title().c_str());
+    }
+    page->build_navigation(navigation_);
+}
+
+/* Deferred: the caller is usually a button inside the bar being replaced. */
+void HomeScreen::refresh_navigation() {
+    std::weak_ptr<Screen> weak = weak_from_this();
+    lv_async_call([this, weak] {
+        if (weak.expired() || !visible_ || !navigation_) return;
+        lv_obj_delete(navigation_);
+        build_navigation(visible_);
+    });
 }
 
 void HomeScreen::select(const MenuItem &item) {

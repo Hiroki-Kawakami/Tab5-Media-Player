@@ -19,7 +19,8 @@ class FileBrowserPage : public HomePage, private ListDataSource, private GridDat
 public:
     FileBrowserPage(std::string path, std::string title);
     ~FileBrowserPage() override;
-    const std::string &title() const override { return title_; }
+    const std::string &title() const override { return selecting_ ? selection_title_ : title_; }
+    bool shows_back() const override { return !selecting_; }
     void build_navigation(lv_obj_t *navigation) override;
     void build(lv_obj_t *contents) override;
     void save_state() override;
@@ -42,8 +43,24 @@ private:
     uint32_t idle_token_ = 0;
     bool prefetched_ = false;
     PsramVector<PsramString> visible_;
+    bool selecting_ = false;
+    PsramVector<bool> selected_;
+    std::size_t selected_count_ = 0;
+    std::string selection_title_;
+    lv_obj_t *toolbar_ = nullptr;
+    lv_obj_t *move_button_ = nullptr;
+    lv_obj_t *copy_button_ = nullptr;
+    lv_obj_t *rename_button_ = nullptr;
+    lv_obj_t *delete_button_ = nullptr;
 
     void open_menu(lv_obj_t *anchor);
+    void set_selecting(bool selecting);
+    void toggle_selected(std::size_t index);
+    void select_all(bool selected);
+    void update_selection();
+    void build_toolbar();
+    void reload_entries();
+    void rebind_entry(std::size_t index);
     void set_layout(BrowserLayout layout);
     ImageSize thumb_box() const;
     std::size_t first_visible_entry() const;

@@ -32,6 +32,9 @@ static constexpr int32_t kGridHighlightPad = 8;
 static constexpr std::size_t kLookahead = 2;
 static constexpr std::size_t kPrefetchLimit = 24;
 static constexpr uint32_t kResolveTimeoutMs = 700;
+static constexpr uint32_t kSelectedColor = 0xd6eafd;
+static constexpr int32_t kToolbarPadding = 24;
+static constexpr int32_t kToolbarButtonHeight = 72;
 
 static FileBrowserPage *s_visible;
 
@@ -139,17 +142,47 @@ void FileBrowserPage::meta_ready(const std::string &path) {
 
     for (std::size_t i = 0; i < page->entries_.size(); i++) {
         if (page->entry_path(i) != path) continue;
-        if (page->layout_ == BrowserLayout::Grid) {
-            lv_grid_reload_cell(page->list_, i);
-        } else if (lv_obj_t *row = lv_list_row_for_index(page->list_, i)) {
-            page->bindRow(row, i);
-        }
+        page->rebind_entry(i);
         return;
     }
 }
 
+void FileBrowserPage::rebind_entry(std::size_t index) {
+    if (layout_ == BrowserLayout::Grid) {
+        lv_grid_reload_cell(list_, index);
+    } else if (lv_obj_t *row = lv_list_row_for_index(list_, index)) {
+        bindRow(row, index);
+    }
+}
+
+void FileBrowserPage::reload_entries() {
+    if (!list_) return;
+    if (layout_ == BrowserLayout::Grid) {
+        lv_grid_reload_data(list_, true);
+    } else {
+        lv_list_reload_data(list_, true);
+    }
+}
+
 void FileBrowserPage::build_navigation(lv_obj_t *navigation) {
-    auto button = lv_button_create(lv_navigation_actions(navigation), LV_BUTTON_STYLE_NAVIGATION);
+    lv_obj_t *actions = lv_navigation_actions(navigation);
+    if (selecting_) {
+        lv_obj_set_style_pad_column(actions, kToolbarPadding, 0);
+        auto add = [actions](const char *text, lv_button_style_t style) {
+            auto button = lv_button_create(actions, style);
+            lv_obj_set_height(button, kToolbarButtonHeight);
+            lv_obj_set_style_pad_hor(button, kToolbarPadding, 0);
+            lv_button_set_text(button, text);
+            return button;
+        };
+        const bool deselect = selected_count_ == entries_.size();
+        auto all = add(deselect ? "Deselect All" : "Select All", LV_BUTTON_STYLE_SECONDARY);
+        lv_obj_add_event_fn(all, LV_EVENT_CLICKED, [this, deselect](lv_event_t *) { select_all(!deselect); });
+        auto done = add("Done", LV_BUTTON_STYLE_PRIMARY);
+        lv_obj_add_event_fn(done, LV_EVENT_CLICKED, [this](lv_event_t *) { set_selecting(false); });
+        return;
+    }
+    auto button = lv_button_create(actions, LV_BUTTON_STYLE_NAVIGATION);
     lv_button_set_text(button, TABLER_DOTS, &icon_36);
     lv_obj_add_event_fn(button, LV_EVENT_CLICKED, [this, button](lv_event_t *) { open_menu(button); });
 }
@@ -174,7 +207,80 @@ void FileBrowserPage::open_menu(lv_obj_t *anchor) {
         lv_popover_row_set_checked(row, settings_browser_layout() == item.layout);
     }
     lv_popover_separator_create(popover);
-    lv_popover_row_create(popover, TABLER_PENCIL, &icon_36, "Edit", nullptr);
+    lv_popover_row_create(popover, TABLER_CIRCLE_CHECK, &icon_36, "Select",
+                          [this](lv_event_t *) { set_selecting(true); });
+}
+
+void FileBrowserPage::set_selecting(bool selecting) {
+    if (selecting && !list_) return;
+    selecting_ = selecting;
+    selected_.assign(selecting ? entries_.size() : 0, false);
+    selected_count_ = 0;
+    if (selecting) {
+        build_toolbar();
+    } else if (toolbar_) {
+        lv_obj_delete(toolbar_);
+        toolbar_ = nullptr;
+    }
+    reload_entries();
+    update_selection();
+}
+
+void FileBrowserPage::toggle_selected(std::size_t index) {
+    selected_[index] = !selected_[index];
+    if (selected_[index]) {
+        selected_count_++;
+    } else {
+        selected_count_--;
+    }
+    rebind_entry(index);
+    update_selection();
+}
+
+void FileBrowserPage::select_all(bool selected) {
+    selected_.assign(entries_.size(), selected);
+    selected_count_ = selected ? entries_.size() : 0;
+    reload_entries();
+    update_selection();
+}
+
+void FileBrowserPage::update_selection() {
+    if (selected_count_ == 0) {
+        selection_title_ = "Select Items";
+    } else {
+        selection_title_ = std::to_string(selected_count_) + " Selected";
+    }
+    if (toolbar_) {
+        lv_obj_set_state(move_button_, LV_STATE_DISABLED, selected_count_ == 0);
+        lv_obj_set_state(copy_button_, LV_STATE_DISABLED, selected_count_ == 0);
+        lv_obj_set_state(rename_button_, LV_STATE_DISABLED, selected_count_ != 1);
+        lv_obj_set_state(delete_button_, LV_STATE_DISABLED, selected_count_ == 0);
+    }
+    if (home_) home_->refresh_navigation();
+}
+
+void FileBrowserPage::build_toolbar() {
+    if (toolbar_ || !contents_) return;
+    toolbar_ = lv_container_create(contents_, LV_FLEX_FLOW_ROW);
+    lv_obj_set_size(toolbar_, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(toolbar_, kToolbarPadding, 0);
+    lv_obj_set_style_pad_column(toolbar_, kToolbarPadding, 0);
+    lv_obj_set_style_border_color(toolbar_, lv_color_hex(0xc0c0c0), 0);
+    lv_obj_set_style_border_width(toolbar_, 1, 0);
+    lv_obj_set_style_border_side(toolbar_, LV_BORDER_SIDE_TOP, 0);
+
+    auto add = [this](const char *text, lv_button_style_t style) {
+        auto button = lv_button_create(toolbar_, style);
+        lv_obj_set_size(button, 0, kToolbarButtonHeight);
+        lv_obj_set_flex_grow(button, 1);
+        lv_obj_set_style_opa(button, LV_OPA_40, LV_STATE_DISABLED);
+        lv_button_set_text(button, text);
+        return button;
+    };
+    move_button_ = add("Move", LV_BUTTON_STYLE_SECONDARY);
+    copy_button_ = add("Copy", LV_BUTTON_STYLE_SECONDARY);
+    rename_button_ = add("Rename", LV_BUTTON_STYLE_SECONDARY);
+    delete_button_ = add("Delete", LV_BUTTON_STYLE_DESTRUCTIVE);
 }
 
 void FileBrowserPage::set_layout(BrowserLayout layout) {
@@ -219,6 +325,7 @@ void FileBrowserPage::build(lv_obj_t *contents) {
     lv_obj_set_scrollable(contents, false);
     contents_ = contents;
     list_ = nullptr;
+    toolbar_ = nullptr;
     layout_ = settings_browser_layout();
 
     if (!loaded_) {
@@ -247,6 +354,10 @@ void FileBrowserPage::build(lv_obj_t *contents) {
     }
     media_cache_observe(token_, meta_ready);
     lv_obj_add_event_fn(list_, LV_EVENT_SCROLL, [this](lv_event_t *) { request_visible(); });
+    if (selecting_) {
+        build_toolbar();
+        update_selection();
+    }
     lv_obj_update_layout(contents);
     request_visible();
 }
@@ -267,6 +378,7 @@ void FileBrowserPage::on_disappear() {
 void FileBrowserPage::save_state() {
     release_requests();
     contents_ = nullptr;
+    toolbar_ = nullptr;
     if (!list_) return;
     scroll_y_ = lv_obj_get_scroll_y(list_);
     list_ = nullptr;
@@ -326,6 +438,8 @@ lv_obj_t *FileBrowserPage::createRow(lv_obj_t *parent) {
 
     lv_obj_set_style_pad_hor(row, 24, 0);
     lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_bg_color(row, lv_color_hex(kSelectedColor), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_CHECKED);
     lv_obj_t *separator = lv_hor_separator_create(row);
     lv_obj_set_ignore_layout(separator, true);
     lv_obj_set_clickable(separator, false);
@@ -340,7 +454,8 @@ void FileBrowserPage::bindRow(lv_obj_t *row, std::size_t index) {
     lv_label_set_text(lv_obj_get_child(row, 1), entry.name.c_str());
     lv_obj_set_hidden(lv_obj_get_child(row, 2), !entry.directory);
     lv_obj_set_clickable(row,
-                         entry.directory || entry.kind != MediaKind::None);
+                         selecting_ || entry.directory || entry.kind != MediaKind::None);
+    lv_obj_set_state(row, LV_STATE_CHECKED, selecting_ && selected_[index]);
     bind_thumbnail(frame, index);
 }
 
@@ -368,12 +483,12 @@ lv_obj_t *FileBrowserPage::createCell(lv_obj_t *parent) {
     lv_obj_t *cell = lv_container_create(parent);
     lv_obj_set_scrollable(cell, false);
     /* OVERFLOW_VISIBLE only lets children past the cell by its ext draw size. */
-    lv_obj_add_flag(cell, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_set_overflow_visible(cell, true);
     lv_obj_add_event_fn(cell, LV_EVENT_REFR_EXT_DRAW_SIZE, [](lv_event_t *e) {
         lv_event_set_ext_draw_size(e, kGridHighlightPad);
     });
     lv_obj_refresh_ext_draw_size(cell);
-    lv_obj_add_flag(cell, LV_OBJ_FLAG_STATE_TRICKLE);
+    lv_obj_set_state_trickle(cell, true);
 
     lv_obj_t *body = lv_container_create(cell);
     lv_obj_set_clickable(body, false);
@@ -387,6 +502,8 @@ lv_obj_t *FileBrowserPage::createCell(lv_obj_t *parent) {
     lv_obj_set_style_radius(body, 6 + kGridHighlightPad, 0);
     lv_obj_set_style_bg_color(body, lv_color_black(), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(body, 35, LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(body, lv_color_hex(kSelectedColor), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, LV_STATE_CHECKED);
 
     lv_obj_t *frame = lv_container_create(body, lv_color_hex(kListThumbColor));
     lv_obj_set_size(frame, kGridThumbBox.width, kGridThumbBox.height);
@@ -412,7 +529,8 @@ void FileBrowserPage::bindCell(lv_obj_t *cell, std::size_t index) {
     lv_obj_t *body = lv_obj_get_child(cell, 0);
     lv_obj_t *frame = lv_obj_get_child(body, 0);
     drop_thumbnail(frame);
-    lv_obj_set_clickable(cell, entry.directory || entry.kind != MediaKind::None);
+    lv_obj_set_clickable(cell, selecting_ || entry.directory || entry.kind != MediaKind::None);
+    lv_obj_set_state(cell, LV_STATE_CHECKED, selecting_ && selected_[index]);
     lv_label_set_text(lv_obj_get_child(body, 1), entry.name.c_str());
     bind_thumbnail(frame, index);
 }
@@ -470,6 +588,10 @@ std::shared_ptr<Playlist> FileBrowserPage::make_playlist(std::size_t index) cons
 }
 
 void FileBrowserPage::didSelectRow(std::size_t index) {
+    if (selecting_) {
+        toggle_selected(index);
+        return;
+    }
     const DirectoryEntry &entry = entries_[index];
     if (entry.directory) {
         home_->push(std::make_shared<FileBrowserPage>(entry_path(index), entry.name.c_str()));

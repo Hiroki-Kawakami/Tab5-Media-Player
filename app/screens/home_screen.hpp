@@ -23,6 +23,7 @@ public:
     void pop();
     void eject(const std::string &mount_point);
     void refresh_menu();
+    void refresh_navigation();
 
 private:
     enum class MenuId { SdCard, UsbDrive, VideoInput, AirPlayReceiver, Display, Sound, Wifi };
@@ -45,6 +46,7 @@ private:
     lv_obj_t *menu_contents_ = nullptr;
     lv_obj_t *separator_ = nullptr;
     lv_obj_t *page_pane_ = nullptr;
+    lv_obj_t *navigation_ = nullptr;
     std::vector<std::pair<MenuId, lv_obj_t *>> menu_rows_;
 
     bool is_landscape() const;
@@ -54,6 +56,7 @@ private:
     void build_menu();
     void update_menu_rows();
     void build_page();
+    void build_navigation(HomePage *page);
     void select(const MenuItem &item);
     std::shared_ptr<HomePage> open_sd_card();
     std::shared_ptr<HomePage> open_usb_drive();

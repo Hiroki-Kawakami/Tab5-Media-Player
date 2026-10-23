@@ -1181,6 +1181,20 @@ bool mp4_demux_seek(mp4_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
     return true;
 }
 
+bool mp4_demux_keyframe_at(const mp4_demux_t *demux, int64_t pts_us, uint64_t *offset,
+                           uint32_t *size) {
+    if (!demux || !demux->have_video) return false;
+    const track_t *video = &demux->video;
+    cursor_t cursor;
+    cursor_seek(video, &cursor, sync_at_or_before(video, sample_at_us(video, pts_us, false)));
+    if (!cursor.valid) return false;
+    const uint32_t bytes = sample_size(video, cursor.sample);
+    if (!bytes || cursor.offset + bytes > (uint64_t)mb_size(demux->reader)) return false;
+    *offset = cursor.offset;
+    *size = bytes;
+    return true;
+}
+
 bool mp4_demux_keyframe_before(const mp4_demux_t *demux, int64_t pts_us, int64_t *key_us) {
     if (!demux || !demux->have_video || demux->video.codec == MP4_VIDEO_CODEC_MJPEG) return false;
     const track_t *video = &demux->video;

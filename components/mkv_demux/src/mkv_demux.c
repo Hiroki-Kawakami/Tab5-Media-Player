@@ -84,6 +84,7 @@ static const char *TAG = "mkv_demux";
 #define MKV_MAX_ATTACHMENTS_BYTES (4 * 1024 * 1024)
 #define MKV_MAX_CUES 60000
 #define MKV_PROBE_BLOCKS 64
+#define MKV_KEYFRAME_SCAN_BLOCKS 256
 #define MKV_ROTATION_TOLERANCE_DEG 1.0
 #define MKV_POSE_TOLERANCE_DEG 1.0
 #define MKV_WAVE_FORMAT_BYTES 18
@@ -1201,6 +1202,32 @@ bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us) {
         if (landed_us) *landed_us = demux->skip_before_us;
     }
     return true;
+}
+
+bool mkv_demux_keyframe_at(mkv_demux_t *demux, int64_t pts_us, uint64_t *offset, uint32_t *size) {
+    if (!demux || !demux->video_track) return false;
+    off_t start = demux->first_cluster;
+    if (pts_us > 0 && demux->cue_count) {
+        start = demux->segment_start + (off_t)demux->cues[cue_at_or_before(demux, pts_us)].position;
+    }
+    mb_seek(demux->reader, start);
+    demux->lace_count = 0;
+    demux->lace_next = 0;
+    demux->cluster_time = 0;
+    demux->group_end = 0;
+    for (int i = 0; i < MKV_KEYFRAME_SCAN_BLOCKS; i++) {
+        block_t block;
+        if (!next_block(demux, &block)) return false;
+        mb_seek(demux->reader, block.end);
+        if (block.track != demux->video_track || !block.keyframe || block.laced ||
+            !block.payload) {
+            continue;
+        }
+        *offset = (uint64_t)(block.end - block.payload);
+        *size = block.payload;
+        return true;
+    }
+    return false;
 }
 
 bool mkv_demux_keyframe_before(const mkv_demux_t *demux, int64_t pts_us, int64_t *key_us) {

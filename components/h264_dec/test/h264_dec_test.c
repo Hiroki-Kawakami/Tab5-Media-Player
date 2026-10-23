@@ -173,6 +173,7 @@ int main(int argc, char **argv) {
         .max_mbs = 3600,
         .max_side = 1280,
         .held_pictures = 1,
+        .intra_only = getenv("H264_INTRA") != NULL,
         .threads = getenv("H264_THREADS") ? &kThreads : NULL,
     };
     h264_dec_t *dec = h264_dec_create(&config);
@@ -209,6 +210,7 @@ restart:;
                         e ? " " : "", e ? e : "");
             }
             aus++;
+            if (r == H264_DEC_UNSUPPORTED && config.intra_only && aus > 1) break;
             if (r != H264_DEC_OK && r != H264_DEC_NO_PICTURE) {
                 const char *e = h264_dec_error(dec);
                 fprintf(stderr, "frame %d: result %d %s\n", frames, (int)r, e ? e : "");

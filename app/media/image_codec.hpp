@@ -29,6 +29,22 @@ struct ImageSize {
     }
 };
 
+/* What turns the stored picture upright, in the order of the EXIF orientations
+   1-8. Rotations are clockwise. */
+enum class ImageOrientation : uint8_t {
+    None,
+    MirrorX,
+    Rot180,
+    MirrorY,
+    Transpose,
+    Rot90,
+    Transverse,
+    Rot270,
+};
+
+ImageOrientation image_orientation_from_exif(uint8_t value);
+bool image_orientation_swaps(ImageOrientation orientation);
+
 struct ImageHeader {
     ImageFormat format = ImageFormat::Unknown;
     uint32_t width = 0;
@@ -44,10 +60,15 @@ struct ImageNotes {
 
 bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out);
 
+/* `box` is the upright picture's; the notes keep the stored size. */
 std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageSize box,
-                                          bool rgb888, const volatile bool *cancel,
+                                          bool rgb888, ImageOrientation orientation,
+                                          const volatile bool *cancel,
                                           ImageNotes *notes = nullptr);
-std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSize box, bool rgb888,
+/* Decodes `size` bytes at `offset` in the file; zero size is up to the end. */
+std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, int64_t offset,
+                                               int64_t size, ImageSize box, bool rgb888,
+                                               ImageOrientation orientation,
                                                const volatile bool *cancel,
                                                ImageNotes *notes = nullptr);
 /* Decodes into `dst` as packed rows, blocking while another task holds the
@@ -60,6 +81,11 @@ bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, boo
 bool image_decode_to_fit(const uint8_t *data, std::size_t size, ImageSize box, bool rgb888,
                          uint8_t *dst, std::size_t capacity, uint8_t *scratch,
                          std::size_t scratch_capacity, ImageSize *out);
+struct PackedYuvImage;
+
+std::shared_ptr<ImagePixels> image_from_packed_yuv(const PackedYuvImage &image, ImageSize box,
+                                                   bool rgb888, ImageOrientation orientation);
+
 /* `store` gets the encoded bytes, which live only for the call. */
 bool image_encode(const ImagePixels &pixels,
                   const std::function<bool(const uint8_t *data, std::size_t size)> &store);

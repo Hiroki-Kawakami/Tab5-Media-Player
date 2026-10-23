@@ -124,7 +124,7 @@ static bool setup_rows(h264_dec_t *dec) {
     }
     dec->win_y = dec->win_u = dec->win_v = NULL;
     dec->win_frame = NULL;
-    if (!allocate_window(dec)) dec->win_y = dec->win_u = dec->win_v = NULL;
+    if (dec->config.intra_only || !allocate_window(dec)) dec->win_y = dec->win_u = dec->win_v = NULL;
 
     const size_t luma_bytes = (size_t)dec->luma_stride * (16 + LUMA_ABOVE);
     const size_t chroma_bytes = (size_t)dec->chroma_stride * (8 + CHROMA_ABOVE);
@@ -247,7 +247,8 @@ static bool activate_sps(h264_dec_t *dec, uint8_t sps_id) {
     dec->active_sps_id = sps_id;
     dec->mb_w = sps->mb_width;
     dec->mb_h = sps->mb_height;
-    dec->has_l1 = !(sps->profile_idc == 66 || (sps->constraint_flags & 0x80));
+    dec->has_l1 = !dec->config.intra_only &&
+                  !(sps->profile_idc == 66 || (sps->constraint_flags & 0x80));
     dec->mb_stride = (uint16_t)(dec->has_l1 ? sizeof(mbinfo_t)
                                             : offsetof(mbinfo_t, m) + sizeof(mbmotion_t));
     dec->width = (uint16_t)w;
@@ -277,6 +278,11 @@ static bool activate_sps(h264_dec_t *dec, uint8_t sps_id) {
             dpb = (uint8_t)(room - 1 - held);
             if (reorder > dpb) reorder = dpb;
         }
+    }
+    if (dec->config.intra_only) {
+        dpb = 0;
+        reorder = 0;
+        held = 0;
     }
     dec->dpb_size = dpb;
     dec->reorder_frames = reorder;
@@ -472,6 +478,11 @@ static h264_dec_result_t decode_slice(h264_dec_t *dec, const nal_t *nal, uint8_t
         return parsed < 0 ? H264_DEC_UNSUPPORTED : H264_DEC_BAD_DATA;
     }
     if (s->redundant_pic_cnt) return H264_DEC_OK;
+    if (dec->config.intra_only && s->type != SLICE_I) {
+        if (dec->in_picture) dec->pic_error = true;
+        dec->error = "not an intra picture";
+        return H264_DEC_UNSUPPORTED;
+    }
 
     if (dec->in_picture && (s->first_mb == 0 || !same_picture(s, &dec->first_slice))) {
         finish_picture(dec);

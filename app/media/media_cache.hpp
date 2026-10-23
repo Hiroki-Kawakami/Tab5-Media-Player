@@ -22,6 +22,9 @@ struct MediaEntry {
     uint64_t image_id = 0;
     CoverLocation cover_at;
     bool cover_scanned = false;
+    /* The picture is a frame of the video, which carries no cover art. */
+    bool from_frame = false;
+    CodecId video_codec = CodecId::None;
     int64_t duration_us = 0;
     int64_t file_bytes = 0;
     CodecId audio_codec = CodecId::None;

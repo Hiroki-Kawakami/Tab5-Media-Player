@@ -53,6 +53,9 @@ typedef struct {
     uint32_t max_side;
     size_t frame_budget_bytes;
     uint8_t held_pictures;
+    /* I pictures only, into a single frame; any other picture fails with
+       MPEG2_DEC_UNSUPPORTED. mpeg2_dec_drain() releases the frame. */
+    bool intra_only;
     uint32_t (*clock)(void);
     const vdec_threads_t *threads;
 } mpeg2_dec_config_t;

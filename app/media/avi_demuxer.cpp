@@ -43,6 +43,7 @@ public:
     bool read(bool want_audio, Packet *out) override;
     bool seek(int64_t pts_us, int64_t *landed_us) override;
     bool keyframeBefore(int64_t pts_us, int64_t *key_us) const override;
+    bool keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) override;
 
 private:
     avi_demux_t *demux_ = nullptr;
@@ -167,6 +168,15 @@ bool AviDemuxer::keyframeBefore(int64_t pts_us, int64_t *key_us) const {
     uint32_t key = 0;
     if (!avi_demux_keyframe_before(demux_, (uint32_t)(pts_us / interval_us_), &key)) return false;
     *key_us = (int64_t)key * interval_us_;
+    return true;
+}
+
+bool AviDemuxer::keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) {
+    if (!demux_ || interval_us_ <= 0) return false;
+    const uint32_t frame = (uint32_t)(pts_us > 0 ? pts_us / interval_us_ : 0);
+    uint64_t at = 0;
+    if (!avi_demux_keyframe_at(demux_, frame, &at, size)) return false;
+    *offset = (int64_t)at;
     return true;
 }
 

@@ -16,6 +16,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "jpeg_ppa_pipeline.h"
+#include "video/packed_yuv_scaler.hpp"
 #ifdef ESP_PLATFORM
 #include "esp_cache.h"
 #include "driver/jpeg_encode.h"
@@ -35,7 +36,6 @@ static constexpr std::size_t kAlignment = 64;
 static constexpr std::size_t kMaxFileBytes = 8 * 1024 * 1024;
 static constexpr std::size_t kReadChunkBytes = 256 * 1024;
 static constexpr std::size_t kHeaderWindowBytes = 128 * 1024;
-static constexpr uint32_t kScaleDenominator = 16;
 static constexpr uint32_t kStripRows = 16;
 static constexpr uint32_t kMaxHardwareWidth = 4096;
 static constexpr std::size_t kStripStepBytes = 64 * 1024;
@@ -132,17 +132,29 @@ static std::shared_ptr<ImagePixels> alloc_pixels(uint16_t width, uint16_t height
     return nullptr;
 }
 
+ImageOrientation image_orientation_from_exif(uint8_t value) {
+    return value >= 1 && value <= 8 ? (ImageOrientation)(value - 1) : ImageOrientation::None;
+}
+
+bool image_orientation_swaps(ImageOrientation orientation) {
+    return imgf_orient_swaps_axes((imgf_orient_t)orientation);
+}
+
 static imgf_pixfmt_t target_pixfmt(bool rgb888) {
     return rgb888 ? IMGF_PIX_BGR888 : IMGF_PIX_RGB565;
 }
 
-static imgf_resize_opts_t contain_opts(uint32_t src_w, uint32_t src_h, ImageSize box, bool rgb888) {
+/* `src_w` x `src_h` is the stored size; the box and the result are upright. */
+static imgf_resize_opts_t contain_opts(uint32_t src_w, uint32_t src_h, ImageSize box, bool rgb888,
+                                       ImageOrientation orientation = ImageOrientation::None) {
+    if (image_orientation_swaps(orientation)) std::swap(src_w, src_h);
     imgf_resize_opts_t opts = {};
     opts.target_w = (uint16_t)std::min<uint32_t>((uint32_t)box.width, src_w);
     opts.target_h = (uint16_t)std::min<uint32_t>((uint32_t)box.height, src_h);
     opts.fit = IMGF_FIT_CONTAIN;
     opts.dst_pixfmt = target_pixfmt(rgb888);
     opts.alloc_caps = MALLOC_CAP_SPIRAM;
+    opts.orientation = (imgf_orient_t)orientation;
     return opts;
 }
 
@@ -150,6 +162,28 @@ static bool fit_inside(uint32_t src_w, uint32_t src_h, ImageSize box, uint16_t *
                        uint16_t *dst_h) {
     const imgf_resize_opts_t opts = contain_opts(src_w, src_h, box, false);
     return imgf_resize_compute_dst((uint16_t)src_w, (uint16_t)src_h, &opts, dst_w, dst_h) == IMGF_OK;
+}
+
+/* PPA turns counter-clockwise and mirrors after turning. */
+template <class T>
+static void ppa_orientation(ImageOrientation orientation, T *op,
+                            ppa_srm_rotation_angle_t *rotation) {
+    switch (orientation) {
+    case ImageOrientation::MirrorX: op->mirror_x = true; break;
+    case ImageOrientation::Rot180: *rotation = PPA_SRM_ROTATION_ANGLE_180; break;
+    case ImageOrientation::MirrorY: op->mirror_y = true; break;
+    case ImageOrientation::Transpose:
+        *rotation = PPA_SRM_ROTATION_ANGLE_270;
+        op->mirror_x = true;
+        break;
+    case ImageOrientation::Rot90: *rotation = PPA_SRM_ROTATION_ANGLE_270; break;
+    case ImageOrientation::Transverse:
+        *rotation = PPA_SRM_ROTATION_ANGLE_90;
+        op->mirror_x = true;
+        break;
+    case ImageOrientation::Rot270: *rotation = PPA_SRM_ROTATION_ANGLE_90; break;
+    default: break;
+    }
 }
 
 static bool jpeg_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
@@ -293,7 +327,7 @@ static uint32_t ppa_scale(uint32_t width, uint32_t height, uint16_t dst_w, uint1
 
 static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::size_t size,
                                                     const ImageHeader &header, ImageSize box,
-                                                    bool rgb888) {
+                                                    bool rgb888, ImageOrientation orientation) {
     if (header.width > kMaxHardwareWidth) {
         ESP_LOGI(TAG, "%ux%u is wider than the strip buffers allow", (unsigned)header.width,
                  (unsigned)header.height);
@@ -304,9 +338,12 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
     jpeg_ppa_pipeline_handle_t handle = pipeline(kStripRows * padded * 3);
     if (!handle) return nullptr;
 
+    const bool swap = image_orientation_swaps(orientation);
+    const uint32_t width = swap ? header.height : header.width;
+    const uint32_t height = swap ? header.width : header.height;
     uint16_t dst_w = 0;
     uint16_t dst_h = 0;
-    if (!fit_inside(header.width, header.height, box, &dst_w, &dst_h)) return nullptr;
+    if (!fit_inside(width, height, box, &dst_w, &dst_h)) return nullptr;
 
     /* PPA scales in sixteenths, so it rarely lands on the fitted size, and the
        intermediate below exists to let the box resizer correct the rest. When
@@ -318,8 +355,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
        match what LVGL reads. */
     uint16_t fit_w = 0;
     uint16_t fit_h = 0;
-    if (const uint32_t direct = ppa_fit_scale(header.width, header.height, dst_w, dst_h, &fit_w,
-                                              &fit_h)) {
+    if (const uint32_t direct = ppa_fit_scale(width, height, dst_w, dst_h, &fit_w, &fit_h)) {
         const int32_t slack = direct_shortfall_max(box);
         if (dst_w - fit_w <= slack && dst_h - fit_h <= slack) {
             auto pixels = alloc_pixels(fit_w, fit_h, rgb888);
@@ -336,6 +372,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
             transform.scale_x = (float)direct / kScaleDenominator;
             transform.scale_y = transform.scale_x;
             transform.rgb_swap = true;
+            ppa_orientation(orientation, &transform, &transform.rotation);
 
             const esp_err_t err =
                 jpeg_ppa_pipeline_process(handle, data, size, &out, &transform, nullptr);
@@ -345,9 +382,9 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
         }
     }
 
-    const uint32_t scale = ppa_scale(header.width, header.height, dst_w, dst_h);
-    const uint32_t mid_w = header.width * scale / kScaleDenominator;
-    const uint32_t mid_h = header.height * scale / kScaleDenominator;
+    const uint32_t scale = ppa_scale(width, height, dst_w, dst_h);
+    const uint32_t mid_w = width * scale / kScaleDenominator;
+    const uint32_t mid_h = height * scale / kScaleDenominator;
     if (!mid_w || !mid_h) return nullptr;
 
     const std::size_t mid_bytes = align_up((std::size_t)mid_w * mid_h * 3);
@@ -369,6 +406,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
     jpeg_ppa_transform_t transform = {};
     transform.scale_x = (float)scale / kScaleDenominator;
     transform.scale_y = transform.scale_x;
+    ppa_orientation(orientation, &transform, &transform.rotation);
 
     const esp_err_t err = jpeg_ppa_pipeline_process(handle, data, size, &out, &transform, nullptr);
     if (err != ESP_OK) {
@@ -398,6 +436,7 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
 
 static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, ImageFormat format,
                                                      ImageSize box, bool rgb888,
+                                                     ImageOrientation orientation,
                                                      const volatile bool *cancel, bool *oom) {
     imgf_decoder_t *dec =
         imgf_make_decoder(format == ImageFormat::Png ? IMGF_FMT_PNG : IMGF_FMT_JPEG);
@@ -406,9 +445,10 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
         return nullptr;
     }
 
+    const bool swap = image_orientation_swaps(orientation);
     imgf_decode_opts_t options = {};
-    options.target_w = (uint16_t)box.width;
-    options.target_h = (uint16_t)box.height;
+    options.target_w = (uint16_t)(swap ? box.height : box.width);
+    options.target_h = (uint16_t)(swap ? box.width : box.height);
     options.alloc_caps = MALLOC_CAP_SPIRAM;
     const imgf_err_t open_err = imgf_decoder_open(dec, stream, &options);
     if (open_err != IMGF_OK) {
@@ -421,7 +461,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
     const uint16_t src_w = imgf_decoder_width(dec);
     const uint16_t src_h = imgf_decoder_height(dec);
     const imgf_pixfmt_t src_pf = imgf_decoder_pixfmt(dec);
-    const imgf_resize_opts_t opts = contain_opts(src_w, src_h, box, rgb888);
+    const imgf_resize_opts_t opts = contain_opts(src_w, src_h, box, rgb888, orientation);
 
     imgf_err_t err = IMGF_OK;
     imgf_resizer_t *resizer = imgf_resizer_create(src_w, src_h, src_pf, &opts, &err);
@@ -447,6 +487,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
         return nullptr;
     }
 
+    const uint32_t rows = swap ? pixels->width : pixels->height;
     uint32_t written = 0;
     bool ok = true;
     for (uint16_t y = 0; y < src_h && ok; y++) {
@@ -462,15 +503,13 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
             break;
         }
         if (imgf_resizer_push_row(resizer, row) < 0) ok = false;
-        while (ok && written < pixels->height &&
-               imgf_resizer_pop_row(resizer, pixels->data + (std::size_t)written * pixels->stride)) {
+        while (ok && written < rows &&
+               imgf_resizer_pop_row_into(resizer, pixels->data, pixels->stride)) {
             written++;
         }
     }
-    if (ok && written < pixels->height && imgf_resizer_finish(resizer) > 0) {
-        if (imgf_resizer_pop_row(resizer, pixels->data + (std::size_t)written * pixels->stride)) {
-            written++;
-        }
+    if (ok && written < rows && imgf_resizer_finish(resizer) > 0) {
+        if (imgf_resizer_pop_row_into(resizer, pixels->data, pixels->stride)) written++;
     }
 
     imgf_free(row);
@@ -480,7 +519,11 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
         if (ok && !stopped(cancel)) ESP_LOGE(TAG, "decoder produced no rows");
         return nullptr;
     }
-    while (written < pixels->height) {
+    if (written < rows && orientation != ImageOrientation::None) {
+        ESP_LOGE(TAG, "resizer gave %u of %u rows", (unsigned)written, (unsigned)rows);
+        return nullptr;
+    }
+    while (written < rows) {
         memcpy(pixels->data + (std::size_t)written * pixels->stride,
                pixels->data + (std::size_t)(written - 1) * pixels->stride, pixels->stride);
         written++;
@@ -489,8 +532,8 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
 }
 
 std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size, ImageSize box,
-                                          bool rgb888, const volatile bool *cancel,
-                                          ImageNotes *notes) {
+                                          bool rgb888, ImageOrientation orientation,
+                                          const volatile bool *cancel, ImageNotes *notes) {
     if (!data || size == 0 || !box.valid() || stopped(cancel)) return nullptr;
 
     ImageHeader header;
@@ -505,7 +548,9 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
         header.width = 0;
     }
     if (header.hardware && header.width) {
-        if (auto pixels = decode_hardware(data, size, header, box, rgb888)) return pixels;
+        if (auto pixels = decode_hardware(data, size, header, box, rgb888, orientation)) {
+            return pixels;
+        }
     }
     if (stopped(cancel)) return nullptr;
 
@@ -513,7 +558,8 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
     CancelSource state;
     bool oom = false;
     auto pixels = decode_streaming(with_cancel(&state, imgf_stream_from_buffer(&memory, data, size),
-                                               cancel), header.format, box, rgb888, cancel, &oom);
+                                               cancel), header.format, box, rgb888, orientation,
+                                  cancel, &oom);
     if (notes) notes->out_of_memory = oom;
     if (!pixels && !stopped(cancel)) {
         ESP_LOGE(TAG, "no pixels from a %ux%u %s (%u bytes, psram free %u largest %u)",
@@ -560,7 +606,7 @@ bool image_decode_into(const uint8_t *data, std::size_t size, ImageSize box, boo
         }
     }
 
-    auto pixels = image_decode(data, size, box, rgb888, nullptr);
+    auto pixels = image_decode(data, size, box, rgb888, ImageOrientation::None, nullptr);
     if (!pixels || (std::size_t)pixels->width * (rgb888 ? 3 : 2) * pixels->height > capacity) {
         return false;
     }
@@ -758,15 +804,17 @@ static uint8_t *read_file(FILE *fp, std::size_t size, const volatile bool *cance
     return buffer;
 }
 
-std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSize box, bool rgb888,
+std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, int64_t offset,
+                                               int64_t size, ImageSize box, bool rgb888,
+                                               ImageOrientation orientation,
                                                const volatile bool *cancel, ImageNotes *notes) {
-    if (!box.valid()) return nullptr;
+    if (!box.valid() || offset < 0) return nullptr;
     FILE *fp = fopen(path.c_str(), "rb");
     if (!fp) return nullptr;
     fseek(fp, 0, SEEK_END);
-    const long size = ftell(fp);
-    rewind(fp);
-    if (size <= 0) {
+    const long end = ftell(fp);
+    if (!size) size = end - offset;
+    if (size <= 0 || offset + size > end || fseek(fp, (long)offset, SEEK_SET) != 0) {
         fclose(fp);
         return nullptr;
     }
@@ -791,9 +839,9 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSiz
                        (!header.width || header.hardware);
     std::shared_ptr<ImagePixels> pixels;
     if (whole) {
-        rewind(fp);
+        fseek(fp, (long)offset, SEEK_SET);
         if (uint8_t *buffer = read_file(fp, (std::size_t)size, cancel)) {
-            pixels = image_decode(buffer, (std::size_t)size, box, rgb888, cancel, notes);
+            pixels = image_decode(buffer, (std::size_t)size, box, rgb888, orientation, cancel, notes);
             heap_caps_free(buffer);
             fclose(fp);
             return pixels;
@@ -804,14 +852,110 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, ImageSiz
         }
     }
 
-    rewind(fp);
     imgf_file_source_t file;
     CancelSource state;
     bool oom = false;
-    pixels = decode_streaming(with_cancel(&state, imgf_stream_from_file(&file, fp, 0, 0), cancel),
-                              header.format, box, rgb888, cancel, &oom);
+    pixels = decode_streaming(with_cancel(&state, imgf_stream_from_file(&file, fp, (long)offset,
+                                                                        (std::size_t)size),
+                                          cancel),
+                              header.format, box, rgb888, orientation, cancel, &oom);
     if (notes) notes->out_of_memory = oom;
     fclose(fp);
+    return pixels;
+}
+
+std::shared_ptr<ImagePixels> image_from_packed_yuv(const PackedYuvImage &image, ImageSize box,
+                                                   bool rgb888, ImageOrientation orientation) {
+    const bool swap = image_orientation_swaps(orientation);
+    const uint32_t width = image.width & ~1u;
+    const uint32_t height = image.height & ~1u;
+    const uint32_t upright_w = swap ? height : width;
+    const uint32_t upright_h = swap ? width : height;
+    uint16_t dst_w = 0;
+    uint16_t dst_h = 0;
+    if (!fit_inside(upright_w, upright_h, box, &dst_w, &dst_h)) return nullptr;
+
+    uint16_t direct_w = 0;
+    uint16_t direct_h = 0;
+    const uint32_t direct = ppa_fit_scale(upright_w, upright_h, dst_w, dst_h, &direct_w, &direct_h);
+    const int32_t slack = direct_shortfall_max(box);
+    const bool close = direct && dst_w - direct_w <= slack && dst_h - direct_h <= slack;
+    const uint32_t scale = close ? direct : ppa_scale(upright_w, upright_h, dst_w, dst_h);
+    const uint32_t mid_w = upright_w * scale / kScaleDenominator;
+    const uint32_t mid_h = upright_h * scale / kScaleDenominator;
+    if (!mid_w || !mid_h) return nullptr;
+
+    std::shared_ptr<ImagePixels> pixels;
+    uint8_t *mid = nullptr;
+    ppa_srm_oper_config_t op = {};
+    op.in.buffer = image.packed;
+    op.in.pic_w = image.coded_width;
+    op.in.pic_h = image.coded_height;
+    op.in.block_w = width;
+    op.in.block_h = height;
+    op.in.block_offset_x = image.crop_left;
+    op.in.block_offset_y = image.crop_top;
+    op.in.srm_cm = PPA_SRM_COLOR_MODE_YUV420;
+    op.in.yuv_range = image.full_range ? PPA_COLOR_RANGE_FULL : PPA_COLOR_RANGE_LIMIT;
+    op.in.yuv_std = image.bt709 ? PPA_COLOR_CONV_STD_RGB_YUV_BT709
+                                : PPA_COLOR_CONV_STD_RGB_YUV_BT601;
+    op.out.pic_w = mid_w;
+    op.out.pic_h = mid_h;
+    if (close) {
+        pixels = alloc_pixels((uint16_t)mid_w, (uint16_t)mid_h, rgb888);
+        if (!pixels) return nullptr;
+        op.out.buffer = pixels->data;
+        op.out.buffer_size = align_up(pixels->bytes);
+        op.out.srm_cm = panel_color_mode(rgb888);
+    } else {
+        const std::size_t mid_bytes = align_up((std::size_t)mid_w * mid_h * 3);
+        mid = alloc_dma(mid_bytes);
+        if (!mid) {
+            ESP_LOGW(TAG, "no memory for a %ux%u intermediate (psram free %u largest %u)",
+                     (unsigned)mid_w, (unsigned)mid_h, psram_free(), psram_largest());
+            return nullptr;
+        }
+        op.out.buffer = mid;
+        op.out.buffer_size = mid_bytes;
+        op.out.srm_cm = PPA_SRM_COLOR_MODE_RGB888;
+    }
+    ppa_orientation(orientation, &op, &op.rotation_angle);
+    op.scale_x = (float)scale / kScaleDenominator;
+    op.scale_y = op.scale_x;
+    op.mode = PPA_TRANS_MODE_BLOCKING;
+
+    ppa_client_config_t client_config = {};
+    client_config.oper_type = PPA_OPERATION_SRM;
+    client_config.max_pending_trans_num = 1;
+    ppa_client_handle_t client = nullptr;
+    esp_err_t err = ppa_register_client(&client_config, &client);
+    if (err == ESP_OK) {
+        err = ppa_do_scale_rotate_mirror(client, &op);
+        ppa_unregister_client(client);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "ppa %ux%u -> %ux%u: %s", (unsigned)width, (unsigned)height,
+                 (unsigned)mid_w, (unsigned)mid_h, esp_err_to_name(err));
+        heap_caps_free(mid);
+        return nullptr;
+    }
+    if (close) return pixels;
+
+    imgf_resize_opts_t opts = {};
+    opts.target_w = dst_w;
+    opts.target_h = dst_h;
+    opts.fit = IMGF_FIT_STRETCH;
+    opts.dst_pixfmt = target_pixfmt(rgb888);
+    opts.alloc_caps = MALLOC_CAP_SPIRAM;
+    pixels = alloc_pixels(dst_w, dst_h, rgb888);
+    if (pixels && imgf_resize_buffer(mid, (uint16_t)mid_w, (uint16_t)mid_h, (std::size_t)mid_w * 3,
+                                     IMGF_PIX_BGR888, pixels->data, pixels->stride,
+                                     &opts) != IMGF_OK) {
+        ESP_LOGW(TAG, "resize %ux%u -> %ux%u failed", (unsigned)mid_w, (unsigned)mid_h, dst_w,
+                 dst_h);
+        pixels.reset();
+    }
+    heap_caps_free(mid);
     return pixels;
 }
 

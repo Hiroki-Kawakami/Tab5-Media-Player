@@ -51,6 +51,12 @@ fetch and bi-prediction temporaries. 23 KB per worker at 640 wide and 38 KB at
 - **Rows never share a cache line between workers.** A macroblock row is
   `24 × width` bytes, a multiple of 64 for any width that is a multiple of 16.
 
+`intra_only` in the config is the browser's thumbnail decoder
+([`metadata.md`](metadata.md#a-frame-for-a-video-without-cover-art)): a pool
+of one frame, and any picture that is not I fails with
+`MPEG2_DEC_UNSUPPORTED`. An I picture is still an anchor that waits for its
+place in display order, so `mpeg2_dec_drain()` is what hands it out.
+
 ## Two cores, one row each
 
 Unlike H.264 there is no deblocking and no intra prediction across
@@ -126,7 +132,9 @@ cmp out.yuv ref.yuv
 
 `MPEG2_THREADS=1` runs the two-worker path with pthreads, `MPEG2_HASH=1` prints
 the per-frame FNV-1a the device bench prints, `MPEG2_VERBOSE=1` prints each
-access unit, `-DMPEG2_SANITIZE=ON -DCMAKE_C_COMPILER=/usr/bin/clang` builds with
+access unit, `MPEG2_INTRA=1` decodes in intra-only mode up to the first picture
+that is not I (compare with ffmpeg's `-frames:v 1`),
+`-DMPEG2_SANITIZE=ON -DCMAKE_C_COMPILER=/usr/bin/clang` builds with
 UBSan.
 
 - **Material**: ffmpeg `mpeg2video` encodes of `testsrc2`, `mandelbrot` and real

@@ -83,6 +83,9 @@ media_buffer_t *mkv_demux_buffer(mkv_demux_t *demux);
 bool mkv_demux_read(mkv_demux_t *demux, mkv_packet_t *packet, bool want_audio);
 bool mkv_demux_seek(mkv_demux_t *demux, int64_t pts_us, int64_t *landed_us);
 bool mkv_demux_keyframe_before(const mkv_demux_t *demux, int64_t pts_us, int64_t *key_us);
+/* Where the first video keyframe of the cue at or before `pts_us` sits in the
+   file. Moves the read position: seek before reading packets again. */
+bool mkv_demux_keyframe_at(mkv_demux_t *demux, int64_t pts_us, uint64_t *offset, uint32_t *size);
 
 #ifdef __cplusplus
 }

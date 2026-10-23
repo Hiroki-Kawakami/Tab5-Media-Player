@@ -17,6 +17,7 @@ static const char *TAG = "avi_demux";
 
 #define AVI_MAX_STREAMS 8
 #define AVI_MAX_INDEX_ENTRIES 60000
+#define AVI_KEYFRAME_SCAN_CHUNKS 256
 
 enum {
     STREAM_NONE = 0,
@@ -541,6 +542,35 @@ bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame) 
     demux->next_frame = landed;
     if (landed_frame) *landed_frame = landed;
     return true;
+}
+
+bool avi_demux_keyframe_at(avi_demux_t *demux, uint32_t frame, uint64_t *offset, uint32_t *size) {
+    if (!demux) return false;
+    off_t position = demux->movi_start;
+    if (demux->points && frame > 0) {
+        const seek_point_t *point = &demux->points[point_at_or_before(demux, frame)];
+        if (point->frame <= frame) position = demux->index_base + point->offset;
+    }
+    mb_seek(demux->reader, position);
+    for (int i = 0; i < AVI_KEYFRAME_SCAN_CHUNKS; i++) {
+        if (mb_tell(demux->reader) + (off_t)sizeof(riff_chunk_t) > demux->movi_end) return false;
+        riff_chunk_t chunk;
+        if (!riff_read(demux->reader, &chunk, sizeof(chunk))) return false;
+        const off_t body = mb_tell(demux->reader);
+        uint8_t kind = STREAM_NONE;
+        if (stream_of(demux, chunk.fourcc, &kind) < 0 && chunk.fourcc == RIFF_ID_LIST) {
+            uint32_t list_type = 0;
+            if (!riff_read(demux->reader, &list_type, sizeof(list_type))) return false;
+            continue;
+        }
+        if (kind == STREAM_VIDEO && chunk.size && body + (off_t)chunk.size <= demux->movi_end) {
+            *offset = (uint64_t)body;
+            *size = chunk.size;
+            return true;
+        }
+        mb_seek(demux->reader, body + chunk.size + (chunk.size & 1));
+    }
+    return false;
 }
 
 bool avi_demux_keyframe_before(const avi_demux_t *demux, uint32_t frame, uint32_t *key_frame) {

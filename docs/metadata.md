@@ -481,18 +481,47 @@ then for tags and thumbnails, so a row has a title even before its picture
 request is reached. An image file has no title to show, so it only takes part
 in the second pass.
 
+## A frame for a video without cover art
+
+A video whose container carries no cover art gets one of its frames as its
+picture instead; `MediaEntry::from_frame` marks such an entry. Cover art is
+looked for first, so a file `tools/converter-rs` wrote still shows the picture
+it chose (see [`converter.md`](converter.md#thumbnails)).
+
+- **The frame is the keyframe at or before 10 s in**, or halfway through a
+  video shorter than 20 s — where the converter takes its cover from, because
+  videos often open on black or a fade. Each demuxer answers `keyframeAt()`
+  from the index it loaded when it was opened (MP4's sample tables, AVI's
+  `idx1`, MKV's cues and then a walk to the cluster's first video keyframe), so
+  a frame from the middle costs the same single read as the first one. A file
+  without an index gets its first keyframe.
+- **An MJPEG frame is an image file inside the video.** The reader reads only
+  enough of it to hash the id, and the decoder stage decodes it straight out of
+  the file the way it decodes an image file — the hardware strips for a
+  baseline JPEG, rows through the resizer otherwise. MJPEG reaches 2560 px wide
+  because playing it never needs a whole frame, and its thumbnail does not
+  either.
+- **H.264 and MPEG-2 go through the player's own decoders in intra-only mode**
+  (`intra_only` in their configs) rather than a decoder of their own: an I
+  picture takes nearly all of either decoder, and what kept them off the
+  browser was memory, not code. Intra-only is one frame instead of a DPB, no
+  reference window and no list-1 macroblock info. The work arena, which is the
+  shared SRAM during playback, is 240 KB of PSRAM for the length of the decode,
+  and the decode runs inline on the decoder task without the second core
+  (`app/media/video_frame.*`).
+- **The whole decoded frame is kept**, unlike an image file's rows. The rows
+  exist so that a picture too large for memory is still shown; a video these
+  decoders accept is at most 1280 px wide, so its frame (1.4 MB at 720p)
+  always fits, and PPA scales and converts the packed frame in one pass the
+  way the player does.
+- **The video's rotation is applied** as an orientation, so the picture is the
+  way up the player shows the video.
+- **A keyframe that is not all I slices fails**, and the row keeps its icon;
+  like a failed cover, the entry then has no picture and is not tried again.
+
 ## What is not there
 
-Video thumbnails are only the cover art a file carries. Decoding a frame of
-H.264 or MPEG-2 needs the decoder's work arena, which is the shared SRAM the
-main display renders into while the browser is on screen — the two cannot be up
-at once. A first frame of MJPEG would work, but only for MJPEG, which is not
-worth a second code path. `tools/converter-rs` therefore writes a 320 px
-picture from a few seconds in as cover art (`covr` in MP4, an attachment named
-`cover.jpg` in MKV), which this cache reads like any other; see
-[`converter.md`](converter.md#thumbnails).
-
-The browser also only prefetches audio files, so a video's or a photograph's
+The browser only prefetches audio files, so a video's or a photograph's
 thumbnail is read when its row comes into view rather than ahead of it. A
 folder of photographs is the reason: a cover is a few hundred KB and reading
 two dozen of them ahead is affordable, while the pictures themselves are

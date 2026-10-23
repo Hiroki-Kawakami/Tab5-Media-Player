@@ -21,11 +21,17 @@ public:
     virtual bool read(bool want_audio, Packet *out) = 0;
     virtual bool seek(int64_t pts_us, int64_t *landed_us) = 0;
     virtual bool keyframeBefore(int64_t, int64_t *) const { return false; }
+    /* Where the last video keyframe at or before the time sits in the file.
+       May move the read position: seek before reading packets again. */
+    virtual bool keyframeAt(int64_t, int64_t *, uint32_t *) { return false; }
 
     off_t bytes() const { return buffer_ ? mb_size(buffer_) : 0; }
     void release(uint32_t ref) { mb_release(buffer_, ref); }
     void releaseAll() { mb_release_all(buffer_); }
     void interrupt(bool interrupted) { mb_interrupt(buffer_, interrupted); }
+    uint8_t *readAlloc(int64_t offset, uint32_t size, void **owner) {
+        return buffer_ ? mb_read_alloc(buffer_, (off_t)offset, size, owner) : nullptr;
+    }
 
     const MediaInfo &info() const { return info_; }
     const std::string &error() const { return error_; }

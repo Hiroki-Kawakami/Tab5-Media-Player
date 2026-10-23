@@ -78,6 +78,9 @@ bool avi_demux_read(avi_demux_t *demux, avi_packet_t *packet, bool want_audio);
 
 bool avi_demux_seek(avi_demux_t *demux, uint32_t frame, uint32_t *landed_frame);
 bool avi_demux_keyframe_before(const avi_demux_t *demux, uint32_t frame, uint32_t *key_frame);
+/* Where the last video keyframe at or before `frame` sits in the file. Moves
+   the read position: seek before reading packets again. */
+bool avi_demux_keyframe_at(avi_demux_t *demux, uint32_t frame, uint64_t *offset, uint32_t *size);
 
 #ifdef __cplusplus
 }

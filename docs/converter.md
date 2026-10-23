@@ -294,10 +294,12 @@ merged specs, so it is clear what was applied.
 ## Thumbnails
 
 Every output carries a picture from the video as cover art, so the file browser
-has a thumbnail for it (`--thumbnail none` turns it off). The player only ever
-reads cover art; decoding a frame of H.264 or MPEG-2 on the device would need
-the work arena the browser's display is using, see
-[`metadata.md`](metadata.md).
+has a thumbnail for it (`--thumbnail none` turns it off). Without one the player
+decodes a keyframe of its own (see
+[`metadata.md`](metadata.md#a-frame-for-a-video-without-cover-art)), but that
+is only ever a keyframe near the time asked for, and it is a video decode on the
+board for every file the browser shows; the cover is the exact frame, already
+small, for the price of one JPEG decode.
 
 - **Not the first frame.** Videos often open on black or a fade, so the picture
   comes from 10 s in (`at=`), lowered to half the duration for a video shorter

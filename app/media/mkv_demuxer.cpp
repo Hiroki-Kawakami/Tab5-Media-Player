@@ -52,6 +52,7 @@ public:
     bool read(bool want_audio, Packet *out) override;
     bool seek(int64_t pts_us, int64_t *landed_us) override;
     bool keyframeBefore(int64_t pts_us, int64_t *key_us) const override;
+    bool keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) override;
 
 private:
     mkv_demux_t *demux_ = nullptr;
@@ -129,6 +130,13 @@ bool MkvDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
 
 bool MkvDemuxer::keyframeBefore(int64_t pts_us, int64_t *key_us) const {
     return demux_ && mkv_demux_keyframe_before(demux_, pts_us, key_us);
+}
+
+bool MkvDemuxer::keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) {
+    uint64_t at = 0;
+    if (!demux_ || !mkv_demux_keyframe_at(demux_, pts_us, &at, size)) return false;
+    *offset = (int64_t)at;
+    return true;
 }
 
 }

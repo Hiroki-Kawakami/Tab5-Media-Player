@@ -54,6 +54,9 @@ typedef struct {
     uint32_t max_side;
     size_t frame_budget_bytes;
     uint8_t held_pictures;
+    /* I slices only, into a single frame that is output as soon as it is
+       decoded; any other slice fails with H264_DEC_UNSUPPORTED. */
+    bool intra_only;
     uint32_t (*clock)(void);
     const h264_dec_threads_t *threads;
 } h264_dec_config_t;

@@ -10,6 +10,7 @@
 #include "media/demuxer.hpp"
 #include "media/media_probe.hpp"
 #include "media/psram_allocator.hpp"
+#include "media/video_frame.hpp"
 #include "playback/player.hpp"
 #include "media_player.hpp"
 #include "esp_heap_caps.h"
@@ -178,7 +179,9 @@ struct DecodeJob {
     MetaString path;
     std::shared_ptr<MediaEntry> entry;
     CoverArt cover;
+    VideoKeyframe frame;
     ImageKey key;
+    ImageOrientation orientation = ImageOrientation::None;
     uint32_t token = 0;
     bool image = false;
     bool thumbnail = false;
@@ -441,6 +444,12 @@ static void forget_cover(const std::shared_ptr<MediaEntry> &entry) {
     entry->image_id = 0;
 }
 
+static void use_frame(MediaEntry *entry) {
+    if (!video_frame_decodable(entry->video_codec)) return;
+    entry->has_cover = true;
+    entry->from_frame = true;
+}
+
 static std::shared_ptr<MediaEntry> make_entry(const MediaSummary &summary, bool ok,
                                               const CoverArt &cover) {
     auto entry = meta_make_shared<MediaEntry>();
@@ -452,6 +461,7 @@ static std::shared_ptr<MediaEntry> make_entry(const MediaSummary &summary, bool 
     entry->bitrate_bps = summary.audio.bitrate_bps;
     entry->channels = summary.audio.channels;
     entry->bits = summary.audio.bits;
+    entry->video_codec = summary.video.codec;
     copy_text(entry->title, sizeof(entry->title), summary.tags.title);
     copy_text(entry->artist, sizeof(entry->artist), summary.tags.artist);
     copy_text(entry->album, sizeof(entry->album), summary.tags.album);
@@ -462,6 +472,8 @@ static std::shared_ptr<MediaEntry> make_entry(const MediaSummary &summary, bool 
         entry->has_cover = true;
     } else if (summary.cover_at) {
         entry->has_cover = true;
+    } else if (summary.cover_scanned) {
+        use_frame(entry.get());
     }
     return entry;
 }
@@ -479,18 +491,20 @@ static CoverArt fetch_cover(const std::string &path, const std::shared_ptr<Media
     {
         Lock lock;
         entry->cover_scanned = true;
+        if (!summary.cover) use_frame(entry.get());
     }
     return summary.cover;
 }
 
 /* Completes an entry whose probe never saw the picture: the id is what the
    image stores are keyed on and what media_cache_image() needs to answer. */
-static void adopt_image_id(const std::shared_ptr<MediaEntry> &entry, const CoverBytes &bytes) {
+static void adopt_image_id(const std::shared_ptr<MediaEntry> &entry, const CoverBytes &bytes,
+                           uint64_t size) {
     Lock lock;
     entry->has_cover = true;
     entry->cover_scanned = true;
     if (entry->image_id) return;
-    entry->image_id = image_id_of(bytes.data(), bytes.size(), bytes.size());
+    entry->image_id = image_id_of(bytes.data(), bytes.size(), size);
     s_state->uses[entry->image_id]++;
 }
 
@@ -586,10 +600,23 @@ static CoverArt read_thumb(const std::string &path, uint32_t at, uint32_t bytes)
 /* The thumbnail only stands in for the picture when it is at least as big as
    the box: below that it would be enlarged, and the picture it replaces would
    have come out sharper. */
+static ImageOrientation exif_orientation(const std::shared_ptr<MediaEntry> &entry) {
+    return entry->image_exif ? image_orientation_from_exif(entry->image_exif->orientation)
+                             : ImageOrientation::None;
+}
+
 static bool thumb_covers(const std::shared_ptr<MediaEntry> &entry, ImageSize box) {
     const auto &exif = entry->image_exif;
     if (!exif || !exif->thumb_bytes) return false;
+    if (image_orientation_swaps(exif_orientation(entry))) std::swap(box.width, box.height);
     return exif->thumb_width >= box.width && exif->thumb_height >= box.height;
+}
+
+static void set_image_size(MediaEntry *entry, uint32_t width, uint32_t height,
+                           ImageOrientation orientation) {
+    if (image_orientation_swaps(orientation)) std::swap(width, height);
+    entry->image_width = (uint16_t)width;
+    entry->image_height = (uint16_t)height;
 }
 
 /* An image file is its own picture: the header gives the size to show in Media
@@ -617,8 +644,6 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
     entry->ok = true;
     entry->has_cover = true;
     entry->image_format = header.format;
-    entry->image_width = (uint16_t)header.width;
-    entry->image_height = (uint16_t)header.height;
     entry->image_baseline = header.hardware;
     entry->image_id = image_id_of(data.data->data(), data.data->size(), (uint64_t)size);
 
@@ -629,6 +654,7 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
             *thumb = keep_thumb(data.data->data(), exif.thumb_at, exif.thumb_bytes);
         }
     }
+    set_image_size(entry.get(), header.width, header.height, exif_orientation(entry));
     return entry;
 }
 
@@ -684,6 +710,7 @@ static bool prepare_image(const Request &request, const std::string &path, Decod
     job->entry = entry;
     job->cover = std::move(thumb);
     job->key = key;
+    job->orientation = exif_orientation(entry);
     job->token = request.token;
     job->image = true;
     job->thumbnail = wants_thumbnail(request);
@@ -722,13 +749,22 @@ static bool prepare(const Request &request, DecodeJob *job) {
        container said where one was, so only a scanned entry can say no. */
     if (!entry->has_cover && entry->cover_scanned) return false;
 
+    VideoKeyframe frame;
     if (!entry->image_id) {
-        if (!cover) cover = fetch_cover(path, entry);
-        if (!cover) {
-            forget_cover(entry);
-            return false;
+        if (!cover && !entry->from_frame) cover = fetch_cover(path, entry);
+        if (entry->from_frame) {
+            if (!media_probe_keyframe(path, s_arena, &frame)) {
+                forget_cover(entry);
+                return false;
+            }
+            adopt_image_id(entry, *frame.bytes, frame.at.size);
+        } else {
+            if (!cover) {
+                forget_cover(entry);
+                return false;
+            }
+            adopt_image_id(entry, *cover.data, cover.data->size());
         }
-        adopt_image_id(entry, *cover.data);
     }
 
     const ImageKey key = { entry->image_id, request.box };
@@ -736,7 +772,12 @@ static bool prepare(const Request &request, DecodeJob *job) {
         Lock lock;
         if (cached(key, wants_thumbnail(request))) return false;
     }
-    if (!cover) {
+    if (entry->from_frame) {
+        if (!frame.bytes && !media_probe_keyframe(path, s_arena, &frame)) {
+            forget_cover(entry);
+            return false;
+        }
+    } else if (!cover) {
         cover = fetch_cover(path, entry);
         if (!cover) {
             forget_cover(entry);
@@ -747,6 +788,8 @@ static bool prepare(const Request &request, DecodeJob *job) {
     job->path = request.path;
     job->entry = entry;
     job->cover = std::move(cover);
+    job->orientation = video_frame_orientation(frame.rotation);
+    job->frame = std::move(frame);
     job->key = key;
     job->token = request.token;
     job->thumbnail = wants_thumbnail(request);
@@ -770,22 +813,28 @@ static void hand_over(DecodeJob &job, const std::shared_ptr<ImagePixels> &pixels
 static void finish(DecodeJob &job) {
     const bool rgb888 = !job.thumbnail && panel_rgb888();
     std::shared_ptr<ImagePixels> pixels;
-    if (job.cover) {
+    if (job.frame.codec == CodecId::Mjpeg) {
+        pixels = image_decode_file(std::string(job.path.c_str()), job.frame.at.offset,
+                                   job.frame.at.size, job.key.box, rgb888, job.orientation,
+                                   &s_decoder_cancel);
+    } else if (job.frame.codec != CodecId::None) {
+        pixels = video_frame_decode(job.frame, job.key.box, rgb888, job.orientation);
+    } else if (job.cover) {
         pixels = image_decode(job.cover.data->data(), job.cover.data->size(), job.key.box, rgb888,
-                              &s_decoder_cancel);
+                              job.orientation, &s_decoder_cancel);
     }
     /* An EXIF thumbnail that will not decode is not the whole answer: the
        picture itself is still there, so the full path is the fallback. */
     if (!pixels && !s_decoder_cancel && job.image && !job.entry->image_too_large) {
         ImageNotes notes;
-        pixels = image_decode_file(std::string(job.path.c_str()), job.key.box, rgb888,
-                                   &s_decoder_cancel, &notes);
+        pixels = image_decode_file(std::string(job.path.c_str()), 0, 0, job.key.box, rgb888,
+                                   job.orientation, &s_decoder_cancel, &notes);
         /* The header the decode saw is the whole file's, so it knows the size
            even when the probe's window stopped short of the frame header. */
         Lock lock;
         if (notes.header.width) {
-            job.entry->image_width = (uint16_t)notes.header.width;
-            job.entry->image_height = (uint16_t)notes.header.height;
+            set_image_size(job.entry.get(), notes.header.width, notes.header.height,
+                           job.orientation);
             job.entry->image_format = notes.header.format;
             job.entry->image_baseline = notes.header.hardware;
         }

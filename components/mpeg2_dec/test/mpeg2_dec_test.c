@@ -168,6 +168,7 @@ int main(int argc, char **argv) {
         .max_mbs = 3600,
         .max_side = 1280,
         .held_pictures = 1,
+        .intra_only = getenv("MPEG2_INTRA") != NULL,
         .threads = getenv("MPEG2_THREADS") ? &kThreads : NULL,
     };
     mpeg2_dec_t *dec = mpeg2_dec_create(&config);
@@ -203,6 +204,7 @@ restart:;
                         e ? " " : "", e ? e : "");
             }
             aus++;
+            if (r == MPEG2_DEC_UNSUPPORTED && config.intra_only && aus > 1) break;
             if (r != MPEG2_DEC_OK && r != MPEG2_DEC_NO_PICTURE) {
                 const char *e = mpeg2_dec_error(dec);
                 fprintf(stderr, "au %d: result %d %s\n", aus - 1, (int)r, e ? e : "");

@@ -165,6 +165,7 @@ static bool activate_layout(mpeg2_dec_t *dec) {
         if (room < (size_t)3 + held) room = (size_t)3 + held;
         if (pool > room) pool = room;
     }
+    if (dec->config.intra_only) pool = 1;
     dec->frame_block = dec->config.alloc(dec->config.ctx, dec->frame_bytes * pool + FRAME_SLACK);
     if (!dec->frame_block) {
         dec->error = "not enough memory for the reference frames";
@@ -297,6 +298,10 @@ static mpeg2_dec_result_t start_picture(mpeg2_dec_t *dec) {
     }
     if (pic->structure != 3) {
         dec->error = "interlaced MPEG-2 is not supported";
+        return MPEG2_DEC_UNSUPPORTED;
+    }
+    if (dec->config.intra_only && pic->type != MPEG2_PICTURE_I) {
+        dec->error = "not an intra picture";
         return MPEG2_DEC_UNSUPPORTED;
     }
     if (dec->need_keyframe) {

@@ -78,10 +78,20 @@ Media Info panel shows them as a Camera and an Exposure section.
   rule is that a thumbnail smaller than the box is no use — see
   [`metadata.md`](metadata.md#image-files). Parsing it is the one place the
   parser looks past `IFD0` and the Exif SubIFD.
-- **Orientation is shown, not applied.** Turning the picture would mean the
-  decode, the cache key (an entry is keyed by the box it was fitted into) and
-  the PPA stand-in a rotation shows all agreeing on the rotation, which is a
-  different change from reading a tag.
+- **Orientation is applied by the decode.** The pixels the cache keeps are
+  already upright, so the box an entry is keyed by, the PPA stand-in a rotation
+  shows and the slideshow all handle an ordinary picture and know nothing of
+  the tag. Resolution in Media Info is the upright size for the same reason, so
+  it reads the same way as Shown At. Neither decode path needs a second
+  full-size buffer for it: `jpeg_ppa_pipeline` has PPA turn and mirror the
+  strips as they land, and the row-at-a-time path gives the orientation to
+  image_framework's resizer, which writes each row where the orientation puts
+  it. The EXIF thumbnail is stored the way the picture is, so it is turned the
+  same way, and whether it is big enough for a box is decided upright.
+- **The orientation is not part of the image id.** Two copies of a picture that
+  differ only in the tag share an entry and show the same way up. That is rare
+  and costs one wrongly turned picture, which is not worth carrying the
+  orientation through every key of the cache.
 
 GPS, the maker notes and everything else are skipped: the parser walks IFD0,
 follows the Exif SubIFD pointer once and takes the dozen tags the two sections
@@ -377,6 +387,20 @@ image.save("j_exif_camera.jpg", exif=exif, quality=90)
 
 The PNG is the same call on a `rgbtestsrc` picture saved as `.png`, with
 `Orientation` 6 so the row that is not `Normal` is on screen somewhere.
+
+`m_orient6_800.jpg` and `n_orient5_800.jpg` are the same `testsrc2` picture
+with `Orientation` 6 (baseline, the hardware path) and 5 (progressive, the
+row-at-a-time path, and a mirror as well as a turn); `testsrc2`'s clock in the
+corner makes a wrong turn or a missing mirror plain:
+
+```python
+image = Image.open("tmp.png").convert("RGB")   # testsrc2=size=800x600
+for name, value, progressive in (("m_orient6_800.jpg", 6, False),
+                                 ("n_orient5_800.jpg", 5, True)):
+    exif = Image.Exif()
+    exif[0x0112] = value
+    image.save(name, exif=exif, quality=90, progressive=progressive)
+```
 
 `h_exif_3000.jpg` is `a_landscape_3000.jpg` with three maximum-size APP1
 segments inserted after the SOI, which puts its frame header ~190 KB into the

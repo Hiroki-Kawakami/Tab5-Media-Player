@@ -51,6 +51,17 @@ private:
     unsigned order_version_ = 0;
 };
 
-/* The files of `kind` in a directory, by name, or the path itself when it is
-   a file of that kind. */
+struct PlaylistFile {
+    std::string title;
+    MediaKind kind = MediaKind::None;
+    std::vector<PlaylistItem> items;
+};
+
+/* An .m3u/.m3u8 in file order, keeping only the entries of the kind of its
+   first one. False when it cannot be read; the title is set either way. */
+bool playlist_file_read(const std::string &path, PlaylistFile *file);
+
+/* The files of `kind` in a directory, by name, or in a playlist file whose
+   first entry is of that kind, or the path itself when it is a file of that
+   kind. */
 std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind);

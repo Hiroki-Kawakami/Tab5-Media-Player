@@ -51,6 +51,7 @@ enum class MediaKind {
     Video,
     Audio,
     Image,
+    Playlist,
 };
 
 MediaKind demuxer_media_kind(const char *name);

@@ -213,6 +213,7 @@ void ImageViewerScreen::chooseBgm() {
     FilePickerOptions options;
     options.start = saved.empty() ? path() : saved;
     options.file_kind = MediaKind::Audio;
+    options.playlists = true;
     options.on_pick = [this](const std::string &picked) {
         settings_set_slideshow_bgm_path(picked);
         settings_commit();

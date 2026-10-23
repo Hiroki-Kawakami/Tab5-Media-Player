@@ -5,6 +5,7 @@
 
 #include "file_browser_page.hpp"
 #include "screens/home_screen.hpp"
+#include "screens/home/playlist_page.hpp"
 #include "media/media_cache.hpp"
 #include "media_player.hpp"
 #include "resources.h"
@@ -529,6 +530,8 @@ void FileBrowserPage::did_open_file(std::size_t index) {
         screen_manager.push(std::make_shared<VideoPlayerScreen>(make_playlist(index)));
     } else if (entry.kind == MediaKind::Image) {
         screen_manager.push(std::make_shared<ImageViewerScreen>(make_playlist(index)));
+    } else if (entry.kind == MediaKind::Playlist && home_) {
+        home_->push(std::make_shared<PlaylistPage>(browser_.entry_path(index)));
     }
 }
 

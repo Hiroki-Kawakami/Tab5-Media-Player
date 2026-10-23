@@ -662,14 +662,15 @@ void FileBrowser::didSelectCell(std::size_t index) {
 
 void FileBrowser::bind_thumbnail(lv_obj_t *frame, std::size_t index, bool enabled) {
     const DirectoryEntry &entry = entries()[index];
-    const char *icon = path().empty()                 ? (is_usb(level().storages[index])
-                                                             ? TABLER_DEVICE_USB
-                                                             : TABLER_DEVICE_SD_CARD)
-                     : entry.directory                ? TABLER_FOLDER_FILLED
-                     : entry.kind == MediaKind::Video ? TABLER_MOVIE
-                     : entry.kind == MediaKind::Audio ? TABLER_MUSIC
-                     : entry.kind == MediaKind::Image ? TABLER_PHOTO
-                                                      : TABLER_FILE;
+    const char *icon = path().empty()                    ? (is_usb(level().storages[index])
+                                                                ? TABLER_DEVICE_USB
+                                                                : TABLER_DEVICE_SD_CARD)
+                     : entry.directory                   ? TABLER_FOLDER_FILLED
+                     : entry.kind == MediaKind::Video    ? TABLER_MOVIE
+                     : entry.kind == MediaKind::Audio    ? TABLER_MUSIC
+                     : entry.kind == MediaKind::Image    ? TABLER_PHOTO
+                     : entry.kind == MediaKind::Playlist ? TABLER_PLAYLIST
+                                                         : TABLER_FILE;
     const lv_opa_t opa = enabled ? kEnabledOpa : kDisabledOpa;
     lv_obj_t *label = lv_obj_get_child(frame, 0);
     lv_label_set_text(label, icon);

@@ -19,6 +19,7 @@ public:
     void build() override;
     void onAppear() override;
     void onDisappear() override;
+    void push(std::shared_ptr<HomePage> page);
     void pop();
     void back();
     void eject(const std::string &mount_point);

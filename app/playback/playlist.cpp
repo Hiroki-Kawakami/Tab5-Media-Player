@@ -5,12 +5,19 @@
 
 #include "playlist.hpp"
 #include "media/media_directory.hpp"
+#include "media_player.hpp"
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <numeric>
 #include <random>
 #include <sys/stat.h>
+
+static const char *TAG = "playlist";
+
+static constexpr long kMaxPlaylistBytes = 512 * 1024;
 
 static std::minstd_rand &random_engine() {
     static std::minstd_rand engine((uint32_t)esp_timer_get_time());
@@ -86,13 +93,123 @@ void Playlist::shuffleAll() {
     position_ = 0;
 }
 
+static std::string name_of(const std::string &path) {
+    const std::size_t slash = path.rfind('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+static std::string trim(const std::string &text) {
+    const std::size_t first = text.find_first_not_of(" \t\r");
+    if (first == std::string::npos) return {};
+    return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
+}
+
+static bool read_file(const std::string &path, std::string *text) {
+    FILE *file = fopen(path.c_str(), "rb");
+    if (!file) {
+        ESP_LOGE(TAG, "cannot open %s", path.c_str());
+        return false;
+    }
+    fseek(file, 0, SEEK_END);
+    const long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    if (size < 0 || size > kMaxPlaylistBytes) {
+        ESP_LOGE(TAG, "%s: %ld bytes, at most %ld are read", path.c_str(), size, kMaxPlaylistBytes);
+        fclose(file);
+        return false;
+    }
+    text->resize((std::size_t)size);
+    const std::size_t got = fread(text->data(), 1, text->size(), file);
+    fclose(file);
+    if (got != text->size()) {
+        ESP_LOGE(TAG, "%s: read %u of %ld bytes", path.c_str(), (unsigned)got, size);
+        return false;
+    }
+    return true;
+}
+
+/* Empty when the entry is not a file on the playlist's own storage. */
+static std::string resolve_entry(std::string entry, const std::string &directory,
+                                 const std::string &mount_point) {
+    std::replace(entry.begin(), entry.end(), '\\', '/');
+    /* No FAT name holds a ':', so one means a drive letter or a URL. */
+    if (entry.find(':') != std::string::npos) return {};
+    const std::string joined =
+        entry[0] == '/' ? entry : directory.substr(mount_point.size()) + "/" + entry;
+
+    std::vector<std::string> parts;
+    std::size_t start = 0;
+    while (start <= joined.size()) {
+        std::size_t end = joined.find('/', start);
+        if (end == std::string::npos) end = joined.size();
+        const std::string part = joined.substr(start, end - start);
+        start = end + 1;
+        if (part.empty() || part == ".") continue;
+        if (part == "..") {
+            if (parts.empty()) return {};
+            parts.pop_back();
+            continue;
+        }
+        parts.push_back(part);
+    }
+    if (parts.empty()) return {};
+    std::string path = mount_point;
+    for (const std::string &part : parts) path += "/" + part;
+    return path;
+}
+
+bool playlist_file_read(const std::string &path, PlaylistFile *file) {
+    *file = {};
+    const std::string name = name_of(path);
+    const std::size_t dot = name.rfind('.');
+    file->title = dot == 0 || dot == std::string::npos ? name : name.substr(0, dot);
+
+    const char *mount_point = nullptr;
+    for (const char *candidate : { kSdMountPoint, kUsbMountPoint }) {
+        if (path_is_under(path, candidate)) mount_point = candidate;
+    }
+    std::string text;
+    if (!mount_point || !read_file(path, &text)) return false;
+    if (text.compare(0, 3, "\xef\xbb\xbf") == 0) text.erase(0, 3);
+
+    const std::string directory = path.substr(0, path.rfind('/'));
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string::npos) end = text.size();
+        const std::string line = trim(text.substr(start, end - start));
+        start = end + 1;
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            static constexpr const char kTitle[] = "#PLAYLIST:";
+            if (line.compare(0, sizeof(kTitle) - 1, kTitle) != 0) continue;
+            const std::string title = trim(line.substr(sizeof(kTitle) - 1));
+            if (!title.empty()) file->title = title;
+            continue;
+        }
+        const std::string entry = resolve_entry(line, directory, mount_point);
+        if (entry.empty()) continue;
+        std::string entry_name = name_of(entry);
+        const MediaKind kind = demuxer_media_kind(entry_name.c_str());
+        if (kind == MediaKind::None || kind == MediaKind::Playlist) continue;
+        if (file->kind == MediaKind::None) file->kind = kind;
+        if (kind != file->kind) continue;
+        file->items.push_back({ std::move(entry_name), entry });
+    }
+    return true;
+}
+
 std::vector<PlaylistItem> playlist_items_at(const std::string &path, MediaKind kind) {
     std::vector<PlaylistItem> items;
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return items;
     if (!S_ISDIR(st.st_mode)) {
-        const std::size_t slash = path.rfind('/');
-        const std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+        const std::string name = name_of(path);
+        if (demuxer_media_kind(name.c_str()) == MediaKind::Playlist) {
+            PlaylistFile file;
+            if (playlist_file_read(path, &file) && file.kind == kind) items = std::move(file.items);
+            return items;
+        }
         if (demuxer_media_kind(name.c_str()) == kind) items.push_back({ name, path });
         return items;
     }

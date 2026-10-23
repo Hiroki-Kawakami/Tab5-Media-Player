@@ -26,6 +26,7 @@
         "TABLER_PHOTO": "tabler/photo.svg",
         "TABLER_MOVIE": "tabler/movie.svg",
         "TABLER_FILE": "tabler/file.svg",
+        "TABLER_PLAYLIST": "tabler/playlist.svg",
         "TABLER_DEVICE_SD_CARD": "tabler/device-sd-card.svg",
         "TABLER_DEVICE_USB": "tabler/device-usb.svg"
       }
@@ -71,6 +72,7 @@
         "TABLER_PHOTO": "tabler/photo.svg",
         "TABLER_MOVIE": "tabler/movie.svg",
         "TABLER_FILE": "tabler/file.svg",
+        "TABLER_PLAYLIST": "tabler/playlist.svg",
         "TABLER_DOTS": "tabler/dots.svg",
         "TABLER_LIST": "tabler/list.svg",
         "TABLER_LIST_DETAILS": "tabler/list-details.svg",

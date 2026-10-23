@@ -60,6 +60,11 @@ void HomeScreen::build() {
     layout();
 }
 
+void HomeScreen::push(std::shared_ptr<HomePage> page) {
+    page->home_ = this;
+    navigate([this, page = std::move(page)] { stack_.push_back(page); });
+}
+
 void HomeScreen::pop() {
     navigate([this] {
         if (!stack_.empty()) stack_.pop_back();

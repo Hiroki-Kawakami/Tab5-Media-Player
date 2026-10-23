@@ -18,6 +18,8 @@ struct FilePickerOptions {
     const char *confirm = "Use This Folder";
     /* Files of this kind can be picked by tapping them; None shows files disabled. */
     MediaKind file_kind = MediaKind::None;
+    /* Playlist files can be picked as well. */
+    bool playlists = false;
     /* Directories that are shown disabled. */
     std::vector<std::string> excluded;
     std::function<bool(const std::string &)> can_pick;

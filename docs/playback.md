@@ -12,11 +12,8 @@ Audio-only files play too, in `AudioPlayerScreen` (see
 `*.wav` (16/24/32-bit PCM or IMA ADPCM), and `*.mp3` / `*.aac` as elementary
 streams. `.opus`/Ogg is deliberately left out for now.
 
-Both screens play the files of one directory in order (see
-[Playlists](#playlists)). The planned additions are images and stored playlist
-files; neither exists yet. Their names are in the layout so you can see where
-each would land. Only the decisions that are expensive to reverse later were
-taken now.
+Both screens play the files of one directory, or of an `.m3u`/`.m3u8`, in
+order (see [Playlists](#playlists)).
 
 ## Layers
 
@@ -293,9 +290,8 @@ at the end and the restart on flush. What differs:
   positions, which is worth its own step.
 - **No 8-bit WAV** (it is unsigned, and everything below is signed), no MS
   ADPCM, and no MP3 inside WAV.
-- **No stored playlists.** The only source of a `Playlist` is a directory
-  listing; `.m3u` and friends are not read, and there is no queue the user can
-  edit.
+- **Playlist files are read only.** There is no way to make or edit an `.m3u`
+  on the device, and no queue the user can edit. PLS and XSPF are not read.
 
 ## Reading: one buffer from the card to the decoder
 
@@ -811,10 +807,32 @@ what both screens are constructed with, so a screen has no path of its own —
   shows them, so a music file plays the directory's music and a video its
   videos. A different source (an `.m3u`, a queue) fills the same vector.
 - **A caller with no listing reads one with `playlist_items_at()`**, next to
-  the class: a directory's files of one kind, or the path itself when it is a
-  file of that kind. The slideshow's music is that caller. The listing and its
+  the class: a directory's files of one kind, a playlist file's when its
+  first entry is of that kind, or the path itself when it is a file of that
+  kind. The slideshow's music is that caller. The listing and its
   order are `media_directory_list()` (`app/media/media_directory.*`), the same
   one the browser shows, so both put the files in the same order.
+- **An `.m3u`/`.m3u8` opens a page of its own** (`PlaylistPage`, pushed on
+  Home's stack), not playback: the video screen has no list of its own, so the
+  page is where a video playlist can be seen at all. The page is separate from
+  `FileBrowser` code and all: what it shows per row (tag title, artist and
+  album) and what the browser shows grow apart, and the hard part, the
+  scrolling, is already shared in the list view. A tap plays the page's
+  items from that row, like a tap in the browser.
+- **The kind of a playlist file is the kind of its first entry**
+  (`playlist_file_read()`). Entries of any other kind are neither listed nor
+  played, so one file never needs two player screens. The title is
+  `#PLAYLIST:` or else the file name; every other `#` line is ignored.
+  - Both extensions are read as UTF-8, which is also what FatFs takes paths
+    in. A Shift_JIS `.m3u` from an old Windows tool does not resolve.
+  - A relative entry is from the playlist's directory, a leading `/` is the
+    root of the playlist's own storage, `\` is read as `/`, and `.`/`..`
+    are resolved here, since FatFs is built without relative paths. An entry
+    with a `:` (a drive letter or a URL, which no FAT name can hold) or one
+    that climbs above the storage is dropped.
+  - Nothing is `stat`ed while reading: a missing file is listed and then fails
+    to open like any other, which is cheaper on FAT than checking hundreds of
+    entries up front.
 - **The player is untouched.** Everything here is the screen reacting to
   `PlayerState::Finished` with another `player_open()`, which is what
   [the layering](#decisions-taken-now-because-they-are-expensive-later) already

@@ -97,7 +97,10 @@ void FilePickerScreen::pick(const std::string &path) {
 }
 
 bool FilePickerScreen::is_enabled(const std::string &path, const DirectoryEntry &entry) const {
-    if (!entry.directory) return options_.file_kind != MediaKind::None && entry.kind == options_.file_kind;
+    if (!entry.directory) {
+        if (options_.playlists && entry.kind == MediaKind::Playlist) return true;
+        return options_.file_kind != MediaKind::None && entry.kind == options_.file_kind;
+    }
     return std::none_of(options_.excluded.begin(), options_.excluded.end(),
                         [&path](const std::string &excluded) { return path == excluded; });
 }

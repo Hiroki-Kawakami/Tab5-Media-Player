@@ -64,120 +64,109 @@ static const char *h264_profile_name(uint8_t profile_idc) {
     }
 }
 
-static void build_general(lv_obj_t *contents, const std::string &name,
-                          const MediaSummary &summary, const SettingColors *colors) {
-    auto section = lv_setting_section_create(contents, "General", colors);
+static PanelSection general_section(const std::string &name, const MediaSummary &summary) {
+    PanelSection section = { "General", {} };
+    auto &rows = section.rows;
     char text[64];
 
-    lv_obj_update_layout(section);
-    panel_add_wide_row(section, "File", name.c_str(), lv_obj_get_content_width(section), colors);
-    if (!summary.valid) return;
+    rows.push_back({ "File", name, true });
+    if (!summary.valid) return section;
 
-    panel_add_row(section, "Format", summary.container, colors);
+    rows.push_back({ "Format", summary.container });
     panel_format_size(text, sizeof(text), summary.file_bytes);
-    panel_add_row(section, "Size", text, colors);
+    rows.push_back({ "Size", text });
     format_duration(text, sizeof(text), summary.duration_us);
-    panel_add_row(section, "Duration", text, colors);
+    rows.push_back({ "Duration", text });
     if (summary.file_bytes > 0 && summary.duration_us > 0) {
         format_bitrate(text, sizeof(text),
                        summary.file_bytes * 8 * 1000000 / summary.duration_us);
-        panel_add_row(section, "Bitrate", text, colors);
+        rows.push_back({ "Bitrate", text });
     }
-    panel_add_row(section, "Seek", summary.seekable ? "Supported" : "Unsupported", colors);
+    rows.push_back({ "Seek", summary.seekable ? "Supported" : "Unsupported" });
+    return section;
 }
 
-static void build_tags(lv_obj_t *contents, const MediaTags &tags,
-                       const SettingColors *colors) {
-    auto section = lv_setting_section_create(contents, "Tags", colors);
-    lv_obj_update_layout(section);
-    const int32_t width = lv_obj_get_content_width(section);
-
-    if (!tags.title.empty()) {
-        panel_add_wide_row(section, "Title", tags.title.c_str(), width, colors);
-    }
-    if (!tags.artist.empty()) {
-        panel_add_wide_row(section, "Artist", tags.artist.c_str(), width, colors);
-    }
-    if (!tags.album.empty()) {
-        panel_add_wide_row(section, "Album", tags.album.c_str(), width, colors);
-    }
-    if (!tags.album_artist.empty()) {
-        panel_add_wide_row(section, "Album Artist", tags.album_artist.c_str(), width, colors);
-    }
-    if (!tags.track.empty()) panel_add_row(section, "Track", tags.track.c_str(), colors);
-    if (!tags.date.empty()) panel_add_row(section, "Date", tags.date.c_str(), colors);
+static PanelSection tags_section(const MediaTags &tags) {
+    PanelSection section = { "Tags", {} };
+    auto &rows = section.rows;
+    if (!tags.title.empty()) rows.push_back({ "Title", tags.title, true });
+    if (!tags.artist.empty()) rows.push_back({ "Artist", tags.artist, true });
+    if (!tags.album.empty()) rows.push_back({ "Album", tags.album, true });
+    if (!tags.album_artist.empty()) rows.push_back({ "Album Artist", tags.album_artist, true });
+    if (!tags.track.empty()) rows.push_back({ "Track", tags.track });
+    if (!tags.date.empty()) rows.push_back({ "Date", tags.date });
+    return section;
 }
 
-static void build_video(lv_obj_t *contents, const MediaSummary &summary,
-                        const SettingColors *colors) {
-    auto section = lv_setting_section_create(contents, "Video", colors);
+static PanelSection video_section(const MediaSummary &summary) {
+    PanelSection section = { "Video", {} };
+    auto &rows = section.rows;
     char text[64];
 
-    panel_add_row(section, "Codec", codec_name(summary.video.codec), colors);
+    rows.push_back({ "Codec", codec_name(summary.video.codec) });
     const char *profile = h264_profile_name(summary.video.profile_idc);
     if (profile) {
         snprintf(text, sizeof(text), "%s @ Level %d.%d", profile, summary.video.level_idc / 10,
                  summary.video.level_idc % 10);
-        panel_add_row(section, "Profile", text, colors);
+        rows.push_back({ "Profile", text });
     }
     snprintf(text, sizeof(text), "%u x %u", (unsigned)summary.video.width,
              (unsigned)summary.video.height);
-    panel_add_row(section, "Resolution", text, colors);
+    rows.push_back({ "Resolution", text });
     if (summary.video.frame_interval_us > 0) {
         format_frame_rate(text, sizeof(text), summary.video.frame_interval_us);
-        panel_add_row(section, "Frame Rate", text, colors);
+        rows.push_back({ "Frame Rate", text });
     }
     const int degrees = rotation_degrees(summary.video.rotation);
     if (degrees) {
         snprintf(text, sizeof(text), "%d degrees", degrees);
-        panel_add_row(section, "Rotation", text, colors);
+        rows.push_back({ "Rotation", text });
     }
+    return section;
 }
 
-static void build_audio(lv_obj_t *contents, const MediaSummary &summary,
-                        const SettingColors *colors) {
-    auto section = lv_setting_section_create(contents, "Audio", colors);
+static PanelSection audio_section(const MediaSummary &summary) {
+    PanelSection section = { "Audio", {} };
+    auto &rows = section.rows;
     char text[64];
 
-    panel_add_row(section, "Codec", codec_name(summary.audio.codec), colors);
-    if (summary.audio.codec == CodecId::None) return;
+    rows.push_back({ "Codec", codec_name(summary.audio.codec) });
+    if (summary.audio.codec == CodecId::None) return section;
 
     if (summary.audio.sample_rate) {
         snprintf(text, sizeof(text), "%.1f kHz", (double)summary.audio.sample_rate / 1000.0);
-        panel_add_row(section, "Sample Rate", text, colors);
+        rows.push_back({ "Sample Rate", text });
     }
     if (summary.audio.channels) {
         const char *layout = summary.audio.channels == 1 ? " (Mono)"
                            : summary.audio.channels == 2 ? " (Stereo)"
                                                          : "";
         snprintf(text, sizeof(text), "%u%s", (unsigned)summary.audio.channels, layout);
-        panel_add_row(section, "Channels", text, colors);
+        rows.push_back({ "Channels", text });
     }
     if (summary.audio.bits &&
         (summary.audio.codec == CodecId::Pcm || summary.audio.codec == CodecId::AdpcmIma)) {
         snprintf(text, sizeof(text), "%u bit", (unsigned)summary.audio.bits);
-        panel_add_row(section, "Bit Depth", text, colors);
+        rows.push_back({ "Bit Depth", text });
     }
     if (summary.audio.bitrate_bps) {
         format_bitrate(text, sizeof(text), summary.audio.bitrate_bps);
     } else {
         snprintf(text, sizeof(text), "--");
     }
-    panel_add_row(section, "Bitrate", text, colors);
-    if (!summary.audio.note.empty()) {
-        lv_obj_update_layout(section);
-        panel_add_wide_row(section, "Note", summary.audio.note.c_str(),
-                     lv_obj_get_content_width(section), colors);
-    }
+    rows.push_back({ "Bitrate", text });
+    if (!summary.audio.note.empty()) rows.push_back({ "Note", summary.audio.note, true });
+    return section;
 }
 
-static void build_sections(lv_obj_t *contents, const std::string &name,
-                           const MediaSummary &summary, const SettingColors *colors, bool video) {
-    build_general(contents, name, summary, colors);
-    if (!summary.valid) return;
-    if (!summary.tags.empty()) build_tags(contents, summary.tags, colors);
-    if (video) build_video(contents, summary, colors);
-    build_audio(contents, summary, colors);
+static std::vector<PanelSection> info_sections(const std::string &name,
+                                               const MediaSummary &summary, bool video) {
+    std::vector<PanelSection> sections = { general_section(name, summary) };
+    if (!summary.valid) return sections;
+    if (!summary.tags.empty()) sections.push_back(tags_section(summary.tags));
+    if (video) sections.push_back(video_section(summary));
+    sections.push_back(audio_section(summary));
+    return sections;
 }
 
 static void cache_contents(lv_obj_t *contents) {
@@ -242,11 +231,13 @@ void player_info_panel_build(lv_obj_t *root, const std::string &name, const Medi
     auto contents = player_panel_build(root, "Media Info", std::move(on_close));
     lv_obj_set_scroll_dir(contents, LV_DIR_VER);
 
-    build_sections(contents, name, summary, &kPanelColors, true);
+    panel_sections_show(contents, info_sections(name, summary, true));
     if (summary.valid) cache_contents(contents);
 }
 
-void player_info_sections_build(lv_obj_t *contents, const std::string &name,
-                                const MediaSummary &summary, const SettingColors *colors) {
-    build_sections(contents, name, summary, colors, summary.video.codec != CodecId::None);
+void player_info_sections_show(lv_obj_t *contents, const std::string &name,
+                               const MediaSummary &summary, const SettingColors *colors) {
+    panel_sections_show(contents,
+                        info_sections(name, summary, summary.video.codec != CodecId::None),
+                        colors);
 }

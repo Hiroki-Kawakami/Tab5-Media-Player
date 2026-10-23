@@ -32,7 +32,7 @@ private:
     void buildContents();
     void buildArtwork(lv_obj_t *pane);
     void showPane(Pane pane);
-    void buildInfo();
+    void showInfo();
     void buildPlaylist();
     void syncPlaylist();
     void rebindRow(std::size_t index);
@@ -77,7 +77,6 @@ private:
     bool landscape_ = false;
     RepeatMode repeat_ = RepeatMode::Off;
     Pane pane_ = Pane::Artwork;
-    bool info_valid_ = false;
 
     std::shared_ptr<const MediaEntry> meta_;
     ImageSize cover_size_;

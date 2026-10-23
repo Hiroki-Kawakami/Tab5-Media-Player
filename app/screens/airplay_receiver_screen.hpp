@@ -113,5 +113,4 @@ private:
     int64_t shown_total_s_ = -2;
     std::string shown_title_;
     std::string shown_subtitle_;
-    std::string shown_info_;
 };

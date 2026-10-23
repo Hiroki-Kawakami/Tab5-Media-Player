@@ -181,7 +181,8 @@ void AudioPlayerScreen::showPane(Pane pane) {
         buildPlaylist();
         break;
     case Pane::Info:
-        buildInfo();
+        lv_setting_page_style(pane_view_);
+        showInfo();
         break;
     case Pane::Settings:
         lv_setting_page_style(pane_view_);
@@ -193,12 +194,9 @@ void AudioPlayerScreen::showPane(Pane pane) {
     }
 }
 
-void AudioPlayerScreen::buildInfo() {
-    lv_obj_clean(pane_view_);
-    lv_setting_page_style(pane_view_);
+void AudioPlayerScreen::showInfo() {
     const MediaSummary summary = awaiting_start_ ? MediaSummary{} : player_media_summary();
-    info_valid_ = summary.valid;
-    player_info_sections_build(pane_view_, name(), summary, nullptr);
+    player_info_sections_show(pane_view_, name(), summary, nullptr);
 }
 
 void AudioPlayerScreen::buildPlaylist() {
@@ -499,7 +497,6 @@ void AudioPlayerScreen::openCurrent() {
         player_scrolling_text_set(subtitle_label_, "");
         lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kPlayerSubtitleColor), 0);
     }
-    if (pane_ == Pane::Info && pane_view_) buildInfo();
     syncPlaylist();
     updateTransport();
     setPlayIcon(true);
@@ -629,7 +626,9 @@ void AudioPlayerScreen::refresh() {
         message = format_audio(meta_->audio_codec, meta_->sample_rate, meta_->channels);
     }
     if (message.empty()) message = format_summary(summary);
-    if (pane_ == Pane::Info && pane_view_ && summary.valid != info_valid_) buildInfo();
+    /* Until the new file is open the pane keeps the last one's values rather
+     * than collapse to the file name and lose its scroll position. */
+    if (pane_ == Pane::Info && pane_view_ && ready) showInfo();
     if (message != shown_subtitle_) {
         shown_subtitle_ = message;
         player_scrolling_text_set(subtitle_label_, message);

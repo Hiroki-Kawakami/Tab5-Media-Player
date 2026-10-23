@@ -146,7 +146,6 @@ void AirPlayReceiverScreen::showPane(Pane pane) {
         lv_obj_delete(pane_view_);
         pane_view_ = nullptr;
     }
-    shown_info_.clear();
     lv_obj_set_hidden(artwork_, pane != Pane::Artwork);
     if (pane == Pane::Artwork) return;
 
@@ -456,32 +455,36 @@ void AirPlayReceiverScreen::updateInfo(const wifi::Status &status, const airplay
                       : now.state == airplay::State::Playing   ? "Playing"
                                                                : "Connected";
     char text[64];
-    std::vector<std::pair<std::string, std::string>> receiver = {
-        { "Name", kReceiverName },
-    };
-    if (!status.ip.empty()) receiver.push_back({ "Address", status.ip });
-    receiver.push_back({ "Status", state });
+    std::vector<PanelSection> sections;
+    PanelSection receiver = { "Receiver", { { "Name", kReceiverName } } };
+    if (!status.ip.empty()) receiver.rows.push_back({ "Address", status.ip });
+    receiver.rows.push_back({ "Status", state });
+    sections.push_back(std::move(receiver));
 
-    std::vector<std::pair<std::string, std::string>> sender;
-    std::vector<std::pair<std::string, std::string>> track;
-    std::vector<std::pair<std::string, std::string>> audio;
     if (connected) {
-        if (!now.sender_name.empty()) sender.push_back({ "Name", now.sender_name });
-        if (!now.sender_address.empty()) sender.push_back({ "Address", now.sender_address });
-        if (!now.title.empty()) track.push_back({ "Title", now.title });
-        if (!now.artist.empty()) track.push_back({ "Artist", now.artist });
-        if (!now.album.empty()) track.push_back({ "Album", now.album });
+        PanelSection sender = { "Sender", {} };
+        if (!now.sender_name.empty()) sender.rows.push_back({ "Name", now.sender_name, true });
+        if (!now.sender_address.empty()) sender.rows.push_back({ "Address", now.sender_address });
+        if (!sender.rows.empty()) sections.push_back(std::move(sender));
+
+        PanelSection track = { "Now Playing", {} };
+        if (!now.title.empty()) track.rows.push_back({ "Title", now.title, true });
+        if (!now.artist.empty()) track.rows.push_back({ "Artist", now.artist, true });
+        if (!now.album.empty()) track.rows.push_back({ "Album", now.album, true });
         if (now.duration_ms > 0) {
             media_format_time(text, sizeof(text), now.duration_ms / 1000);
-            track.push_back({ "Duration", text });
+            track.rows.push_back({ "Duration", text });
         }
+        if (!track.rows.empty()) sections.push_back(std::move(track));
+
+        PanelSection audio = { "Audio", {} };
         if (now.codec) {
-            audio.push_back({ "Codec", now.codec });
+            audio.rows.push_back({ "Codec", now.codec });
             snprintf(text, sizeof(text), "%.1f kHz", now.sample_rate / 1000.0);
-            audio.push_back({ "Sample Rate", text });
+            audio.rows.push_back({ "Sample Rate", text });
             snprintf(text, sizeof(text), "%u%s", (unsigned)now.channels,
                      now.channels == 1 ? " (Mono)" : now.channels == 2 ? " (Stereo)" : "");
-            audio.push_back({ "Channels", text });
+            audio.rows.push_back({ "Channels", text });
         }
         if (now.has_volume) {
             if (now.volume_db <= airplay::kVolumeMute) {
@@ -489,31 +492,9 @@ void AirPlayReceiverScreen::updateInfo(const wifi::Status &status, const airplay
             } else {
                 snprintf(text, sizeof(text), "%.1f dB", now.volume_db);
             }
-            audio.push_back({ "Volume", text });
+            audio.rows.push_back({ "Volume", text });
         }
+        if (!audio.rows.empty()) sections.push_back(std::move(audio));
     }
-
-    std::string key;
-    for (const auto *rows : { &receiver, &sender, &track, &audio }) {
-        for (const auto &row : *rows) key += row.first + '\n' + row.second + '\n';
-        key += '\n';
-    }
-    if (key == shown_info_) return;
-    shown_info_ = key;
-
-    lv_obj_clean(pane_view_);
-    auto add_section = [this](const char *title,
-                              const std::vector<std::pair<std::string, std::string>> &rows) {
-        if (rows.empty()) return;
-        lv_obj_t *section = lv_setting_section_create(pane_view_, title);
-        lv_obj_update_layout(section);
-        const int32_t width = lv_obj_get_content_width(section);
-        for (const auto &row : rows) {
-            panel_add_wide_row(section, row.first.c_str(), row.second.c_str(), width, nullptr);
-        }
-    };
-    add_section("Receiver", receiver);
-    add_section("Sender", sender);
-    add_section("Now Playing", track);
-    add_section("Audio", audio);
+    panel_sections_show(pane_view_, sections, nullptr);
 }

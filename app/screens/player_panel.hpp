@@ -23,8 +23,10 @@ inline constexpr SettingColors kPanelColors = {
  * container it returns, which the caller fills with sections. */
 lv_obj_t *player_panel_build(lv_obj_t *root, const char *title, std::function<void()> on_close);
 
-void panel_add_row(lv_obj_t *section, const char *label, const char *text);
+void panel_add_row(lv_obj_t *section, const char *label, const char *text,
+                   const SettingColors *colors = &kPanelColors);
 /* A value that may need more than one line: `width` is the section's content
    width, which decides where the text is clipped to three lines. */
-void panel_add_wide_row(lv_obj_t *section, const char *label, const char *text, int32_t width);
+void panel_add_wide_row(lv_obj_t *section, const char *label, const char *text, int32_t width,
+                        const SettingColors *colors = &kPanelColors);
 void panel_format_size(char *out, std::size_t size, int64_t bytes);

@@ -620,13 +620,18 @@ LVGL tick like Home does.
 - **The artwork is one fixed 552 px square in both orientations**, so that a
   rotation can reuse the artwork it has already decoded rather than asking for
   another size. The number is what the landscape layout happened to leave and
-  is meant to be tuned by hand, not derived. It is still built after the
-  controls and, in portrait, moved in front of them.
+  is meant to be tuned by hand, not derived. The pane around it takes the room
+  the layout leaves (wider in portrait, taller in landscape) for the other
+  panes; the artwork keeps its square at the bottom of it.
 - **The title is the tag title and the second line is artist and album**,
   falling back to the file name and the audio format when the file carries no
-  tags; a failure or an audio note still takes the second line, in orange. The
-  navigation bar keeps the file name either way, so the file a title belongs to
-  stays identifiable.
+  tags; a failure or an audio note still takes the second line, in orange.
+  Both are one line high and scroll sideways when they do not fit, so a long
+  title never moves the controls. The back button says "Music Player" rather
+  than the file name: the browser's bar already showed the folder, and the
+  file name is in the Info pane.
+  - The scrolling animation never ends, so the harness's `settle` times out
+    on this screen while a title overflows.
 - **The title is resolved before the screen appears.** It comes from
   `media_cache` (the browser has usually prefetched the row), not from the
   player's summary, which is only valid once the file is open — that was what
@@ -641,6 +646,16 @@ LVGL tick like Home does.
   text and the whole behaviour of the volume row, which is the part that must
   not drift between the two screens. Only the colours differ, and they are
   arguments.
+- **The Info and Settings panes reuse the video player's sections** in the
+  light palette. The Info pane builds them as live objects; the video panel's
+  pre-rendered copy would be another PSRAM buffer of over a megabyte for a
+  pane that is not drawn over a picture.
+- **The Playlist pane lists play order**, as the shuffle sees it. A tap jumps
+  to that position (`Playlist::jumpTo`) instead of `select()`, which would
+  reshuffle the rest. The visible rows ask `media_cache` for tags and then
+  56 px thumbnails, the size of the browser's Compact rows, on a token of
+  their own: `media_cache_retain` drops what scrolled away, and on the
+  artwork's token it would drop the playing track's picture too.
 
 ## Source rotation
 

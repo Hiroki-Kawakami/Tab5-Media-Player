@@ -62,6 +62,7 @@ void Playlist::select(std::size_t index) {
         position_ = 0;
         std::swap(order_[0], *std::find(order_.begin(), order_.end(), index));
         std::shuffle(order_.begin() + 1, order_.end(), random_engine());
+        order_version_++;
     } else {
         position_ = index;
     }
@@ -71,13 +72,17 @@ void Playlist::setShuffled(bool shuffled) {
     if (shuffled == shuffled_) return;
     const std::size_t current = index();
     shuffled_ = shuffled;
-    if (!shuffled) std::iota(order_.begin(), order_.end(), 0);
+    if (!shuffled) {
+        std::iota(order_.begin(), order_.end(), 0);
+        order_version_++;
+    }
     select(current);
 }
 
 void Playlist::shuffleAll() {
     shuffled_ = true;
     std::shuffle(order_.begin(), order_.end(), random_engine());
+    order_version_++;
     position_ = 0;
 }
 

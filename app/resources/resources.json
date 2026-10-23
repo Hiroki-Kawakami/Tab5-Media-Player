@@ -30,6 +30,16 @@
         "TABLER_DEVICE_USB": "tabler/device-usb.svg"
       }
     },
+    "icon_28": {
+      "size": 28,
+      "icon": {
+        "TABLER_MUSIC": "tabler/music.svg",
+        "TABLER_PHOTO": "tabler/photo.svg",
+        "TABLER_PLAYLIST": "tabler/playlist.svg",
+        "TABLER_INFO_CIRCLE": "tabler/info-circle.svg",
+        "TABLER_ADJUSTMENTS_HORIZONTAL": "tabler/adjustments-horizontal.svg"
+      }
+    },
     "icon_36": {
       "size": 36,
       "icon": {

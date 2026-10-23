@@ -17,13 +17,15 @@ static constexpr int32_t kHeaderHeight = kPadding + kCloseButton;
 static constexpr int32_t kValueGap = 16;
 static constexpr int32_t kValueLines = 3;
 
-void panel_add_row(lv_obj_t *section, const char *label, const char *text) {
+void panel_add_row(lv_obj_t *section, const char *label, const char *text,
+                   const SettingColors *colors) {
     auto row = lv_setting_row_create(section, label);
-    auto value = lv_setting_value_create(row, &kPanelColors);
+    auto value = lv_setting_value_create(row, colors);
     lv_label_set_text(value, text);
 }
 
-void panel_add_wide_row(lv_obj_t *section, const char *label, const char *text, int32_t width) {
+void panel_add_wide_row(lv_obj_t *section, const char *label, const char *text, int32_t width,
+                        const SettingColors *colors) {
     const lv_font_t *font = lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY);
 
     auto row = lv_container_create(section, LV_FLEX_FLOW_ROW);
@@ -35,7 +37,7 @@ void panel_add_wide_row(lv_obj_t *section, const char *label, const char *text, 
     lv_obj_set_style_text_font(title, font, 0);
     lv_label_set_text(title, label);
 
-    auto value = lv_setting_value_create(row, &kPanelColors);
+    auto value = lv_setting_value_create(row, colors);
     lv_obj_set_flex_grow(value, 1);
     lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_text(value, text);

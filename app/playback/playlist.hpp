@@ -24,6 +24,13 @@ public:
     const PlaylistItem &at(std::size_t index) const { return items_[index]; }
     std::size_t size() const { return items_.size(); }
     std::size_t index() const { return order_[position_]; }
+    std::size_t position() const { return position_; }
+    /* The item at `position` in play order. */
+    std::size_t orderAt(std::size_t position) const { return order_[position]; }
+    /* Moves to `position` in play order without reshuffling, unlike select(). */
+    void jumpTo(std::size_t position) { position_ = position; }
+    /* Changes whenever the play order does. */
+    unsigned orderVersion() const { return order_version_; }
 
     bool canStep(int delta, RepeatMode repeat) const;
     bool step(int delta, RepeatMode repeat);
@@ -41,6 +48,7 @@ private:
     std::vector<std::size_t> order_;
     std::size_t position_ = 0;
     bool shuffled_ = false;
+    unsigned order_version_ = 0;
 };
 
 /* The files of `kind` in a directory, by name, or the path itself when it is

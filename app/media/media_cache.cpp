@@ -820,13 +820,20 @@ static void finish(DecodeJob &job) {
     if (!stored) hand_over(job, pixels);
 }
 
+/* Within a priority, tags go before pictures, and no picture is taken while one
+   already waits for the decoder: the reader would hold it until the decoder has
+   room, and read no tags in the meantime. */
 static bool take_request(Request *out) {
     Lock lock;
+    const bool room = uxSemaphoreGetCount(s_decode_room) > 0;
     for (int priority = 0; priority < 3; priority++) {
         auto &queue = s_state->queues[priority];
-        if (queue.empty()) continue;
-        *out = std::move(queue.front());
-        queue.pop_front();
+        auto pick = std::find_if(queue.begin(), queue.end(),
+                                 [](const Request &request) { return !wants_pixels(request); });
+        if (pick == queue.end() && room) pick = queue.begin();
+        if (pick == queue.end()) continue;
+        *out = std::move(*pick);
+        queue.erase(pick);
         out->waited = priority != (int)MetaPriority::Idle;
         s_reader_cancel = false;
         s_reader_token = out->token;
@@ -897,7 +904,7 @@ static void reader_task(void *) {
         if (handed) xSemaphoreGive(s_decode_wake);
         else if (room) xSemaphoreGive(s_decode_room);
         if (s_quit) break;
-        if (player_status().state == PlayerState::Playing) {
+        if (wants_pixels(request) && player_status().state == PlayerState::Playing) {
             vTaskDelay(pdMS_TO_TICKS(kPlayingGapMs));
         }
     }
@@ -931,6 +938,7 @@ static void decoder_task(void *) {
             continue;
         }
         xSemaphoreGive(s_decode_room);
+        xSemaphoreGive(s_wake);
 
         s_decoding = true;
         finish(job);
@@ -1297,7 +1305,9 @@ static void withdraw(uint32_t token, KeepFn keep, void *ctx) {
             }
         }
     }
+    if (!dropped) return;
     while (dropped--) xSemaphoreGive(s_decode_room);
+    xSemaphoreGive(s_wake);
 }
 
 void media_cache_cancel(uint32_t token) {

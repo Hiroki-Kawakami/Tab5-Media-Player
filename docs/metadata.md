@@ -458,7 +458,9 @@ placeholder that fills in changes no text.
 Requests carry a priority: `Blocking` (something is waiting for it), `Visible`
 (rows on screen), `Idle` (the rest of the directory, the next track). The
 reader takes the highest queue first and, while the player is playing, waits
-200 ms between requests so prefetching cannot take the card away from playback.
+200 ms after each picture request so prefetching cannot take the card away from
+playback. Tag requests skip the wait: a probe is a few small reads, and the
+player's read-ahead covers them.
 A token identifies the requester; `media_cache_cancel()` drops its queued
 requests when a screen leaves, and `media_cache_retain()` drops the ones that
 have scrolled out of sight.
@@ -469,11 +471,15 @@ pixels while the reader is already on the next file. One job may be queued
 between them — enough to hide the decode behind the read without holding a
 third picture in PSRAM.
 
-`FileBrowser` asks for the visible range twice: once for tags alone, then
-for tags and thumbnails. Since the queue is FIFO within a priority, every row
-gets its title before any picture is read, which is what makes a folder look
-answered while the thumbnails are still arriving. An image file has no title to
-show, so it only takes part in the second pass.
+Within a priority the reader takes tag requests before picture requests, and
+takes no picture while one is already queued for the decoder. Holding a read
+cover until the decoder has room would stop every tag behind it, so rows that
+scroll into view get their titles while the thumbnails of the rows before them
+are still decoding; the read of the next cover still overlaps the current
+decode. `FileBrowser` asks for the visible range twice: once for tags alone,
+then for tags and thumbnails, so a row has a title even before its picture
+request is reached. An image file has no title to show, so it only takes part
+in the second pass.
 
 ## What is not there
 

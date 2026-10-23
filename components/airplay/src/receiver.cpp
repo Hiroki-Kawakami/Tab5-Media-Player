@@ -88,6 +88,24 @@ static void parse_head(std::string_view head, Request *request) {
         line_end == std::string_view::npos ? std::string_view() : head.substr(line_end + 2);
 }
 
+static std::string address_text(const sockaddr_storage &address) {
+    char text[INET6_ADDRSTRLEN] = {};
+    if (address.ss_family == AF_INET) {
+        inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in *>(&address)->sin_addr, text,
+                  sizeof(text));
+        return text;
+    }
+    const auto *in6 = &reinterpret_cast<const sockaddr_in6 *>(&address)->sin6_addr;
+    const auto *bytes = reinterpret_cast<const uint8_t *>(in6);
+    static constexpr uint8_t kMapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff };
+    if (memcmp(bytes, kMapped, sizeof(kMapped)) == 0) {
+        inet_ntop(AF_INET, bytes + 12, text, sizeof(text));
+    } else {
+        inet_ntop(AF_INET6, in6, text, sizeof(text));
+    }
+    return text;
+}
+
 static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
@@ -144,6 +162,10 @@ private:
     std::string title_;
     std::string artist_;
     std::string album_;
+    std::string sender_name_;
+    std::string sender_address_;
+    bool has_format_ = false;
+    Format format_;
     bool has_progress_ = false;
     uint32_t progress_start_ = 0;
     uint32_t progress_end_ = 0;
@@ -311,6 +333,9 @@ void Receiver::end_session() {
         title_.clear();
         artist_.clear();
         album_.clear();
+        sender_name_.clear();
+        sender_address_.clear();
+        has_format_ = false;
         has_progress_ = false;
     }
     has_position_ = false;
@@ -656,6 +681,13 @@ NowPlaying Receiver::now_playing() {
     now.album = album_;
     now.has_volume = has_volume_;
     now.volume_db = volume_db_;
+    now.sender_name = sender_name_;
+    now.sender_address = sender_address_;
+    if (has_format_) {
+        now.codec = format_.codec == Codec::Alac ? "ALAC" : "PCM";
+        now.sample_rate = format_.rate;
+        now.channels = format_.channels;
+    }
     if (has_progress_ && rate_) {
         now.duration_ms = (int64_t)(uint32_t)(progress_end_ - progress_start_) * 1000 / rate_;
         if (has_position_) {
@@ -691,6 +723,13 @@ void Receiver::handle(Client &client, const Request &request) {
         }
         end_session();
         owner_ = index;
+        {
+            std::lock_guard<std::mutex> guard(meta_lock_);
+            sender_name_ = request.header("X-Apple-Client-Name");
+            sender_address_ = address_text(client.peer);
+            format_ = pending_.format;
+            has_format_ = true;
+        }
         set_state(State::Connected);
         if (!dacp_id.empty() && !active_remote.empty()) {
             remote_.set_target(client.peer, std::string(dacp_id), std::string(active_remote));

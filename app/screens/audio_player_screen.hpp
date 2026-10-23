@@ -29,17 +29,9 @@ private:
     const std::string &name() const { return playlist_->current().name; }
     const std::string &path() const { return playlist_->current().path; }
 
-    bool isLandscape() const;
     void buildContents();
-    void buildPortrait();
-    void buildLandscape();
-    void buildNavigation(lv_obj_t *parent);
-    void buildControls(lv_obj_t *parent, int32_t title_bottom_pad);
-    void buildSegment(lv_obj_t *parent, int32_t width);
-    void buildPane(lv_obj_t *parent, int32_t width);
-    lv_obj_t *buildArtwork(lv_obj_t *parent, int32_t side);
+    void buildArtwork(lv_obj_t *pane);
     void showPane(Pane pane);
-    void updateSegment();
     void buildInfo();
     void buildPlaylist();
     void syncPlaylist();
@@ -48,11 +40,9 @@ private:
     void updatePlaylistCount();
     void requestRows();
     static bool keepVisible(const char *path, void *ctx);
-    void buildTitle(lv_obj_t *parent, int32_t bottom_pad);
-    void setScrollingText(lv_obj_t *label, const std::string &text);
-    void buildSeekRow(lv_obj_t *parent);
-    void buildTransport(lv_obj_t *parent);
-    void buildVolumeRow(lv_obj_t *parent);
+    void buildSeekRow(lv_obj_t *controls);
+    void buildTransport(lv_obj_t *controls);
+    void buildVolumeRow(lv_obj_t *controls);
     void relayout();
     void applyArtwork();
     void resetArtwork();
@@ -88,7 +78,6 @@ private:
     RepeatMode repeat_ = RepeatMode::Off;
     Pane pane_ = Pane::Artwork;
     bool info_valid_ = false;
-    lv_anim_t marquee_{};
 
     std::shared_ptr<const MediaEntry> meta_;
     ImageSize cover_size_;
@@ -97,12 +86,12 @@ private:
     std::size_t requested_first_ = SIZE_MAX;
     unsigned shown_order_ = 0;
     std::size_t shown_position_ = SIZE_MAX;
+    int64_t list_scrolled_us_ = 0;
     std::vector<std::string> visible_paths_;
     int64_t prefetch_after_us_ = 0;
     bool prefetched_ = false;
 
-    lv_obj_t *segment_buttons_[4] = {};
-    lv_obj_t *segment_dividers_[3] = {};
+    lv_obj_t *segment_ = nullptr;
     lv_obj_t *pane_box_ = nullptr;
     lv_obj_t *pane_view_ = nullptr;
     lv_obj_t *playlist_list_ = nullptr;
@@ -110,7 +99,6 @@ private:
     lv_obj_t *play_label_ = nullptr;
     lv_obj_t *next_button_ = nullptr;
     lv_obj_t *artwork_ = nullptr;
-    int32_t artwork_side_ = 0;
     lv_obj_t *artwork_icon_ = nullptr;
     lv_obj_t *artwork_image_ = nullptr;
     lv_obj_t *title_label_ = nullptr;

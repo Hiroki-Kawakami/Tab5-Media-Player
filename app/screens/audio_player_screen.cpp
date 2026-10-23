@@ -7,6 +7,7 @@
 #include "media_player.hpp"
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
+#include "screens/player_layout.hpp"
 #include "screens/video_player/info_panel.hpp"
 #include "screens/video_player/settings_panel.hpp"
 #include "settings.hpp"
@@ -21,48 +22,24 @@ static constexpr uint32_t kRefreshPeriodMs = 500;
 static constexpr uint32_t kResolveTimeoutMs = 700;
 static constexpr int64_t kPrefetchDelayUs = 2000000;
 static constexpr int64_t kPrevTrackUs = 3000000;
+static constexpr int64_t kFollowTrackUs = 30000000;
 static constexpr int32_t kSeekRange = 1000;
-static constexpr uint32_t kMarqueePauseMs = 2000;
 static constexpr int32_t kPad = 24;
 static constexpr int32_t kGap = 24;
-static constexpr int32_t kTimeWidth = 100;
-static constexpr int32_t kTitleGap = 12;
-static constexpr int32_t kPortraitTitleBottomPad = 8;
-static constexpr int32_t kLandscapeTitleBottomPad = 20;
-static constexpr int32_t kSeekRowHeight = 72;
-static constexpr int32_t kIconButton = 72;
-static constexpr int32_t kHeaderHeight = 120;
-static constexpr int32_t kSegmentHeight = 64;
-static constexpr int32_t kSegmentGap = 16;
-static constexpr int32_t kSegmentInset = 14;
-static constexpr int32_t kDividerHeight = 28;
 static constexpr int32_t kPlaylistHeaderHeight = 64;
 static constexpr int32_t kPlaylistRowHeight = 72;
 static constexpr int32_t kThumbSide = 56;
 static constexpr ImageSize kThumbBox = { kThumbSide, kThumbSide };
 static constexpr int32_t kThumbRadius = 6;
 static constexpr std::size_t kRowLookahead = 2;
-static constexpr int32_t kArtworkSide = 552;
-static constexpr ImageSize kArtworkBox = { kArtworkSide, kArtworkSide };
-static constexpr int32_t kArtworkRadius = 24;
+static constexpr ImageSize kArtworkBox = { kPlayerArtworkSide, kPlayerArtworkSide };
 /* LVGL draws through framebuffer 0 only. */
 static constexpr int kArtworkFramebuffer = 1;
 
-static constexpr uint32_t kForegroundColor = 0x101010;
-static constexpr uint32_t kTrackColor = 0xd0d0d0;
-static constexpr uint32_t kArtworkColor = 0xdcdcdc;
-static constexpr uint32_t kArtworkIconColor = 0x9e9e9e;
-static constexpr uint32_t kSubtitleColor = 0x707070;
 static constexpr uint32_t kMessageColor = 0xc25e00;
-static constexpr uint32_t kSegmentIconColor = 0x707070;
-static constexpr uint32_t kPaneColor = 0xeeeeee;
 static constexpr uint32_t kCurrentThumbColor = 0xcccccc;
 
 static constexpr const char *kTitle = "Music Player";
-static constexpr const char *kPaneIcons[] = {
-    TABLER_PHOTO, TABLER_PLAYLIST, TABLER_INFO_CIRCLE, TABLER_ADJUSTMENTS_HORIZONTAL,
-};
-static constexpr int kPaneCount = sizeof(kPaneIcons) / sizeof(kPaneIcons[0]);
 
 static int32_t body_line_height() {
     return lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY));
@@ -76,23 +53,6 @@ static std::string directory_name(const std::string &path) {
 }
 
 static AudioPlayerScreen *s_active;
-
-static lv_obj_t *create_row(lv_obj_t *parent, lv_flex_align_t main) {
-    lv_obj_t *row = lv_container_create(parent, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_align(row, main, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    return row;
-}
-
-static lv_obj_t *create_column(lv_obj_t *parent) {
-    lv_obj_t *column = lv_container_create(parent);
-    lv_obj_set_size(column, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(column, kGap, 0);
-    return column;
-}
 
 static std::string format_audio(CodecId codec, unsigned rate, unsigned channel_count) {
     if (codec == CodecId::None) return {};
@@ -129,23 +89,13 @@ static std::string format_tags(const MediaTags &tags) {
 AudioPlayerScreen::AudioPlayerScreen(std::shared_ptr<Playlist> playlist)
     : playlist_(std::move(playlist)), repeat_(settings_audio_repeat()) {
     playlist_->setShuffled(settings_audio_shuffle());
-    lv_anim_init(&marquee_);
-    lv_anim_set_delay(&marquee_, kMarqueePauseMs);
-    lv_anim_set_repeat_count(&marquee_, LV_ANIM_REPEAT_INFINITE);
-    lv_anim_set_repeat_delay(&marquee_, kMarqueePauseMs);
 }
 
 void AudioPlayerScreen::build() {
-    lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
-    lv_obj_set_style_text_color(root_, lv_color_hex(kForegroundColor), 0);
     lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
-        if (isLandscape() != landscape_) relayout();
+        if (player_layout_landscape(root_) != landscape_) relayout();
     });
     buildContents();
-}
-
-bool AudioPlayerScreen::isLandscape() const {
-    return lv_obj_get_width(root_) > lv_obj_get_height(root_);
 }
 
 void AudioPlayerScreen::relayout() {
@@ -155,9 +105,7 @@ void AudioPlayerScreen::relayout() {
 }
 
 void AudioPlayerScreen::buildContents() {
-    lv_obj_clean(root_);
-    segment_buttons_[0] = segment_buttons_[1] = segment_buttons_[2] = segment_buttons_[3] = nullptr;
-    segment_dividers_[0] = segment_dividers_[1] = segment_dividers_[2] = nullptr;
+    segment_ = nullptr;
     pane_box_ = nullptr;
     pane_view_ = nullptr;
     playlist_list_ = nullptr;
@@ -183,12 +131,27 @@ void AudioPlayerScreen::buildContents() {
     shown_title_.clear();
     shown_subtitle_.clear();
 
-    landscape_ = isLandscape();
-    if (landscape_) {
-        buildLandscape();
-    } else {
-        buildPortrait();
-    }
+    landscape_ = player_layout_landscape(root_);
+    const PlayerLayout layout = player_layout_build(
+        root_, kTitle, [this] { back(); },
+        { TABLER_PHOTO, TABLER_PLAYLIST, TABLER_INFO_CIRCLE, TABLER_ADJUSTMENTS_HORIZONTAL },
+        [this](int index) {
+            if ((int)pane_ != index) showPane((Pane)index);
+        });
+    navigation_ = layout.navigation;
+    navigation_title_ = layout.back_label;
+    contents_ = layout.controls;
+    segment_ = layout.segment;
+    pane_box_ = layout.pane;
+    title_label_ = layout.title;
+    subtitle_label_ = layout.subtitle;
+    shown_title_ = currentTitle();
+    player_scrolling_text_set(title_label_, shown_title_);
+
+    buildArtwork(pane_box_);
+    buildSeekRow(layout.controls);
+    buildTransport(layout.controls);
+    buildVolumeRow(layout.controls);
     showPane(pane_);
 
     setPlayIcon(playing_);
@@ -197,117 +160,9 @@ void AudioPlayerScreen::buildContents() {
     refresh();
 }
 
-void AudioPlayerScreen::buildPortrait() {
-    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(root_, 0, 0);
-    lv_obj_set_style_pad_row(root_, 0, 0);
-    buildNavigation(root_);
-
-    contents_ = lv_spacer_create(root_, lv_pct(100), LV_SIZE_CONTENT, 1);
-    lv_obj_set_flex_flow(contents_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_hor(contents_, kPad, 0);
-    lv_obj_update_layout(root_);
-
-    const int32_t width = lv_obj_get_content_width(contents_);
-    buildSegment(contents_, width - 2 * kSegmentInset);
-    lv_spacer_create(contents_, 1, kSegmentGap);
-    buildPane(contents_, width);
-
-    lv_obj_t *area = lv_spacer_create(contents_, lv_pct(100), LV_SIZE_CONTENT, 1);
-    buildControls(area, kPortraitTitleBottomPad);
-}
-
-void AudioPlayerScreen::buildLandscape() {
-    lv_obj_set_flex_flow(root_, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(root_, 0, 0);
-    lv_obj_set_style_pad_right(root_, kPad, 0);
-    lv_obj_set_style_pad_column(root_, 0, 0);
-
-    lv_obj_t *left = lv_spacer_create(root_, LV_SIZE_CONTENT, lv_pct(100), 1);
-    lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
-    buildNavigation(left);
-    contents_ = lv_spacer_create(left, lv_pct(100), LV_SIZE_CONTENT, 1);
-    lv_obj_set_style_pad_hor(contents_, kPad, 0);
-    buildControls(contents_, kLandscapeTitleBottomPad);
-
-    lv_obj_t *right = lv_container_create(root_);
-    lv_obj_set_size(right, kArtworkSide, lv_pct(100));
-    lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_top(right, (kHeaderHeight - kSegmentHeight) / 2, 0);
-    lv_obj_set_style_pad_bottom(right, kPad, 0);
-    buildSegment(right, kArtworkSide);
-    lv_spacer_create(right, 1, kSegmentGap);
-    buildPane(right, kArtworkSide);
-    lv_obj_set_flex_grow(pane_box_, 1);
-}
-
-void AudioPlayerScreen::buildNavigation(lv_obj_t *parent) {
-    navigation_ = lv_navigation_create(parent, LV_NAVIGATION_STYLE_UNIFIED);
-    lv_obj_t *back = lv_navigation_back_create(navigation_, kTitle,
-                                               [this](lv_event_t *) { this->back(); });
-    navigation_title_ = lv_navigation_back_label(back);
-}
-
-void AudioPlayerScreen::buildControls(lv_obj_t *parent, int32_t title_bottom_pad) {
-    lv_obj_set_flex_flow(parent, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(parent, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_t *controls = create_column(parent);
-    buildTitle(controls, title_bottom_pad);
-    buildSeekRow(controls);
-    buildTransport(controls);
-    buildVolumeRow(controls);
-}
-
-void AudioPlayerScreen::buildSegment(lv_obj_t *parent, int32_t width) {
-    const lv_color_t foreground = lv_color_hex(kForegroundColor);
-    const int32_t cell = width / kPaneCount;
-    const int32_t left = (width - cell * kPaneCount) / 2;
-    lv_obj_t *segment = lv_container_create(parent);
-    lv_obj_set_size(segment, width, kSegmentHeight);
-    lv_obj_set_scrollable(segment, false);
-
-    for (int i = 0; i < kPaneCount; i++) {
-        lv_obj_t *button = media_toggle_button(segment, kSegmentHeight, &icon_28, kPaneIcons[i],
-                                               foreground, lv_color_white());
-        lv_obj_set_size(button, cell, kSegmentHeight);
-        lv_obj_set_pos(button, left + i * cell, 0);
-        lv_obj_set_style_text_color(button, lv_color_hex(kSegmentIconColor), 0);
-        lv_obj_add_event_fn(button, LV_EVENT_CLICKED, [this, i](lv_event_t *) {
-            if ((int)pane_ != i) showPane((Pane)i);
-        });
-        segment_buttons_[i] = button;
-    }
-    for (int i = 1; i < kPaneCount; i++) {
-        lv_obj_t *divider = lv_container_create(segment, lv_color_hex(kTrackColor));
-        lv_obj_set_size(divider, 1, kDividerHeight);
-        lv_obj_set_pos(divider, left + i * cell, (kSegmentHeight - kDividerHeight) / 2);
-        segment_dividers_[i - 1] = divider;
-    }
-}
-
-void AudioPlayerScreen::updateSegment() {
-    const int active = (int)pane_;
-    for (int i = 0; i < kPaneCount; i++) {
-        lv_obj_set_state(segment_buttons_[i], LV_STATE_CHECKED, i == active);
-    }
-    for (int i = 1; i < kPaneCount; i++) {
-        lv_obj_set_hidden(segment_dividers_[i - 1], i == active || i - 1 == active);
-    }
-}
-
-void AudioPlayerScreen::buildPane(lv_obj_t *parent, int32_t width) {
-    pane_box_ = lv_container_create(parent);
-    lv_obj_set_size(pane_box_, width, kArtworkSide);
-    lv_obj_set_scrollable(pane_box_, false);
-    lv_obj_align(buildArtwork(pane_box_, kArtworkSide), LV_ALIGN_BOTTOM_MID, 0, 0);
-}
-
 void AudioPlayerScreen::showPane(Pane pane) {
     pane_ = pane;
-    updateSegment();
+    player_segment_set_active(segment_, (int)pane_);
     if (pane_view_) {
         lv_obj_delete(pane_view_);
         pane_view_ = nullptr;
@@ -319,12 +174,7 @@ void AudioPlayerScreen::showPane(Pane pane) {
     lv_obj_set_hidden(artwork_, pane != Pane::Artwork);
     if (pane == Pane::Artwork) return;
 
-    pane_view_ = lv_container_create(pane_box_, lv_color_hex(kPaneColor));
-    lv_obj_set_size(pane_view_, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_radius(pane_view_, kArtworkRadius, 0);
-    lv_obj_set_style_clip_corner(pane_view_, true, 0);
-    lv_obj_set_flex_flow(pane_view_, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scroll_dir(pane_view_, LV_DIR_VER);
+    pane_view_ = player_pane_view_create(pane_box_);
 
     switch (pane) {
     case Pane::Playlist:
@@ -366,15 +216,20 @@ void AudioPlayerScreen::buildPlaylist() {
 
     playlist_count_ = lv_label_create(header);
     lv_obj_set_font_role(playlist_count_, LV_WIDGETS_FONT_BODY);
-    lv_obj_set_style_text_color(playlist_count_, lv_color_hex(kSubtitleColor), 0);
+    lv_obj_set_style_text_color(playlist_count_, lv_color_hex(kPlayerSubtitleColor), 0);
     updatePlaylistCount();
 
     lv_hor_separator_create(pane_view_);
     shown_order_ = playlist_->orderVersion();
     shown_position_ = playlist_->position();
     playlist_list_ = lv_list_create(pane_view_, this);
-    lv_obj_add_event_fn(playlist_list_, LV_EVENT_SCROLL, [this](lv_event_t *) { requestRows(); });
+    lv_obj_add_event_fn(playlist_list_, LV_EVENT_SCROLL, [this](lv_event_t *) {
+        if (lv_indev_active()) list_scrolled_us_ = esp_timer_get_time();
+        requestRows();
+    });
     lv_list_show_row(playlist_list_, playlist_->position());
+    /* A jump made while a tap is being handled reads as the user's scroll. */
+    list_scrolled_us_ = esp_timer_get_time() - kFollowTrackUs;
     requestRows();
 }
 
@@ -387,6 +242,7 @@ void AudioPlayerScreen::syncPlaylist() {
         shown_position_ = position;
         lv_list_reload_data(playlist_list_, true);
         lv_list_show_row(playlist_list_, position);
+        list_scrolled_us_ = esp_timer_get_time() - kFollowTrackUs;
         requested_first_ = SIZE_MAX;
         requestRows();
         return;
@@ -396,6 +252,9 @@ void AudioPlayerScreen::syncPlaylist() {
     shown_position_ = position;
     rebindRow(previous);
     rebindRow(position);
+    if (esp_timer_get_time() - list_scrolled_us_ >= kFollowTrackUs) {
+        lv_list_show_row(playlist_list_, position, LV_ANIM_ON);
+    }
 }
 
 void AudioPlayerScreen::rebindRow(std::size_t index) {
@@ -454,17 +313,10 @@ void AudioPlayerScreen::requestRows() {
     }
 }
 
-lv_obj_t *AudioPlayerScreen::buildArtwork(lv_obj_t *parent, int32_t side) {
-    artwork_ = lv_container_create(parent, lv_color_hex(kArtworkColor));
-    artwork_side_ = side;
-    lv_obj_set_size(artwork_, side, side);
-    lv_obj_set_style_radius(artwork_, kArtworkRadius, 0);
-    lv_obj_set_style_clip_corner(artwork_, true, 0);
-    lv_obj_set_scrollable(artwork_, false);
-
+void AudioPlayerScreen::buildArtwork(lv_obj_t *pane) {
+    artwork_ = player_artwork_create(pane);
     resetArtwork();
     applyArtwork();
-    return artwork_;
 }
 
 void AudioPlayerScreen::resetArtwork() {
@@ -478,7 +330,7 @@ void AudioPlayerScreen::resetArtwork() {
     artwork_icon_ = lv_label_create(artwork_);
     lv_label_set_text(artwork_icon_, TABLER_MUSIC);
     lv_obj_set_style_text_font(artwork_icon_, &icon_120, 0);
-    lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kArtworkIconColor), 0);
+    lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kPlayerArtworkIconColor), 0);
     lv_obj_center(artwork_icon_);
 }
 
@@ -487,7 +339,7 @@ void AudioPlayerScreen::applyArtwork() {
     auto *buffer = static_cast<uint8_t *>(bsp_display_get_frame_buffer(kArtworkFramebuffer));
     const bool rgb888 = bsp_display_get_pixel_format() == BSP_PIXEL_FORMAT_RGB888;
     if (!cover_size_.valid()) {
-        const ImageSize box = { (int16_t)artwork_side_, (int16_t)artwork_side_ };
+        const ImageSize box = kArtworkBox;
         const bsp_size_t panel = bsp_display_get_size();
         const std::size_t bytes = (std::size_t)panel.width * panel.height * (rgb888 ? 3 : 2);
         if (!media_cache_read_image(path(), box, buffer, bytes, &cover_size_)) return;
@@ -544,55 +396,11 @@ void AudioPlayerScreen::metaReady(const std::string &path) {
     s_active->refresh();
 }
 
-void AudioPlayerScreen::buildTitle(lv_obj_t *parent, int32_t bottom_pad) {
-    lv_obj_t *box = lv_container_create(parent);
-    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(box, kTitleGap, 0);
-    lv_obj_set_style_pad_bottom(box, bottom_pad, 0);
-
-    title_label_ = lv_label_create(box);
-    lv_obj_set_width(title_label_, lv_pct(100));
-    lv_obj_set_height(title_label_,
-                      lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_TITLE)));
-    lv_obj_set_font_role(title_label_, LV_WIDGETS_FONT_TITLE);
-    lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_anim(title_label_, &marquee_, 0);
-    shown_title_ = currentTitle();
-    setScrollingText(title_label_, shown_title_);
-
-    subtitle_label_ = lv_label_create(box);
-    lv_obj_set_width(subtitle_label_, lv_pct(100));
-    lv_obj_set_height(subtitle_label_,
-                      lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)));
-    lv_obj_set_font_role(subtitle_label_, LV_WIDGETS_FONT_BODY);
-    lv_obj_set_style_text_align(subtitle_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
-    lv_obj_set_style_anim(subtitle_label_, &marquee_, 0);
-    setScrollingText(subtitle_label_, "");
-}
-
-void AudioPlayerScreen::setScrollingText(lv_obj_t *label, const std::string &text) {
-    /* Setting the mode again restarts the scroll from the start; a plain
-     * set_text keeps the old offset. */
-    lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
-    lv_label_set_text(label, text.c_str());
-}
-
-void AudioPlayerScreen::buildSeekRow(lv_obj_t *parent) {
-    lv_obj_t *row = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(row, 16, 0);
-    lv_obj_set_height(row, kSeekRowHeight);
-
-    elapsed_label_ = lv_label_create(row);
-    lv_obj_set_width(elapsed_label_, kTimeWidth);
-    lv_obj_set_style_text_align(elapsed_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(elapsed_label_, LV_WIDGETS_FONT_BODY);
-
-    seek_ = media_slider(row, kSeekRange, lv_color_hex(kForegroundColor),
-                         lv_color_hex(kTrackColor));
-    lv_obj_set_flex_grow(seek_, 1);
+void AudioPlayerScreen::buildSeekRow(lv_obj_t *controls) {
+    const PlayerSeekRow row = player_seek_row_build(controls, kSeekRange);
+    elapsed_label_ = row.elapsed;
+    seek_ = row.slider;
+    total_label_ = row.total;
     lv_obj_add_event_fn(seek_, LV_EVENT_PRESSED, [this](lv_event_t *) { scrubbing_ = true; });
     lv_obj_add_event_fn(seek_, LV_EVENT_VALUE_CHANGED, [this](lv_event_t *) {
         if (!scrubbing_) return;
@@ -607,34 +415,22 @@ void AudioPlayerScreen::buildSeekRow(lv_obj_t *parent) {
         if (!status.seekable || status.duration_us <= 0) return;
         player_seek((int64_t)lv_slider_get_value(seek_) * status.duration_us / kSeekRange);
     });
-
-    total_label_ = lv_label_create(row);
-    lv_obj_set_width(total_label_, kTimeWidth);
-    lv_obj_set_style_text_align(total_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(total_label_, LV_WIDGETS_FONT_BODY);
 }
 
-void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
-    const lv_color_t foreground = lv_color_hex(kForegroundColor);
-    lv_obj_t *outer = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(outer, 0, 0);
+void AudioPlayerScreen::buildTransport(lv_obj_t *controls) {
+    const lv_color_t foreground = lv_color_hex(kPlayerForegroundColor);
+    const PlayerRow row = player_row_build(controls);
 
-    lv_obj_t *left = lv_container_create(outer, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(left, kTimeWidth, LV_SIZE_CONTENT);
-    shuffle_button_ = media_toggle_button(left, kIconButton, &icon_36, TABLER_ARROWS_SHUFFLE,
-                                          foreground, lv_color_white());
+    shuffle_button_ = media_toggle_button(row.left, kPlayerIconButton, &icon_36,
+                                          TABLER_ARROWS_SHUFFLE, foreground, lv_color_white());
     lv_obj_add_event_fn(shuffle_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         setShuffle(!playlist_->shuffled());
         settings_set_audio_shuffle(playlist_->shuffled());
         settings_commit();
     });
 
-    lv_obj_t *row = create_row(outer, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_flex_grow(row, 1);
-    lv_obj_set_width(row, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_column(row, 16, 0);
-
-    lv_obj_t *prev = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, foreground);
+    lv_obj_t *prev =
+        media_icon_button(row.middle, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, foreground);
     lv_obj_add_event_fn(prev, LV_EVENT_CLICKED, [this](lv_event_t *) {
         const PlayerStatus status = player_status();
         if (status.position_us < kPrevTrackUs && advance(-1, true)) return;
@@ -642,7 +438,7 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
     });
 
     lv_obj_t *play =
-        media_icon_button(row, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
+        media_icon_button(row.middle, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
     lv_obj_add_event_fn(play, LV_EVENT_CLICKED, [this](lv_event_t *) {
         if (!awaiting_start_) {
             if (playing_) {
@@ -654,13 +450,12 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
         setPlayIcon(!playing_);
     });
 
-    next_button_ = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
+    next_button_ =
+        media_icon_button(row.middle, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
     lv_obj_add_event_fn(next_button_, LV_EVENT_CLICKED, [this](lv_event_t *) { advance(1, true); });
 
-    lv_obj_t *side = lv_container_create(outer, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(side, kTimeWidth, LV_SIZE_CONTENT);
-    repeat_button_ = media_toggle_button(side, kIconButton, &icon_36, TABLER_REPEAT, foreground,
-                                         lv_color_white(), &repeat_label_);
+    repeat_button_ = media_toggle_button(row.right, kPlayerIconButton, &icon_36, TABLER_REPEAT,
+                                         foreground, lv_color_white(), &repeat_label_);
     lv_obj_add_event_fn(repeat_button_, LV_EVENT_CLICKED, [this](lv_event_t *) {
         switch (repeat_) {
         case RepeatMode::Off: setRepeatMode(RepeatMode::All); break;
@@ -673,21 +468,14 @@ void AudioPlayerScreen::buildTransport(lv_obj_t *parent) {
     });
 }
 
-void AudioPlayerScreen::buildVolumeRow(lv_obj_t *parent) {
-    const lv_color_t foreground = lv_color_hex(kForegroundColor);
-    lv_obj_t *row = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(row, 16, 0);
-
-    lv_obj_t *left = lv_container_create(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(left, kTimeWidth, LV_SIZE_CONTENT);
-    lv_obj_t *mute = media_icon_button(left, kIconButton, &icon_36, TABLER_VOLUME, foreground,
-                                       &volume_label_);
-
-    volume_slider_ = media_slider(row, 100, foreground, lv_color_hex(kTrackColor));
+void AudioPlayerScreen::buildVolumeRow(lv_obj_t *controls) {
+    const lv_color_t foreground = lv_color_hex(kPlayerForegroundColor);
+    const PlayerRow row = player_row_build(controls);
+    lv_obj_t *mute = media_icon_button(row.left, kPlayerIconButton, &icon_36, TABLER_VOLUME,
+                                       foreground, &volume_label_);
+    volume_slider_ = media_slider(row.middle, 100, foreground, lv_color_hex(kPlayerTrackColor));
     lv_obj_set_flex_grow(volume_slider_, 1);
     media_volume_bind(mute, volume_label_, volume_slider_);
-
-    lv_spacer_create(row, kTimeWidth, 1);
 }
 
 void AudioPlayerScreen::openCurrent() {
@@ -704,12 +492,12 @@ void AudioPlayerScreen::openCurrent() {
     shown_total_s_ = -2;
     if (title_label_) {
         shown_title_ = currentTitle();
-        setScrollingText(title_label_, shown_title_);
+        player_scrolling_text_set(title_label_, shown_title_);
     }
     if (subtitle_label_) {
         shown_subtitle_.clear();
-        setScrollingText(subtitle_label_, "");
-        lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
+        player_scrolling_text_set(subtitle_label_, "");
+        lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kPlayerSubtitleColor), 0);
     }
     if (pane_ == Pane::Info && pane_view_) buildInfo();
     syncPlaylist();
@@ -826,7 +614,7 @@ void AudioPlayerScreen::refresh() {
     const std::string title = currentTitle();
     if (title != shown_title_) {
         shown_title_ = title;
-        setScrollingText(title_label_, title);
+        player_scrolling_text_set(title_label_, title);
     }
 
     std::string message;
@@ -844,9 +632,9 @@ void AudioPlayerScreen::refresh() {
     if (pane_ == Pane::Info && pane_view_ && summary.valid != info_valid_) buildInfo();
     if (message != shown_subtitle_) {
         shown_subtitle_ = message;
-        setScrollingText(subtitle_label_, message);
+        player_scrolling_text_set(subtitle_label_, message);
         lv_obj_set_style_text_color(
-            subtitle_label_, lv_color_hex(failed ? kMessageColor : kSubtitleColor), 0);
+            subtitle_label_, lv_color_hex(failed ? kMessageColor : kPlayerSubtitleColor), 0);
     }
 }
 
@@ -865,10 +653,10 @@ lv_obj_t *AudioPlayerScreen::createRow(lv_obj_t *parent) {
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_pad_hor(row, kPad, 0);
     lv_obj_set_style_pad_column(row, 16, 0);
-    lv_obj_set_style_bg_color(row, lv_color_hex(kArtworkColor), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(row, lv_color_hex(kPlayerArtworkColor), LV_STATE_CHECKED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_CHECKED);
 
-    lv_obj_t *frame = lv_container_create(row, lv_color_hex(kArtworkColor));
+    lv_obj_t *frame = lv_container_create(row, lv_color_hex(kPlayerArtworkColor));
     lv_obj_set_size(frame, kThumbSide, kThumbSide);
     lv_obj_set_style_radius(frame, kThumbRadius, 0);
     lv_obj_set_style_clip_corner(frame, true, 0);
@@ -877,7 +665,7 @@ lv_obj_t *AudioPlayerScreen::createRow(lv_obj_t *parent) {
     lv_obj_t *icon = lv_label_create(frame);
     lv_label_set_text(icon, TABLER_MUSIC);
     lv_obj_set_style_text_font(icon, &icon_28, 0);
-    lv_obj_set_style_text_color(icon, lv_color_hex(kArtworkIconColor), 0);
+    lv_obj_set_style_text_color(icon, lv_color_hex(kPlayerArtworkIconColor), 0);
     lv_obj_center(icon);
 
     lv_obj_t *text = lv_container_create(row);
@@ -890,7 +678,7 @@ lv_obj_t *AudioPlayerScreen::createRow(lv_obj_t *parent) {
         lv_obj_set_size(label, lv_pct(100), body_line_height());
         lv_obj_set_font_role(label, LV_WIDGETS_FONT_BODY);
         lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_DOTS);
-        if (i) lv_obj_set_style_text_color(label, lv_color_hex(kSubtitleColor), 0);
+        if (i) lv_obj_set_style_text_color(label, lv_color_hex(kPlayerSubtitleColor), 0);
     }
     return row;
 }
@@ -910,7 +698,8 @@ void AudioPlayerScreen::bindRow(lv_obj_t *row, std::size_t index) {
     lv_obj_set_clickable(row, true);
 
     lv_obj_t *frame = lv_obj_get_child(row, 0);
-    lv_obj_set_style_bg_color(frame, lv_color_hex(current ? kCurrentThumbColor : kArtworkColor), 0);
+    lv_obj_set_style_bg_color(
+        frame, lv_color_hex(current ? kCurrentThumbColor : kPlayerArtworkColor), 0);
     std::shared_ptr<const ImagePixels> pixels = media_cache_thumbnail(item.path, kThumbBox);
     lv_obj_t *image = lv_obj_get_child_count(frame) > 1 ? lv_obj_get_child(frame, 1) : nullptr;
     if (image && lv_obj_get_user_data(image) != pixels.get()) {

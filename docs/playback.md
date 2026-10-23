@@ -51,6 +51,7 @@ media_buffer          │           └─▶ present
 | `app/screens/video_player_screen.*` | the full-screen player UI |
 | `app/screens/audio_player_screen.*` | the audio-only player UI, on the main display |
 | `app/screens/media_controls.*` | the transport widgets both screens build (icon button, slider, time text, the volume row's behaviour) |
+| `app/screens/player_layout.*` | the audio player's layout, shared with the AirPlay Receiver (bar, pane switcher, pane, title lines, rows) |
 
 ## Decisions taken now because they are expensive later
 
@@ -646,6 +647,10 @@ LVGL tick like Home does.
   text and the whole behaviour of the volume row, which is the part that must
   not drift between the two screens. Only the colours differ, and they are
   arguments.
+- **The layout is shared with the AirPlay Receiver** (`app/screens/player_layout.*`):
+  the bar, the pane switcher, the pane, the scrolling title lines and the
+  rows. Only the UI is shared; each screen keeps its own lifecycle, and
+  neither derives from the other.
 - **The Info and Settings panes reuse the video player's sections** in the
   light palette. The Info pane builds them as live objects; the video panel's
   pre-rendered copy would be another PSRAM buffer of over a megabyte for a

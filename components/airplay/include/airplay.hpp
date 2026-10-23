@@ -67,6 +67,13 @@ struct NowPlaying {
     float volume_db = 0;
     /* The sender's remote control has been found; remote() is dropped until then. */
     bool remote = false;
+    /* Empty when the sender does not name itself. */
+    std::string sender_name;
+    std::string sender_address;
+    /* Null, and the rate and channels zero, outside a session. */
+    const char *codec = nullptr;
+    uint32_t sample_rate = 0;
+    uint8_t channels = 0;
 };
 
 enum class Command {

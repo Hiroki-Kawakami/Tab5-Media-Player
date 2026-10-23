@@ -72,6 +72,11 @@ arrives as `SET_PARAMETER`:
   only, so the position comes from the RTP time of the packet last written to
   the output.
 
+The sender's name is the `X-Apple-Client-Name` header of its `ANNOUNCE`, and
+it is left out when a sender does not send one; its address is the RTSP
+connection's peer. Both, and the stream's format, are kept for the session and
+cleared when it ends, for the screen's Info pane.
+
 The screen polls `airplay::now_playing()` for the text and times and gets the
 artwork through the listener. It decodes the artwork on a task of its own
 (16 KB PSRAM stack, as for any image_framework caller) with

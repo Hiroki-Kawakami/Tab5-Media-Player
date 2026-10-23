@@ -7,12 +7,16 @@
 #include "audio/audio_output.hpp"
 #include "screens/image_object.hpp"
 #include "screens/media_controls.hpp"
+#include "screens/player_layout.hpp"
+#include "screens/player_panel.hpp"
+#include "screens/video_player/settings_panel.hpp"
 #include "resources.h"
 #include "wifi_manager.hpp"
 #include "bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 
+#include <cstdio>
 #include <cstring>
 
 static constexpr const char *kReceiverName = "Tab5 Media Player";
@@ -21,45 +25,14 @@ static constexpr uint32_t kRefreshPeriodMs = 250;
 static constexpr uint32_t kDecodeStackBytes = 16 * 1024;
 static constexpr int32_t kSeekRange = 1000;
 static constexpr int32_t kVolumeRange = 300;
-static constexpr int32_t kPad = 24;
-static constexpr int32_t kGap = 24;
-static constexpr int32_t kTimeWidth = 100;
-static constexpr int32_t kTitleBottomPad = 40;
-static constexpr int32_t kArtworkGap = 64;
-static constexpr int32_t kSeekRowHeight = 56;
-static constexpr int32_t kIconButton = 72;
-static constexpr int32_t kArtworkSide = 552;
-static constexpr ImageSize kArtworkBox = { kArtworkSide, kArtworkSide };
-static constexpr int32_t kArtworkRadius = 24;
+static constexpr ImageSize kArtworkBox = { kPlayerArtworkSide, kPlayerArtworkSide };
 /* LVGL draws through framebuffer 0 only. */
 static constexpr int kArtworkFramebuffers[] = { 1, 2 };
-
-static constexpr uint32_t kForegroundColor = 0x101010;
-static constexpr uint32_t kTrackColor = 0xd0d0d0;
-static constexpr uint32_t kArtworkColor = 0xdcdcdc;
-static constexpr uint32_t kArtworkIconColor = 0x9e9e9e;
-static constexpr uint32_t kSubtitleColor = 0x707070;
-
-static lv_obj_t *create_row(lv_obj_t *parent, lv_flex_align_t main) {
-    lv_obj_t *row = lv_container_create(parent, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_align(row, main, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    return row;
-}
-
-static lv_obj_t *create_column(lv_obj_t *parent) {
-    lv_obj_t *column = lv_container_create(parent);
-    lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(column, kGap, 0);
-    return column;
-}
 
 static std::string format_names(const std::string &artist, const std::string &album) {
     if (artist.empty()) return album;
     if (album.empty()) return artist;
-    return artist + " - " + album;
+    return artist + " \u00b7 " + album;
 }
 
 static int32_t volume_value(float db) {
@@ -106,16 +79,10 @@ void AirPlayReceiverScreen::Output::write(int16_t *pcm, std::size_t frames) {
 void AirPlayReceiverScreen::Output::close() { audio_output_close(); }
 
 void AirPlayReceiverScreen::build() {
-    createNavigation("AirPlay Receiver", LV_NAVIGATION_STYLE_DEFAULT | LV_NAVIGATION_STYLE_BACK);
-    lv_obj_set_style_bg_color(root_, lv_color_white(), 0);
     lv_obj_add_event_fn(root_, LV_EVENT_SIZE_CHANGED, [this](lv_event_t *) {
-        if (isLandscape() != landscape_) relayout();
+        if (player_layout_landscape(root_) != landscape_) relayout();
     });
     buildContents();
-}
-
-bool AirPlayReceiverScreen::isLandscape() const {
-    return lv_obj_get_width(root_) > lv_obj_get_height(root_);
 }
 
 void AirPlayReceiverScreen::relayout() {
@@ -126,7 +93,9 @@ void AirPlayReceiverScreen::relayout() {
 }
 
 void AirPlayReceiverScreen::buildContents() {
-    lv_obj_clean(contents_);
+    segment_ = nullptr;
+    pane_box_ = nullptr;
+    pane_view_ = nullptr;
     artwork_ = nullptr;
     artwork_icon_ = nullptr;
     artwork_image_ = nullptr;
@@ -147,36 +116,46 @@ void AirPlayReceiverScreen::buildContents() {
     shown_title_.clear();
     shown_subtitle_.clear();
 
-    landscape_ = isLandscape();
-    lv_obj_set_style_pad_all(contents_, kPad, 0);
-    lv_obj_set_style_pad_row(contents_, kArtworkGap, 0);
-    lv_obj_set_style_pad_column(contents_, kGap, 0);
-    lv_obj_set_style_text_color(contents_, lv_color_hex(kForegroundColor), 0);
-    lv_obj_set_flex_flow(contents_, landscape_ ? LV_FLEX_FLOW_ROW : LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(contents_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_update_layout(root_);
+    landscape_ = player_layout_landscape(root_);
+    const PlayerLayout layout = player_layout_build(
+        root_, "AirPlay Receiver", [this] { back(); },
+        { TABLER_PHOTO, TABLER_INFO_CIRCLE, TABLER_ADJUSTMENTS_HORIZONTAL },
+        [this](int index) {
+            if ((int)pane_ != index) showPane((Pane)index);
+        });
+    navigation_ = layout.navigation;
+    navigation_title_ = layout.back_label;
+    contents_ = layout.controls;
+    segment_ = layout.segment;
+    pane_box_ = layout.pane;
+    title_label_ = layout.title;
+    subtitle_label_ = layout.subtitle;
 
-    const int32_t width = lv_obj_get_width(contents_) - 2 * kPad;
-    lv_obj_t *controls = create_column(contents_);
-    lv_obj_set_height(controls, LV_SIZE_CONTENT);
-    lv_obj_set_width(controls, landscape_ ? width - kArtworkSide - kGap : width);
-    buildTitle(controls);
-    buildSeekRow(controls);
-    buildTransport(controls);
-    buildVolumeRow(controls);
-
-    buildArtwork(contents_);
-    if (!landscape_) lv_obj_move_to_index(artwork_, 0);
+    artwork_ = player_artwork_create(pane_box_);
+    buildSeekRow(layout.controls);
+    buildTransport(layout.controls);
+    buildVolumeRow(layout.controls);
+    showPane(pane_);
     refresh();
 }
 
-void AirPlayReceiverScreen::buildArtwork(lv_obj_t *parent) {
-    artwork_ = lv_container_create(parent, lv_color_hex(kArtworkColor));
-    lv_obj_set_size(artwork_, kArtworkSide, kArtworkSide);
-    lv_obj_set_style_radius(artwork_, kArtworkRadius, 0);
-    lv_obj_set_style_clip_corner(artwork_, true, 0);
-    lv_obj_set_scrollable(artwork_, false);
+void AirPlayReceiverScreen::showPane(Pane pane) {
+    pane_ = pane;
+    player_segment_set_active(segment_, (int)pane_);
+    if (pane_view_) {
+        lv_obj_delete(pane_view_);
+        pane_view_ = nullptr;
+    }
+    shown_info_.clear();
+    lv_obj_set_hidden(artwork_, pane != Pane::Artwork);
+    if (pane == Pane::Artwork) return;
+
+    pane_view_ = player_pane_view_create(pane_box_);
+    lv_setting_page_style(pane_view_);
+    if (pane == Pane::Settings) {
+        player_settings_sections_build(pane_view_, PlayerSettingsDisplay | PlayerSettingsSound,
+                                       nullptr, false);
+    }
 }
 
 void AirPlayReceiverScreen::showArtworkIcon(const char *icon) {
@@ -188,7 +167,7 @@ void AirPlayReceiverScreen::showArtworkIcon(const char *icon) {
     if (!artwork_icon_) {
         artwork_icon_ = lv_label_create(artwork_);
         lv_obj_set_style_text_font(artwork_icon_, &icon_120, 0);
-        lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kArtworkIconColor), 0);
+        lv_obj_set_style_text_color(artwork_icon_, lv_color_hex(kPlayerArtworkIconColor), 0);
         shown_icon_ = nullptr;
     }
     if (icon != shown_icon_) {
@@ -252,97 +231,47 @@ void AirPlayReceiverScreen::updateArtwork(bool connected) {
     }
 }
 
-void AirPlayReceiverScreen::buildTitle(lv_obj_t *parent) {
-    lv_obj_t *box = lv_container_create(parent);
-    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(box, 8, 0);
-    lv_obj_set_style_pad_bottom(box, kTitleBottomPad, 0);
-
-    title_label_ = lv_label_create(box);
-    lv_obj_set_width(title_label_, lv_pct(100));
-    lv_obj_set_font_role(title_label_, LV_WIDGETS_FONT_TITLE);
-    lv_obj_set_style_text_align(title_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(title_label_, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(title_label_, "");
-
-    subtitle_label_ = lv_label_create(box);
-    lv_obj_set_width(subtitle_label_, lv_pct(100));
-    lv_obj_set_height(subtitle_label_, lv_font_get_line_height(lv_widgets_resolved_font(LV_WIDGETS_FONT_BODY)));
-    lv_obj_set_font_role(subtitle_label_, LV_WIDGETS_FONT_BODY);
-    lv_obj_set_style_text_align(subtitle_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(subtitle_label_, lv_color_hex(kSubtitleColor), 0);
-    lv_label_set_long_mode(subtitle_label_, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(subtitle_label_, "");
-}
-
-void AirPlayReceiverScreen::buildSeekRow(lv_obj_t *parent) {
-    lv_obj_t *row = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(row, 16, 0);
-    lv_obj_set_style_min_height(row, kSeekRowHeight, 0);
-
-    elapsed_label_ = lv_label_create(row);
-    lv_obj_set_width(elapsed_label_, kTimeWidth);
-    lv_obj_set_style_text_align(elapsed_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(elapsed_label_, LV_WIDGETS_FONT_BODY);
-
-    seek_ = media_slider(row, kSeekRange, lv_color_hex(kForegroundColor),
-                         lv_color_hex(kTrackColor));
-    lv_obj_set_flex_grow(seek_, 1);
+void AirPlayReceiverScreen::buildSeekRow(lv_obj_t *controls) {
+    const PlayerSeekRow row = player_seek_row_build(controls, kSeekRange);
+    elapsed_label_ = row.elapsed;
+    seek_ = row.slider;
+    total_label_ = row.total;
     lv_obj_set_clickable(seek_, false);
     lv_obj_set_style_opa(seek_, LV_OPA_TRANSP, LV_PART_KNOB);
-
-    total_label_ = lv_label_create(row);
-    lv_obj_set_width(total_label_, kTimeWidth);
-    lv_obj_set_style_text_align(total_label_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_font_role(total_label_, LV_WIDGETS_FONT_BODY);
 }
 
-void AirPlayReceiverScreen::buildTransport(lv_obj_t *parent) {
-    const lv_color_t foreground = lv_color_hex(kForegroundColor);
-    lv_obj_t *outer = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(outer, 0, 0);
-    lv_spacer_create(outer, kTimeWidth, 1);
+void AirPlayReceiverScreen::buildTransport(lv_obj_t *controls) {
+    const lv_color_t foreground = lv_color_hex(kPlayerForegroundColor);
+    const PlayerRow row = player_row_build(controls);
 
-    lv_obj_t *row = create_row(outer, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_flex_grow(row, 1);
-    lv_obj_set_width(row, LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_column(row, 16, 0);
-
-    prev_button_ = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, foreground);
+    prev_button_ =
+        media_icon_button(row.middle, 96, &icon_48, TABLER_PLAYER_TRACK_PREV, foreground);
     lv_obj_add_event_fn(prev_button_, LV_EVENT_CLICKED,
                         [](lv_event_t *) { airplay::remote(airplay::Command::Previous); });
 
     play_button_ =
-        media_icon_button(row, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
+        media_icon_button(row.middle, 120, &icon_72, TABLER_PLAYER_PLAY, foreground, &play_label_);
     lv_obj_add_event_fn(play_button_, LV_EVENT_CLICKED,
                         [](lv_event_t *) { airplay::remote(airplay::Command::PlayPause); });
 
-    next_button_ = media_icon_button(row, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
+    next_button_ =
+        media_icon_button(row.middle, 96, &icon_48, TABLER_PLAYER_TRACK_NEXT, foreground);
     lv_obj_add_event_fn(next_button_, LV_EVENT_CLICKED,
                         [](lv_event_t *) { airplay::remote(airplay::Command::Next); });
-
-    lv_spacer_create(outer, kTimeWidth, 1);
 }
 
-void AirPlayReceiverScreen::buildVolumeRow(lv_obj_t *parent) {
-    const lv_color_t foreground = lv_color_hex(kForegroundColor);
-    lv_obj_t *row = create_row(parent, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_column(row, 16, 0);
-
-    lv_obj_t *left = lv_container_create(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_size(left, kTimeWidth, LV_SIZE_CONTENT);
-    lv_obj_t *icon = media_icon_button(left, kIconButton, &icon_36, TABLER_VOLUME, foreground,
-                                       &volume_label_);
+void AirPlayReceiverScreen::buildVolumeRow(lv_obj_t *controls) {
+    const lv_color_t foreground = lv_color_hex(kPlayerForegroundColor);
+    const PlayerRow row = player_row_build(controls);
+    lv_obj_t *icon = media_icon_button(row.left, kPlayerIconButton, &icon_36, TABLER_VOLUME,
+                                       foreground, &volume_label_);
     lv_obj_set_clickable(icon, false);
 
-    volume_slider_ = media_slider(row, kVolumeRange, foreground, lv_color_hex(kTrackColor));
+    volume_slider_ =
+        media_slider(row.middle, kVolumeRange, foreground, lv_color_hex(kPlayerTrackColor));
     lv_obj_set_flex_grow(volume_slider_, 1);
     lv_obj_set_clickable(volume_slider_, false);
     lv_obj_set_style_opa(volume_slider_, LV_OPA_TRANSP, LV_PART_KNOB);
-
-    lv_spacer_create(row, kTimeWidth, 1);
 }
 
 void AirPlayReceiverScreen::setTime(lv_obj_t *label, int64_t *shown_s, int64_t ms) {
@@ -442,7 +371,8 @@ void AirPlayReceiverScreen::decodeMain(void *arg) {
         const bsp_size_t panel = bsp_display_get_size();
         const std::size_t capacity = (std::size_t)panel.width * panel.height * (rgb888 ? 3 : 2);
         const std::size_t artwork_bytes =
-            ((std::size_t)kArtworkSide * kArtworkSide * (rgb888 ? 3 : 2) + 63) & ~(std::size_t)63;
+            ((std::size_t)kArtworkBox.width * kArtworkBox.height * (rgb888 ? 3 : 2) + 63) &
+            ~(std::size_t)63;
         ImageSize size;
         if (!image_decode_to_fit(self->decode_data_.get(), self->decode_size_, kArtworkBox, rgb888,
                                  buffer, artwork_bytes, buffer + artwork_bytes,
@@ -494,11 +424,11 @@ void AirPlayReceiverScreen::refresh() {
     }
     if (title != shown_title_) {
         shown_title_ = title;
-        lv_label_set_text(title_label_, title.c_str());
+        player_scrolling_text_set(title_label_, title);
     }
     if (subtitle != shown_subtitle_) {
         shown_subtitle_ = subtitle;
-        lv_label_set_text(subtitle_label_, subtitle.c_str());
+        player_scrolling_text_set(subtitle_label_, subtitle);
     }
 
     const bool known = connected && now.duration_ms > 0;
@@ -514,4 +444,76 @@ void AirPlayReceiverScreen::refresh() {
         lv_obj_set_state(button, LV_STATE_DISABLED, !now.remote);
     }
     setVolume(now);
+    if (pane_ == Pane::Info) updateInfo(status, now);
+}
+
+void AirPlayReceiverScreen::updateInfo(const wifi::Status &status, const airplay::NowPlaying &now) {
+    const bool connected =
+        now.state == airplay::State::Connected || now.state == airplay::State::Playing;
+    const char *state = !online_                               ? "Offline"
+                      : now.state == airplay::State::Stopped   ? "Unavailable"
+                      : now.state == airplay::State::Listening ? "Waiting"
+                      : now.state == airplay::State::Playing   ? "Playing"
+                                                               : "Connected";
+    char text[64];
+    std::vector<std::pair<std::string, std::string>> receiver = {
+        { "Name", kReceiverName },
+    };
+    if (!status.ip.empty()) receiver.push_back({ "Address", status.ip });
+    receiver.push_back({ "Status", state });
+
+    std::vector<std::pair<std::string, std::string>> sender;
+    std::vector<std::pair<std::string, std::string>> track;
+    std::vector<std::pair<std::string, std::string>> audio;
+    if (connected) {
+        if (!now.sender_name.empty()) sender.push_back({ "Name", now.sender_name });
+        if (!now.sender_address.empty()) sender.push_back({ "Address", now.sender_address });
+        if (!now.title.empty()) track.push_back({ "Title", now.title });
+        if (!now.artist.empty()) track.push_back({ "Artist", now.artist });
+        if (!now.album.empty()) track.push_back({ "Album", now.album });
+        if (now.duration_ms > 0) {
+            media_format_time(text, sizeof(text), now.duration_ms / 1000);
+            track.push_back({ "Duration", text });
+        }
+        if (now.codec) {
+            audio.push_back({ "Codec", now.codec });
+            snprintf(text, sizeof(text), "%.1f kHz", now.sample_rate / 1000.0);
+            audio.push_back({ "Sample Rate", text });
+            snprintf(text, sizeof(text), "%u%s", (unsigned)now.channels,
+                     now.channels == 1 ? " (Mono)" : now.channels == 2 ? " (Stereo)" : "");
+            audio.push_back({ "Channels", text });
+        }
+        if (now.has_volume) {
+            if (now.volume_db <= airplay::kVolumeMute) {
+                snprintf(text, sizeof(text), "Muted");
+            } else {
+                snprintf(text, sizeof(text), "%.1f dB", now.volume_db);
+            }
+            audio.push_back({ "Volume", text });
+        }
+    }
+
+    std::string key;
+    for (const auto *rows : { &receiver, &sender, &track, &audio }) {
+        for (const auto &row : *rows) key += row.first + '\n' + row.second + '\n';
+        key += '\n';
+    }
+    if (key == shown_info_) return;
+    shown_info_ = key;
+
+    lv_obj_clean(pane_view_);
+    auto add_section = [this](const char *title,
+                              const std::vector<std::pair<std::string, std::string>> &rows) {
+        if (rows.empty()) return;
+        lv_obj_t *section = lv_setting_section_create(pane_view_, title);
+        lv_obj_update_layout(section);
+        const int32_t width = lv_obj_get_content_width(section);
+        for (const auto &row : rows) {
+            panel_add_wide_row(section, row.first.c_str(), row.second.c_str(), width, nullptr);
+        }
+    };
+    add_section("Receiver", receiver);
+    add_section("Sender", sender);
+    add_section("Now Playing", track);
+    add_section("Audio", audio);
 }

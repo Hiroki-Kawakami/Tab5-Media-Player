@@ -7,6 +7,7 @@
 #include "airplay.hpp"
 #include "media/image_codec.hpp"
 #include "widgets.hpp"
+#include "wifi_manager.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -15,6 +16,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 class AirPlayReceiverScreen : public NavigationScreen {
 public:
@@ -47,14 +49,15 @@ private:
         uint8_t channels_ = 0;
     };
 
-    bool isLandscape() const;
+    enum class Pane : uint8_t { Artwork, Info, Settings };
+
     void relayout();
     void buildContents();
-    void buildArtwork(lv_obj_t *parent);
-    void buildTitle(lv_obj_t *parent);
-    void buildSeekRow(lv_obj_t *parent);
-    void buildTransport(lv_obj_t *parent);
-    void buildVolumeRow(lv_obj_t *parent);
+    void showPane(Pane pane);
+    void buildSeekRow(lv_obj_t *controls);
+    void buildTransport(lv_obj_t *controls);
+    void buildVolumeRow(lv_obj_t *controls);
+    void updateInfo(const wifi::Status &status, const airplay::NowPlaying &now);
     void showArtworkIcon(const char *icon);
     void showArtworkImage();
     void updateArtwork(bool connected);
@@ -70,6 +73,7 @@ private:
     std::shared_ptr<Events> events_ = std::make_shared<Events>();
     bool online_ = false;
     bool landscape_ = false;
+    Pane pane_ = Pane::Artwork;
 
     SemaphoreHandle_t decode_wake_ = nullptr;
     SemaphoreHandle_t decode_stopped_ = nullptr;
@@ -85,6 +89,9 @@ private:
     ImageSize shown_size_;
     int image_framebuffer_ = 0;
 
+    lv_obj_t *segment_ = nullptr;
+    lv_obj_t *pane_box_ = nullptr;
+    lv_obj_t *pane_view_ = nullptr;
     lv_obj_t *artwork_ = nullptr;
     lv_obj_t *artwork_icon_ = nullptr;
     lv_obj_t *artwork_image_ = nullptr;
@@ -106,4 +113,5 @@ private:
     int64_t shown_total_s_ = -2;
     std::string shown_title_;
     std::string shown_subtitle_;
+    std::string shown_info_;
 };

@@ -72,7 +72,7 @@ jobs:
           merge-multiple: true
       - working-directory: dist
         run: sha256sum tab5conv-* > SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "Converter ${GITHUB_REF_NAME#converter-v}" --notes ""
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "Converter ${GITHUB_REF_NAME#converter-}" --notes ""
       - run: |
           git tag -f converter-latest "$GITHUB_SHA"
           git push -f origin converter-latest

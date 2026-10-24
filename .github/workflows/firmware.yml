@@ -70,4 +70,4 @@ jobs:
             project=$(basename "$dir")
             cp "$dir/merged-binary.bin" "dist/tab5-media-player-$project-$GITHUB_REF_NAME.bin"
           done
-      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes ""
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --title "Firmware $GITHUB_REF_NAME" --notes ""

@@ -107,6 +107,16 @@ including a bench task's own frames), and the task is recreated
 with 20 KiB for Opus, which spends 11 KiB. The host port ignores the stack size,
 so it keeps the task it already has.
 
+Decoded PCM goes out through a second task, `audio_output` (4 KiB, kept once
+created), with two 64 KB PSRAM buffers handed back and forth: the decoder fills
+one while the other is written. IDF's `i2s_channel_write()` keeps its last DMA
+buffer half filled for the next call, and drops it for a fresh one when that
+call comes after four of the six 240-frame buffers have played (~22 ms at
+44.1 kHz); the half-filled rest then plays as zeros, a click that
+`on_send_q_ovf` never reports. Decoding a 4096-frame FLAC/ALAC packet between
+two writes was enough to get there. A FIFO would cost a copy through PSRAM and
+a bigger I2S ring internal SRAM, so neither is used.
+
 ## Orientation
 
 `app/ui_orientation.cpp` follows `bsp_imu_get_orientation()` for all four

@@ -14,7 +14,9 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include <cstring>
 
 #ifdef ESP_PLATFORM
@@ -36,6 +38,8 @@ static const char *TAG = "audio_decoder";
 
 static constexpr std::size_t kPcmBytes = 64 * 1024;
 static constexpr uint32_t kOpusRate = 48000;
+static constexpr uint32_t kOutputStackBytes = 4 * 1024;
+static constexpr UBaseType_t kOutputPriority = 7;
 
 enum class Mode {
     Pcm,
@@ -71,23 +75,96 @@ static uint8_t s_channels;
 static uint8_t s_bits;
 static AudioContent s_content = AudioContent::Music;
 static uint64_t s_frames;
-static uint8_t *s_pcm;
 
-static void publish_frames(std::size_t bytes) {
-    const uint32_t frame_bytes = (uint32_t)s_channels * (s_bits / 8);
-    if (!frame_bytes) return;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_frames += bytes / frame_bytes;
-    xSemaphoreGive(s_lock);
+struct OutputBuffer {
+    uint8_t *data;
+    std::size_t len;
+    uint32_t frames;
+};
+
+/* Two PCM buffers: the decoder fills s_pcm while the output task writes the
+ * other one, so decoding a long frame never stalls the output. */
+static uint8_t *s_pcm;
+static uint8_t *s_pcm_buffers[2];
+static QueueHandle_t s_output_ready;
+static QueueHandle_t s_output_free;
+static TaskHandle_t s_output_task;
+static volatile bool s_output_discard;
+
+static void output_task(void *) {
+    for (;;) {
+        OutputBuffer buffer;
+        xQueueReceive(s_output_ready, &buffer, portMAX_DELAY);
+        if (!s_output_discard && audio_output_write(buffer.data, buffer.len) == ESP_OK) {
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            s_frames += buffer.frames;
+            xSemaphoreGive(s_lock);
+        }
+        xQueueSend(s_output_free, &buffer.data, portMAX_DELAY);
+    }
+}
+
+static bool output_start() {
+    if (s_output_task) return true;
+#ifdef ESP_PLATFORM
+    BaseType_t created = xTaskCreatePinnedToCoreWithCaps(
+        output_task, "audio_output", kOutputStackBytes, nullptr, kOutputPriority, &s_output_task,
+        tskNO_AFFINITY, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (created != pdPASS) {
+        ESP_LOGW(TAG, "audio output task stack falls back to PSRAM");
+        created = xTaskCreatePinnedToCoreWithCaps(
+            output_task, "audio_output", kOutputStackBytes, nullptr, kOutputPriority,
+            &s_output_task, tskNO_AFFINITY, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+#else
+    const BaseType_t created = xTaskCreate(output_task, "audio_output", kOutputStackBytes, nullptr,
+                                           kOutputPriority, &s_output_task);
+#endif
+    if (created != pdPASS) {
+        s_output_task = nullptr;
+        ESP_LOGE(TAG, "cannot create the audio output task");
+        return false;
+    }
+    return true;
+}
+
+static bool pcm_alloc() {
+    for (uint8_t *&buffer : s_pcm_buffers) {
+        if (buffer) continue;
+        buffer = (uint8_t *)heap_caps_aligned_alloc(64, kPcmBytes, MALLOC_CAP_SPIRAM);
+        if (!buffer) buffer = (uint8_t *)heap_caps_aligned_alloc(64, kPcmBytes, MALLOC_CAP_DEFAULT);
+        if (!buffer) return false;
+    }
+    if (!s_pcm) {
+        s_pcm = s_pcm_buffers[0];
+        xQueueSend(s_output_free, &s_pcm_buffers[1], 0);
+    }
+    return true;
+}
+
+/* Waits until the output task has handed the other buffer back, playing it
+ * or, with discard, dropping it if it has not started. The decoding side must
+ * not be inside write_pcm(). */
+static void output_drain(bool discard) {
+    if (!s_pcm) return;
+    s_output_discard = discard;
+    uint8_t *other = nullptr;
+    xQueueReceive(s_output_free, &other, portMAX_DELAY);
+    xQueueSend(s_output_free, &other, 0);
+    s_output_discard = false;
 }
 
 static void write_pcm(uint8_t *data, std::size_t len) {
     if (!len) return;
-    if (audio_output_write(data, len) == ESP_OK) publish_frames(len);
+    const uint32_t frame_bytes = (uint32_t)s_channels * (s_bits / 8);
+    const OutputBuffer buffer = { data, len, frame_bytes ? (uint32_t)(len / frame_bytes) : 0 };
+    xQueueSend(s_output_ready, &buffer, portMAX_DELAY);
+    xQueueReceive(s_output_free, &s_pcm, portMAX_DELAY);
 }
 
 static void follow_format(uint32_t rate, uint8_t channels) {
     if (!rate || !channels || (rate == s_rate && channels == s_channels)) return;
+    output_drain(false);
     s_rate = rate;
     s_channels = channels;
     s_bits = 16;
@@ -611,6 +688,8 @@ static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *n
 void audio_decoder_start() {
     if (s_lock) return;
     s_lock = xSemaphoreCreateMutex();
+    s_output_ready = xQueueCreate(1, sizeof(OutputBuffer));
+    s_output_free = xQueueCreate(2, sizeof(uint8_t *));
 }
 
 bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioContent content,
@@ -632,13 +711,13 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
         return false;
     }
 
-    if (!s_pcm) {
-        s_pcm = (uint8_t *)heap_caps_aligned_alloc(64, kPcmBytes, MALLOC_CAP_SPIRAM);
-        if (!s_pcm) s_pcm = (uint8_t *)heap_caps_aligned_alloc(64, kPcmBytes, MALLOC_CAP_DEFAULT);
-        if (!s_pcm) {
-            if (note) *note = "out of memory for the audio buffer";
-            return false;
-        }
+    if (!pcm_alloc()) {
+        if (note) *note = "out of memory for the audio buffer";
+        return false;
+    }
+    if (!output_start()) {
+        if (note) *note = "audio output task unavailable";
+        return false;
     }
 
     if (!prepare(track, aac_he, note)) {
@@ -681,6 +760,7 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
 
 void audio_decoder_close() {
     if (!s_lock) return;
+    output_drain(false);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     const bool was_running = s_running;
     s_running = false;
@@ -732,6 +812,7 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
 
 void audio_decoder_flush() {
     if (!s_lock) return;
+    output_drain(true);
     if (s_mode == Mode::Decoder) decoder_reset();
     if (s_mode == Mode::Aac) audf_decoder_reset(s_aac);
     xSemaphoreTake(s_lock, portMAX_DELAY);

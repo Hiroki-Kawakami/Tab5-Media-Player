@@ -101,7 +101,12 @@ wait 2000
 capture audio_aac_adts.jpg
 tap 60 60
 settle
-tap 360 800
+tap 360 1040
+wait 2000
+capture audio_alac.jpg
+tap 60 60
+settle
+tap 360 1120
 wait 1500
 capture audio_no_frames.jpg
 tap 60 60

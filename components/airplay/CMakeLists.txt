@@ -11,7 +11,7 @@ if(ESP_PLATFORM)
     idf_component_register(
         SRCS ${AIRPLAY_SRCS} "src/discovery_mdns.cpp"
         INCLUDE_DIRS "include"
-        PRIV_REQUIRES esp_timer lwip mbedtls espressif__mdns espressif__esp_audio_codec)
+        PRIV_REQUIRES esp_timer lwip mbedtls espressif__mdns audio_framework)
 else()
     idf_component_register(
         SRCS ${AIRPLAY_SRCS} "src/discovery_dnssd.cpp"

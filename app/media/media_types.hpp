@@ -23,6 +23,7 @@ enum class CodecId {
     Aac,
     Opus,
     Flac,
+    Alac,
     Unsupported,
 };
 
@@ -168,6 +169,7 @@ inline const char *codec_name(CodecId codec) {
     case CodecId::Aac: return "AAC";
     case CodecId::Opus: return "Opus";
     case CodecId::Flac: return "FLAC";
+    case CodecId::Alac: return "ALAC";
     case CodecId::Unsupported: return "unsupported";
     default: return "none";
     }

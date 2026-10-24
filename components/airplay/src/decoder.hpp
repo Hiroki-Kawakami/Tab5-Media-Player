@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "audf_codec.h"
+
 namespace airplay {
 
 enum class Codec {
@@ -35,7 +37,7 @@ public:
 
 private:
     Format format_;
-    void *handle_ = nullptr;
+    audf_decoder_t *alac_ = nullptr;
 };
 
 }  // namespace airplay

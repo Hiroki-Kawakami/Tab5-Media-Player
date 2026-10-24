@@ -1,7 +1,8 @@
 # AirPlay receiver
 
 `components/airplay` receives AirPlay 1 (RAOP) audio: ALAC or L16, 44.1 kHz,
-16-bit stereo, optionally AES-encrypted. AirPlay 2 is not implemented; keep the
+16-bit stereo, optionally AES-encrypted. ALAC goes through `audf_alac`, the same
+decoder file playback uses, so the simulator decodes it the same way. AirPlay 2 is not implemented; keep the
 RTSP session (`receiver.cpp`) and the RTP/playback side (`stream.cpp`) apart so
 its control channel can replace the first without touching the second.
 
@@ -115,13 +116,13 @@ longer has a volume of its own.
 
 ## Memory
 
-The stream buffers and the three receiver tasks' stacks are PSRAM. mbedtls
-(`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`) and mdns (`CONFIG_MDNS_MEMORY_ALLOC_SPIRAM`)
-allocate from PSRAM as well.
+The stream buffers, the ALAC decoder and the three receiver tasks' stacks are
+PSRAM. mbedtls (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`) and mdns
+(`CONFIG_MDNS_MEMORY_ALLOC_SPIRAM`) allocate from PSRAM as well.
 
 ## Simulator
 
 The simulator advertises through the OS `dns_sd` API (mDNSResponder on macOS,
 avahi's compat library elsewhere) and uses the host's mbedtls 4 from the flake
-for PSA crypto and ffmpeg for ALAC. A sender on the LAN can stream to it the
-same way as to the board.
+for PSA crypto. A sender on the LAN can stream to it the same way as to the
+board.

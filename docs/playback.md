@@ -2,14 +2,14 @@
 
 What plays today: MJPEG, H.264 or progressive MPEG-2 (up to 1280x720) in
 `*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
-audio, plus Opus and FLAC in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
+audio, plus Opus, FLAC and ALAC in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
 volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
 
 Audio-only files play too, in `AudioPlayerScreen` (see
-[Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus, FLAC or PCM in
-MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, and `*.mp3` / `*.aac`
+[Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus, FLAC, ALAC or PCM
+in MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, and `*.mp3` / `*.aac`
 as elementary streams. `.opus`/Ogg, and with it Ogg FLAC, is deliberately left
 out for now.
 
@@ -29,7 +29,7 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 medf_buffer           │           └─▶ present
-  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus / FLAC) ──▶ audio_output
+  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus / FLAC / ALAC) ──▶ audio_output
 ```
 
 | path | role |
@@ -886,6 +886,11 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   more than the 64 KB PCM buffer (16384 samples of 16-bit stereo, 8192 of
   24-bit) is rejected at open. Decoder details:
   [`esp-devkit/libs/audio_framework/docs/flac.md`](../esp-devkit/libs/audio_framework/docs/flac.md).
+- **ALAC is decoded by esp-devkit's `audf_alac`**, the same decoder the AirPlay
+  receiver uses, and goes to the output the way FLAC does: mono or stereo,
+  20 and 24 bits as packed 24-bit, a frame length past the 64 KB PCM buffer
+  rejected at open. Decoder details:
+  [`esp-devkit/libs/audio_framework/docs/alac.md`](../esp-devkit/libs/audio_framework/docs/alac.md).
 - **`flacbench` times `audf_flac` on the device.** It needs a build with
   `FLAC_BENCH_DIR` naming a directory with `cd.flac` and `hires.flac` (native
   FLAC files, e.g. 44.1 kHz/16-bit and 96 kHz/24-bit stereo from
@@ -1032,7 +1037,7 @@ The fixtures are `testsrc` at 640x360, 30 fps, 6 s, `-c:v mpeg2video -g 15
 (an existing root directory, so no other script's row positions move): it plays
 `a_aac.m4a` in portrait with pause, a seek drag and the end of the file, then
 `b_opus.m4a` in landscape with pause, repeat, a seek drag and the loop wrap,
-and finally opens `c_alac.m4a`, whose codec is unsupported, to check that the
+and finally opens `c_ac3.m4a`, whose codec is unsupported, to check that the
 failure reaches the second line. Audio cannot be captured, so what the captures
 prove is the clock, the state of the transport and the layout in both
 orientations.
@@ -1044,13 +1049,14 @@ nix develop -c ffmpeg -f lavfi -i sine=frequency=440:sample_rate=44100:duration=
 
 `b_opus.m4a` is `-c:a libopus` at `sample_rate=48000 -ac 2` with `-f mp4`
 forced (the `.m4a` extension picks the `ipod` muxer, which refuses Opus), and
-`c_alac.m4a` is `-c:a alac`.
+`c_ac3.m4a` is `-c:a ac3 -f mp4`.
 
 The same script then plays `d_pcm.wav` (`-c:a pcm_s16le`), `e_adpcm.wav`
 (`-c:a adpcm_ima_wav` at 22050 Hz), `f_mp3.mp3` (`-c:a libmp3lame -b:a 128k`,
 with a seek to the end), `g_vbr.mp3` (`-c:a libmp3lame -q:a 4`, so ffmpeg
-writes a Xing header) and `h_aac.aac` (`-c:a aac -f adts`), all 6 s of
-`sine` at `-ac 2`, and ends on the empty `track.aac`, which fails.
+writes a Xing header), `h_aac.aac` (`-c:a aac -f adts`) and `l_alac.m4a`
+(`-c:a alac`), all 6 s of `sine` at `-ac 2`, and ends on the empty
+`track.aac`, which fails. The FLAC files between them are not opened.
 
 `simulator/verify/media_tags.txt` checks the tag path: `Music/z_tag_v24.mp3`
 (ID3v2.4 with a 600x600 JPEG cover), `z_tag_v23.mp3` (ID3v2.3 with a 640x360

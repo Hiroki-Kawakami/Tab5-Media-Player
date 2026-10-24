@@ -14,6 +14,7 @@
 #include "bench/flac_bench.hpp"
 #include "bench/h264_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
+#include "bench/opus_bench.hpp"
 #include "media/media_cache.hpp"
 #include "playback/player.hpp"
 #include "screen_manager.hpp"
@@ -174,6 +175,7 @@ void app_entry() {
     flac_bench_register();
     h264_bench_register();
     mpeg2_bench_register();
+    opus_bench_register();
 #ifndef ESP_PLATFORM
     wifi::sim::register_harness_commands();
 #endif

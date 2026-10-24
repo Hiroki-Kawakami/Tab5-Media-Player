@@ -10,6 +10,7 @@
 #include "audf_alac.h"
 #include "audf_convert.h"
 #include "audf_flac.h"
+#include "audf_opus.h"
 #include "bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -23,7 +24,6 @@
 extern "C" {
 #include "esp_audio_dec.h"
 #include "esp_mp3_dec.h"
-#include "esp_opus_dec.h"
 }
 #else
 extern "C" {
@@ -37,7 +37,7 @@ extern "C" {
 static const char *TAG = "audio_decoder";
 
 static constexpr std::size_t kPcmBytes = 64 * 1024;
-static constexpr uint32_t kOpusRate = 48000;
+static constexpr int64_t kOpusPrerollUs = 80000;
 static constexpr uint32_t kOutputStackBytes = 4 * 1024;
 static constexpr UBaseType_t kOutputPriority = 7;
 
@@ -48,6 +48,7 @@ enum class Mode {
     PendingAac,
     Flac,
     Alac,
+    Opus,
     Decoder,
     Failed,
 };
@@ -70,6 +71,8 @@ static audf_decoder_t *s_adpcm;
 static audf_decoder_t *s_aac;
 static audf_decoder_t *s_flac;
 static audf_decoder_t *s_alac;
+static audf_decoder_t *s_opus;
+static uint32_t s_discard;
 static uint32_t s_rate;
 static uint8_t s_channels;
 static uint8_t s_bits;
@@ -246,25 +249,6 @@ static bool is_adts(const uint8_t *data, std::size_t len) {
     return len >= 2 && data[0] == 0xFF && (data[1] & 0xF6) == 0xF0;
 }
 
-static bool prepare_opus(const TrackInfo &track, DecoderSetup *setup, std::string *note) {
-    const std::vector<uint8_t> &head = track.codec_private;
-    setup->rate = kOpusRate;
-    setup->channels = track.channels;
-    if (head.size() >= 19 && memcmp(head.data(), "OpusHead", 8) == 0) {
-        setup->channels = head[9];
-        if (head[18] != 0) {
-            if (note) *note = "unsupported Opus channel mapping";
-            return false;
-        }
-    }
-    if (setup->channels == 0 || setup->channels > 2) {
-        if (note) *note = "unsupported Opus channel count";
-        return false;
-    }
-    setup->extradata = head;
-    return true;
-}
-
 #ifdef ESP_PLATFORM
 
 static esp_audio_dec_handle_t s_decoder;
@@ -272,21 +256,10 @@ static esp_audio_dec_handle_t s_decoder;
 static bool decoder_open() {
     const DecoderSetup &setup = s_setup;
     esp_audio_dec_cfg_t config = {};
-    esp_opus_dec_cfg_t opus = {};
     switch (setup.codec) {
     case CodecId::Mp3:
         esp_mp3_dec_register();
         config.type = ESP_AUDIO_TYPE_MP3;
-        break;
-    case CodecId::Opus:
-        esp_opus_dec_register();
-        config.type = ESP_AUDIO_TYPE_OPUS;
-        opus.sample_rate = setup.rate;
-        opus.channel = setup.channels;
-        opus.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_INVALID;
-        opus.self_delimited = false;
-        config.cfg = &opus;
-        config.cfg_sz = sizeof(opus);
         break;
     default:
         return false;
@@ -346,7 +319,6 @@ static AVFrame *s_frame;
 static AVCodecID codec_id_of(CodecId codec) {
     switch (codec) {
     case CodecId::Mp3: return AV_CODEC_ID_MP3;
-    case CodecId::Opus: return AV_CODEC_ID_OPUS;
     default: return AV_CODEC_ID_NONE;
     }
 }
@@ -607,6 +579,60 @@ static void alac_close() {
     s_alac = nullptr;
 }
 
+static bool opus_open(const TrackInfo &track, std::string *note) {
+    std::vector<uint8_t> head = track.codec_private;
+    if (head.size() < AUDF_OPUS_HEAD_BYTES || memcmp(head.data(), "OpusHead", 8) != 0) {
+        head.assign(AUDF_OPUS_HEAD_BYTES, 0);
+        memcpy(head.data(), "OpusHead", 8);
+        head[8] = 1;
+        head[9] = track.channels;
+    }
+    audf_opus_config_t config = {};
+    config.head = head.data();
+    config.head_len = head.size();
+#ifdef ESP_PLATFORM
+    config.alloc_caps = MALLOC_CAP_SPIRAM;
+#endif
+    const esp_err_t err = audf_opus_decoder_create(&config, &s_opus);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Opus decoder: %s", esp_err_to_name(err));
+        if (note) {
+            *note = err == ESP_ERR_NOT_SUPPORTED ? "unsupported Opus channel mapping"
+                                                 : "Opus decoder unavailable";
+        }
+        return false;
+    }
+    s_setup.rate = AUDF_OPUS_RATE;
+    s_setup.channels = audf_decoder_channels(s_opus);
+    s_discard = audf_opus_decoder_pre_skip(s_opus);
+    return true;
+}
+
+static void opus_close() {
+    audf_decoder_destroy(s_opus);
+    s_opus = nullptr;
+}
+
+static void write_opus(const uint8_t *data, std::size_t len) {
+    std::size_t frames = 0;
+    const esp_err_t err = audf_decoder_decode(s_opus, data, len, s_pcm, &frames);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Opus decode: %s", esp_err_to_name(err));
+        return;
+    }
+    const std::size_t frame_bytes = (std::size_t)s_channels * sizeof(int16_t);
+    if (s_discard >= frames) {
+        s_discard -= frames;
+        return;
+    }
+    if (s_discard) {
+        memmove(s_pcm, s_pcm + s_discard * frame_bytes, (frames - s_discard) * frame_bytes);
+        frames -= s_discard;
+        s_discard = 0;
+    }
+    write_pcm(s_pcm, frames * frame_bytes);
+}
+
 static void write_lossless(audf_decoder_t *decoder, const uint8_t *data, std::size_t len) {
     std::size_t frames = 0;
     const esp_err_t err = audf_decoder_decode(decoder, data, len, s_pcm, &frames);
@@ -667,8 +693,12 @@ static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *n
         s_mode = Mode::Alac;
         return true;
     case CodecId::Opus:
-        if (!prepare_opus(track, &s_setup, note)) return false;
-        break;
+        if (!opus_open(track, note)) {
+            opus_close();
+            return false;
+        }
+        s_mode = Mode::Opus;
+        return true;
     case CodecId::Mp3:
         break;
     default:
@@ -742,6 +772,7 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
         aac_close();
         flac_close();
         alac_close();
+        opus_close();
         s_mode = Mode::Pcm;
         if (note) *note = std::string("audio unavailable: ") + esp_err_to_name(err);
         return false;
@@ -772,6 +803,7 @@ void audio_decoder_close() {
     aac_close();
     flac_close();
     alac_close();
+    opus_close();
     s_mode = Mode::Pcm;
     if (was_running) audio_output_close();
 }
@@ -793,6 +825,9 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
     case Mode::Alac:
         write_lossless(s_alac, data, len);
         return;
+    case Mode::Opus:
+        write_opus(data, len);
+        return;
     case Mode::Adpcm:
         write_adpcm(data, len);
         return;
@@ -810,11 +845,20 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
     }
 }
 
-void audio_decoder_flush() {
+int64_t audio_decoder_preroll_us() {
+    return s_mode == Mode::Opus ? kOpusPrerollUs : 0;
+}
+
+void audio_decoder_flush(int64_t discard_us, bool start) {
     if (!s_lock) return;
     output_drain(true);
     if (s_mode == Mode::Decoder) decoder_reset();
     if (s_mode == Mode::Aac) audf_decoder_reset(s_aac);
+    if (s_mode == Mode::Opus) {
+        audf_decoder_reset(s_opus);
+        s_discard = (uint32_t)((discard_us > 0 ? discard_us : 0) * AUDF_OPUS_RATE / 1000000);
+        if (start) s_discard += audf_opus_decoder_pre_skip(s_opus);
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_frames = 0;
     xSemaphoreGive(s_lock);

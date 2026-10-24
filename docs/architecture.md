@@ -101,11 +101,9 @@ real time, which dragged the whole timeline down because the media clock
 follows the audio position. Anything that quietly lands in that pool has the
 same failure mode, so the pool is gone rather than steered around.
 
-The `media_audio` task therefore only takes the stack its codec needs: 4 KiB
-covers MP3/ADPCM (measured: under 1 KiB of use) and AAC (`audf_aac`, under 2 KiB
-including a bench task's own frames), and the task is recreated
-with 20 KiB for Opus, which spends 11 KiB. The host port ignores the stack size,
-so it keeps the task it already has.
+The `media_audio` task therefore takes a 4 KiB stack for every codec: MP3/ADPCM
+use under 1 KiB, AAC (`audf_aac`) under 2 KiB including a bench task's own
+frames, and Opus (`audf_opus`) under 2.7 KiB.
 
 Decoded PCM goes out through a second task, `audio_output` (4 KiB, kept once
 created), with two 64 KB PSRAM buffers handed back and forth: the decoder fills

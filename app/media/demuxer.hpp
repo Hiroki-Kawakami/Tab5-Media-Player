@@ -26,8 +26,8 @@ public:
     virtual bool keyframeAt(int64_t, int64_t *, uint32_t *) { return false; }
 
     off_t bytes() const { return buffer_ ? medf_buffer_size(buffer_) : 0; }
-    void release(uint32_t ref) { medf_buffer_release(buffer_, ref); }
-    void releaseAll() { medf_buffer_release_all(buffer_); }
+    virtual void release(uint32_t ref) { medf_buffer_release(buffer_, ref); }
+    virtual void releaseAll() { medf_buffer_release_all(buffer_); }
     void interrupt(bool interrupted) { medf_buffer_interrupt(buffer_, interrupted); }
     uint8_t *readAlloc(int64_t offset, uint32_t size, void **owner) {
         return buffer_ ? medf_buffer_read_alloc(buffer_, (off_t)offset, size, owner) : nullptr;

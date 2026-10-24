@@ -24,7 +24,6 @@ static constexpr int kAudioSlots = 8;
 static constexpr uint32_t kIdleTimeoutMs = 1500;
 static constexpr int64_t kAudioResyncUs = 250000;
 static constexpr uint32_t kAudioStackBytes = 4 * 1024;
-static constexpr uint32_t kOpusStackBytes = 20 * 1024;
 static constexpr uint32_t kAudioStepMs = 20;
 static constexpr uint32_t kCommandSendMs = 1000;
 static constexpr uint32_t kCloseTimeoutMs = 8000;
@@ -192,13 +191,13 @@ static audf_aac_he_t aac_he_for(CodecId video) {
 }
 
 #ifdef ESP_PLATFORM
-static BaseType_t audio_task_create(uint32_t stack_bytes, uint32_t caps) {
-    return xTaskCreatePinnedToCoreWithCaps(audio_task, "media_audio", stack_bytes, nullptr, 6,
+static BaseType_t audio_task_create(uint32_t caps) {
+    return xTaskCreatePinnedToCoreWithCaps(audio_task, "media_audio", kAudioStackBytes, nullptr, 6,
                                            &s_audio_task, tskNO_AFFINITY, caps | MALLOC_CAP_8BIT);
 }
 #endif
 
-static bool audio_task_start(uint32_t stack_bytes) {
+static bool audio_task_start() {
     if (s_audio_task && xSemaphoreTake(s_audio_stopped, 0) == pdTRUE) s_audio_task = nullptr;
     if (s_audio_task) {
         ESP_LOGE(TAG, "the audio task of the last file is still running");
@@ -207,15 +206,14 @@ static bool audio_task_start(uint32_t stack_bytes) {
     xSemaphoreTake(s_audio_stopped, 0);
     s_audio_quit = false;
 #ifdef ESP_PLATFORM
-    BaseType_t created = pdFAIL;
-    if (stack_bytes <= kAudioStackBytes) {
-        created = audio_task_create(stack_bytes, MALLOC_CAP_INTERNAL);
-        if (created != pdPASS) ESP_LOGW(TAG, "audio task stack falls back to PSRAM");
+    BaseType_t created = audio_task_create(MALLOC_CAP_INTERNAL);
+    if (created != pdPASS) {
+        ESP_LOGW(TAG, "audio task stack falls back to PSRAM");
+        created = audio_task_create(MALLOC_CAP_SPIRAM);
     }
-    if (created != pdPASS) created = audio_task_create(stack_bytes, MALLOC_CAP_SPIRAM);
 #else
     const BaseType_t created =
-        xTaskCreate(audio_task, "media_audio", stack_bytes, nullptr, 6, &s_audio_task);
+        xTaskCreate(audio_task, "media_audio", kAudioStackBytes, nullptr, 6, &s_audio_task);
 #endif
     if (created != pdPASS) {
         s_audio_task = nullptr;
@@ -359,8 +357,7 @@ static void handle_open(const std::string &path) {
     s_have_audio = audio_decoder_open(info.audio, aac_he_for(info.video.codec),
                                       s_audio_only ? AudioContent::Music : AudioContent::Video,
                                       &note);
-    if (s_have_audio &&
-        !audio_task_start(info.audio.codec == CodecId::Opus ? kOpusStackBytes : kAudioStackBytes)) {
+    if (s_have_audio && !audio_task_start()) {
         audio_decoder_close();
         s_have_audio = false;
         note = "no memory for the audio task";
@@ -409,12 +406,19 @@ static void handle_eject(const std::string &mount_point) {
 static bool rewind_to(int64_t position_us) {
     if (!player_core.demuxer || !player_core.demuxer->isOpen()) return false;
     reader_stop();
-    int64_t landed_us = position_us;
-    if (!player_core.demuxer->seek(position_us, &landed_us)) {
+    const int64_t preroll_us = s_audio_only && position_us > 0 ? audio_decoder_preroll_us() : 0;
+    const int64_t from_us = position_us > preroll_us ? position_us - preroll_us : 0;
+    int64_t landed_us = from_us;
+    if (!player_core.demuxer->seek(from_us, &landed_us)) {
         reader_start();
         return false;
     }
-    audio_decoder_flush();
+    int64_t discard_us = 0;
+    if (preroll_us) {
+        discard_us = position_us - landed_us;
+        landed_us = position_us;
+    }
+    audio_decoder_flush(discard_us, landed_us - discard_us <= 0);
     if (!s_audio_only) video_pacing_rewound();
     xSemaphoreTake(player_core.lock, portMAX_DELAY);
     player_core.shown_us = landed_us;

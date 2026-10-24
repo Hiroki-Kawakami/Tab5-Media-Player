@@ -42,6 +42,10 @@ submodule.
 - `esp-devkit/libs/audio_framework/docs/flac.md` — the in-house FLAC decoder:
   scope, the error codes a frame-splitting caller relies on, speed, and the
   MD5 check against the IETF test files.
+- `esp-devkit/libs/audio_framework/docs/opus.md` — the in-house Opus decoder
+  (SILK, CELT, Hybrid): which parts follow RFC 6716's prose and which its
+  reference code, the fixed-point CELT, speed against esp_opus_dec, and the
+  checks against the RFC 8251 test vectors and libopus.
 - `esp-devkit/libs/audio_framework/docs/alac.md` — the in-house ALAC decoder
   shared by file playback and AirPlay: scope, error codes, and the bit-exact
   check against ffmpeg- and afconvert-encoded material.

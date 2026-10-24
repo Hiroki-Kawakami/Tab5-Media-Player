@@ -15,6 +15,7 @@ std::unique_ptr<Demuxer> mp4_demuxer_create();
 std::unique_ptr<Demuxer> wav_demuxer_create();
 std::unique_ptr<Demuxer> es_audio_demuxer_create();
 std::unique_ptr<Demuxer> flac_demuxer_create();
+std::unique_ptr<Demuxer> ogg_demuxer_create();
 
 namespace {
 
@@ -36,6 +37,7 @@ constexpr Format kFormats[] = {
     { ".mp3", "MP3", MediaKind::Audio, es_audio_demuxer_create },
     { ".aac", "AAC", MediaKind::Audio, es_audio_demuxer_create },
     { ".flac", "FLAC", MediaKind::Audio, flac_demuxer_create },
+    { ".opus", "Ogg", MediaKind::Audio, ogg_demuxer_create },
     { ".jpg", "JPEG", MediaKind::Image, nullptr },
     { ".jpeg", "JPEG", MediaKind::Image, nullptr },
     { ".png", "PNG", MediaKind::Image, nullptr },

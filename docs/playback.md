@@ -9,9 +9,8 @@ MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 
 Audio-only files play too, in `AudioPlayerScreen` (see
 [Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus, FLAC, ALAC or PCM
-in MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, and `*.mp3` / `*.aac`
-as elementary streams. `.opus`/Ogg, and with it Ogg FLAC, is deliberately left
-out for now.
+in MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, `*.opus` (Opus in
+Ogg; no other codec in Ogg), and `*.mp3` / `*.aac` as elementary streams.
 
 Both screens play the files of one directory, or of an `.m3u`/`.m3u8`, in
 order (see [Playlists](#playlists)).
@@ -34,7 +33,7 @@ medf_buffer           │           └─▶ present
 
 | path | role |
 |---|---|
-| `esp-devkit/libs/media_framework/` | the read-ahead buffer (`medf_buffer`), tags, and the AVI, WAV, MP3/AAC, MKV and MP4 demuxers (see its README and `docs/containers.md`) |
+| `esp-devkit/libs/media_framework/` | the read-ahead buffer (`medf_buffer`), tags, and the AVI, WAV, MP3/AAC, FLAC, Ogg, MKV and MP4 demuxers (see its README and `docs/containers.md`) |
 | `components/vdec_common/` | PIE kernels on the packed picture layout and the thread hooks, shared by both decoders |
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
@@ -283,8 +282,6 @@ at the end and the restart on flush. What differs:
 - **No interlaced MPEG-2, no MPEG-1, no MPEG-PS/TS (`.mpg`, `.ts`, `.vob`).**
   See [`mpeg2.md`](mpeg2.md#scope).
 - **No sample aspect ratio.** Every codec is shown with square pixels.
-- **No `.opus`**: Ogg needs page parsing and a bisection over granule
-  positions, which is worth its own step.
 - **No 8-bit WAV** (it is unsigned, and everything below is signed), no MS
   ADPCM, and no MP3 inside WAV.
 - **Playlist files are read only.** There is no way to make or edit an `.m3u`
@@ -551,10 +548,10 @@ also sleeps 20 ms after 500 ms without blocking, which keeps `IDLE0` fed for
 the task watchdog. Taking a harness capture while a heavy clip plays still
 trips the watchdog, since the capture itself runs on core 0 for seconds.
 
-`media_audio` has a 20 KB stack because the decoders run on it. Opus's CELT
-decoder keeps its work buffers in stack VLAs and overflowed the 4 KB that was
-enough for MP3; `esp_audio_codec`'s README asks for about 20 KB. The simulator
-never shows this, since host threads have large stacks.
+`media_audio` has a 4 KB stack and the decoders run on it, so a decoder keeps
+its work buffers in its own allocation, not on the stack (`audf_opus` peaks
+under 2.7 KB). The simulator never shows an overflow, since host threads have
+large stacks.
 
 Every session change goes through `reader_stop()`, which is the only safe way
 to reuse ring slots:
@@ -838,6 +835,12 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   AudioSpecificConfig states), `audio_output_open` is called again.
 - **Decoders are reset on seek** (`audio_decoder_flush()`), so AAC and Opus do not
   carry state from before the jump. The audio task is parked by then.
+- **Opus drops the OpusHead pre-skip at the start, and pre-rolls on seek in
+  audio-only files.** A decoder reset leaves Opus wrong for its first tens of
+  milliseconds, so `rewind_to()` seeks 80 ms
+  (`audio_decoder_preroll_us()`) before the target and `audio_decoder_flush()`
+  is told to drop the output up to it. Video files seek without the pre-roll,
+  so their Opus audio starts from a cold decoder after a seek.
 - **AAC is decoded by esp-devkit's `audf_aac`, on both targets**, so the
   simulator plays the same samples as the device. Internals, measurements and
   how to check it: [`esp-devkit/libs/audio_framework/docs/aac.md`](../esp-devkit/libs/audio_framework/docs/aac.md).
@@ -903,21 +906,35 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 
   `flacbench <loops> [hires] [internal]` prints cycles per frame and the share
   of a core; `internal` allocates the decoder in internal RAM.
-- **Opus is MKV and MP4 only** (ffmpeg cannot mux it into AVI) and decodes at
-  48 kHz. Only channel mapping family 0 (mono or stereo) is accepted. The
-  OpusHead pre-skip is not applied on the device.
+- **Opus is decoded by esp-devkit's `audf_opus`, on both targets**, from MKV,
+  MP4 (ffmpeg cannot mux it into AVI) and `.opus`, always at 48 kHz. Only
+  channel mapping family 0 (mono or stereo) is accepted. A track without an
+  OpusHead gets one built from its channel count. Decoder details:
+  [`esp-devkit/libs/audio_framework/docs/opus.md`](../esp-devkit/libs/audio_framework/docs/opus.md).
+- **`opusbench` times `audf_opus` on the device.** It needs a build with
+  `OPUS_BENCH_DIR` naming a directory with `music.opus`, `hybrid.opus` and
+  `speech.opus` (the `music_128k`, `speech_16k_stereo` and `speech_8k` files of
+  `esp-devkit/libs/audio_framework/test/make_opus_material.sh`):
+
+  ```sh
+  nix develop -c idf.py -C esp32p4 -B esp32p4/build-bench-opus \
+      -DOPUS_BENCH_DIR=/path/to/clips -p <port> flash
+  ```
+
+  `opusbench <loops> [hybrid|speech] [internal] [esp]` prints cycles per
+  packet, the share of a core and the stack a decode-only task used; `esp`
+  runs esp_audio_codec's Opus decoder on the same clip instead, and
+  `internal` allocates the decoder in internal RAM.
 - **The playback position is PCM frames written divided by the sample rate.**
   It feeds the clock correction above.
-- **The device MP3 and Opus decoders are `espressif/esp_audio_codec`, pinned
-  below 2.6.**
+- **The device MP3 decoder is `espressif/esp_audio_codec`, pinned below
+  2.6.**
   2.6 and later refuse to build unless the ESP32-P4 is chip revision 3.0 or
   newer, and this board's P4 is older (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3`).
   Check the silicon before raising the pin. The dependency is device-only.
-- **The simulator decodes MP3 and Opus with ffmpeg's libavcodec.** It is
+- **The simulator decodes MP3 with ffmpeg's libavcodec.** It is
   linked in `simulator/CMakeLists.txt`, and `flake.nix` provides it.
-- **`MP3` uses `ESP_AUDIO_DEC_RECOVERY_PLC` on every packet and the others do
-  not.** That is what MP3 has always been given; for Opus, PLC means "this
-  packet was lost".
+- **MP3 uses `ESP_AUDIO_DEC_RECOVERY_PLC` on every packet.**
 
 ## Simulator
 
@@ -962,15 +979,15 @@ nix develop -c ffmpeg -display_rotation 90 -i upright_cw.mkv -c copy \
   nothing.
 - **`[mp3float] overread` after a seek is harmless.** ffmpeg's MP3 parser was
   handed a chunk from the middle of a frame and resynchronises.
-- **`[opus] Could not update timestamps for skipped samples` is harmless.**
-  libavcodec applies the OpusHead pre-skip and our packets carry no pts.
 
 `simulator/verify/audio_codecs.txt` plays every file in `Test Audio/` (a root
 directory named to sort after `Music/`, so the other scripts' rows do not
 move): `aac.avi`, `aac.mkv` (with a seek), `aac_laced.mkv`, `adpcm.avi`,
 `adpcm.mkv` (stereo), `opus.mkv` (with a seek) and `opus_laced.mkv`, each to
 the end. Audio cannot be captured, so the check is the codec label and the
-clock: a decoder that writes nothing holds the video at the first frame. Make
+clock: a decoder that writes nothing holds the video at the first frame.
+`opus_ogg.opus`, sorting after them and not in the script, is `tagged.opus`
+from `esp-devkit/libs/audio_framework/test/make_opus_material.sh`. Make
 them with the first ffmpeg command above at `size=640x360:rate=10`, swapping
 the audio codec (`-c:a adpcm_ima_wav`, `-c:a aac`, `-c:a libopus -ac 2` with
 `sample_rate=48000`; `adpcm.mkv` uses

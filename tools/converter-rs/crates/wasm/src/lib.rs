@@ -53,6 +53,7 @@ pub fn presets() -> String {
     json(
         &preset::all()
             .iter()
+            .filter(|p| p.video(None).is_ok_and(|v| v.codec != "h264"))
             .map(|p| PresetInfo {
                 name: p.name,
                 video: p.video,

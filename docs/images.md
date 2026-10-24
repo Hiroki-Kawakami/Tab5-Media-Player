@@ -1,12 +1,12 @@
 # Image viewer
 
-JPEG, PNG, BMP, GIF and TIFF files in a directory, shown one at a time, scaled
-down to fit the screen with the aspect ratio kept. Nothing is ever enlarged, and
-there is no zoom: a picture smaller than the screen is shown at its own size in
-the middle of it.
+JPEG, PNG, BMP, GIF, TIFF and WebP files in a directory, shown one at a time,
+scaled down to fit the screen with the aspect ratio kept. Nothing is ever
+enlarged, and there is no zoom: a picture smaller than the screen is shown at
+its own size in the middle of it.
 
-A GIF shows its first frame and nothing else. Playing an animation would make
-the viewer a player: a timer, frames composed onto the previous one per their
+An animated GIF or WebP shows its first frame and nothing else. Playing an
+animation would make the viewer a player: a timer, frames composed onto the previous one per their
 disposal, and pixels that change under a cache built around one decoded picture
 per box.
 
@@ -68,7 +68,12 @@ Media Info panel shows them as a Camera and an Exposure section.
   parse and no card access at all. A TIFF file is itself the structure EXIF
   borrows, so its IFD0 is read the same way — when it is inside the window:
   libtiff and ffmpeg write the IFD after the pixels, and such a file shows no
-  tags and is not turned by its `Orientation`. A picture whose tags run past the window is
+  tags and is not turned by its `Orientation`. A WebP file is the exception
+  that costs a read: the format puts the `EXIF` chunk after the pixels, so for
+  anything but a small picture it is past the window. The `VP8X` flags say
+  whether there is one, the chunk headers in the window say where the next
+  chunk starts, and the probe walks the headers on the card from there and
+  reads the chunk alone. A picture whose tags run past the window is
   parsed as far as the window goes — every offset is checked against the bytes
   in hand rather than against the length the segment claims.
 - **The result hangs off `MediaEntry` as a pointer**, allocated only when
@@ -344,7 +349,9 @@ The other formats are decoded a row at a time as well, with two exceptions that
 hold the picture at one byte per pixel: a BMP compressed with RLE, whose rows
 cannot be found without decoding everything before them, and an interlaced GIF,
 whose rows arrive in four passes. A tiled TIFF holds one row of tiles, decoded,
-at 3 bytes per pixel.
+at 3 bytes per pixel. A lossless WebP can copy pixels from up to about a
+million pixels back, so it keeps that much of the picture as it decodes: about
+4 MB however large the picture is.
 
 ## Test material
 
@@ -440,8 +447,31 @@ image = Image.open("tmp.png").convert("RGB")   # testsrc2=size=800x600
 image.save("s_tiff_orient6_800.tif", compression="tiff_adobe_deflate", tiffinfo={274: 6})
 ```
 
-The RLE BMPs, 16- and 32-bit BMPs, transparency, and the less common TIFF
-layouts are covered by the image_framework host tests instead.
+WebP is `u_` to `x_`: lossy, lossless (larger than the lossless decoder's
+window), lossy with alpha and `Orientation` 6 in an `EXIF` chunk past the probe
+window, and an animation. The flake's ffmpeg has libwebp, and `$RESGEN_PYTHON`
+writes the one with EXIF:
+
+```sh
+ffmpeg -f lavfi -i "testsrc2=size=3000x2000" -frames:v 1 -c:v libwebp -quality 80 \
+       u_webp_lossy_3000.webp
+ffmpeg -f lavfi -i "mandelbrot=size=1500x1000" -frames:v 1 -c:v libwebp -lossless 1 \
+       v_webp_lossless_1500.webp
+ffmpeg -f lavfi -i "testsrc2=size=320x240:rate=10:duration=2" -c:v libwebp_anim -loop 0 \
+       x_webp_anim_320.webp
+```
+
+```python
+image = Image.open("tmp.png").convert("RGBA")   # testsrc2=size=2400x1600
+image.putalpha(Image.linear_gradient("L").resize(image.size))
+exif = Image.Exif()
+exif[0x0112] = 6
+image.save("w_webp_alpha_orient6_2400.webp", exif=exif, quality=95)
+```
+
+The RLE BMPs, 16- and 32-bit BMPs, transparency, the less common TIFF layouts
+and the WebP variants (filters, token partitions, palettes, ALPH filters) are
+covered by the image_framework host tests instead.
 
 `h_exif_3000.jpg` is `a_landscape_3000.jpg` with three maximum-size APP1
 segments inserted after the SOI, which puts its frame header ~190 KB into the

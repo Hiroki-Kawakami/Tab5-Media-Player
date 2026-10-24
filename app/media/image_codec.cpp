@@ -270,6 +270,23 @@ static bool tiff_header(const uint8_t *data, std::size_t size, ImageHeader *out)
     return out->width && out->height;
 }
 
+/* An animation's size is its canvas, which is what the decoder delivers. */
+static bool webp_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
+    if (size < 30) return false;
+    if (memcmp(data + 12, "VP8 ", 4) == 0) {
+        out->width = le(data + 26, 2) & 0x3fff;
+        out->height = le(data + 28, 2) & 0x3fff;
+    } else if (memcmp(data + 12, "VP8L", 4) == 0) {
+        const uint32_t bits = le(data + 21, 4);
+        out->width = (bits & 0x3fff) + 1;
+        out->height = ((bits >> 14) & 0x3fff) + 1;
+    } else if (memcmp(data + 12, "VP8X", 4) == 0) {
+        out->width = le(data + 24, 3) + 1;
+        out->height = le(data + 27, 3) + 1;
+    }
+    return out->width && out->height;
+}
+
 bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
     *out = {};
     switch (imgf_sniff(data, size)) {
@@ -294,6 +311,9 @@ bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
     case IMGF_FMT_TIFF:
         out->format = ImageFormat::Tiff;
         return tiff_header(data, size, out);
+    case IMGF_FMT_WEBP:
+        out->format = ImageFormat::Webp;
+        return webp_header(data, size, out);
     default:
         return false;
     }
@@ -306,6 +326,7 @@ static imgf_format_t imgf_format(ImageFormat format) {
     case ImageFormat::Bmp: return IMGF_FMT_BMP;
     case ImageFormat::Gif: return IMGF_FMT_GIF;
     case ImageFormat::Tiff: return IMGF_FMT_TIFF;
+    case ImageFormat::Webp: return IMGF_FMT_WEBP;
     default: return IMGF_FMT_UNKNOWN;
     }
 }
@@ -317,6 +338,7 @@ static const char *format_name(const ImageHeader &header) {
     case ImageFormat::Bmp: return "BMP";
     case ImageFormat::Gif: return "GIF";
     case ImageFormat::Tiff: return "TIFF";
+    case ImageFormat::Webp: return "WebP";
     default: return "picture";
     }
 }

@@ -49,6 +49,8 @@ static constexpr std::size_t kHashWindowBytes = 8 * 1024;
 static constexpr std::size_t kImageProbeWindow = 128 * 1024;
 static constexpr std::size_t kImageChunkBytes = 256 * 1024;
 static constexpr std::size_t kImageAlignment = 64;
+static constexpr int kWebpExifHops = 4;
+static constexpr std::size_t kWebpExifMaxBytes = 256 * 1024;
 /* One cover queued for the decoder while the reader fetches the next: enough
    to hide the decode behind the SD read without holding a third picture. */
 static constexpr uint32_t kDecodeDepth = 1;
@@ -597,6 +599,43 @@ static CoverArt read_thumb(const std::string &path, uint32_t at, uint32_t bytes)
     return thumb;
 }
 
+/* A WebP file keeps its EXIF chunk after the pixels, past the probe window for
+   all but a small picture, so the chunk headers are walked on the card from
+   where the window ends: one hop for what writers put there. */
+static bool read_webp_exif(const std::string &path, std::size_t at, ImageExif *exif) {
+    FILE *fp = fopen(path.c_str(), "rb");
+    if (!fp) return false;
+    bool ok = false;
+    for (int hop = 0; hop < kWebpExifHops && !s_reader_cancel; hop++) {
+        uint8_t hdr[8];
+        if (fseek(fp, (long)at, SEEK_SET) != 0 || fread(hdr, 1, 8, fp) != 8) {
+            ESP_LOGE(TAG, "cannot read the chunk at %u of %s", (unsigned)at, path.c_str());
+            break;
+        }
+        const uint32_t length = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                                ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+        if (memcmp(hdr, "EXIF", 4) != 0) {
+            at += 8 + (std::size_t)length + (length & 1);
+            continue;
+        }
+        if (length > kWebpExifMaxBytes) {
+            ESP_LOGW(TAG, "%u byte EXIF chunk in %s left unread", (unsigned)length, path.c_str());
+            break;
+        }
+        auto *buffer = static_cast<uint8_t *>(heap_caps_malloc(length, MALLOC_CAP_SPIRAM));
+        if (buffer && fread(buffer, 1, length, fp) == length) {
+            ok = image_exif_parse_webp_chunk(buffer, length, at + 8, exif);
+        } else {
+            ESP_LOGE(TAG, "cannot read the %u byte EXIF chunk of %s", (unsigned)length,
+                     path.c_str());
+        }
+        heap_caps_free(buffer);
+        break;
+    }
+    fclose(fp);
+    return ok;
+}
+
 /* The thumbnail only stands in for the picture when it is at least as big as
    the box: below that it would be enlarged, and the picture it replaces would
    have come out sharper. */
@@ -648,9 +687,15 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
     entry->image_id = image_id_of(data.data->data(), data.data->size(), (uint64_t)size);
 
     ImageExif exif;
-    if (image_exif_parse(data.data->data(), data.data->size(), &exif)) {
+    bool has_exif = image_exif_parse(data.data->data(), data.data->size(), &exif);
+    if (!has_exif && header.format == ImageFormat::Webp) {
+        const std::size_t rest = image_exif_webp_resume(data.data->data(), data.data->size());
+        if (rest) has_exif = read_webp_exif(path, rest, &exif);
+    }
+    if (has_exif) {
         entry->image_exif = meta_make_shared<ImageExif>(exif);
-        if (thumb && exif.thumb_bytes) {
+        if (thumb && exif.thumb_bytes &&
+            exif.thumb_at + (std::size_t)exif.thumb_bytes <= data.data->size()) {
             *thumb = keep_thumb(data.data->data(), exif.thumb_at, exif.thumb_bytes);
         }
     }

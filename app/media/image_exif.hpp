@@ -35,6 +35,15 @@ struct ImageExif {
     bool empty() const;
 };
 
-/* `data` is the head of a JPEG, PNG or TIFF file, which may stop inside the
-   segment that carries the tags: whatever is readable is taken. */
+/* `data` is the head of a JPEG, PNG, TIFF or WebP file, which may stop inside
+   the segment that carries the tags: whatever is readable is taken. */
 bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out);
+
+/* For the head of a WebP file that says it carries EXIF but does not reach the
+   chunk: the offset of the first chunk header past the head. Zero otherwise. */
+std::size_t image_exif_webp_resume(const uint8_t *data, std::size_t size);
+
+/* `data` is the payload of a WebP EXIF chunk, which starts `at` bytes into the
+   file. */
+bool image_exif_parse_webp_chunk(const uint8_t *data, std::size_t size, std::size_t at,
+                                 ImageExif *out);

@@ -249,7 +249,7 @@ An image file is its own picture, so there is no demuxer and no tag walk:
 
 - **The probe reads a 128 KB window**, hashes the id from it and takes the
   picture's size from the header if it is in there (the JPEG SOF, the PNG
-  IHDR, a TIFF's IFD). Whether
+  IHDR, a TIFF's IFD, a WebP's first chunk). Whether
   the size was found says nothing about whether the file can be decoded — a
   camera JPEG puts EXIF, a thumbnail and an ICC profile before its frame
   header, and 200 KB of that is ordinary — so only the format has to be
@@ -257,7 +257,8 @@ An image file is its own picture, so there is no demuxer and no tag walk:
   in afterwards. Gating the entry on the frame header instead is what made
   large JPEGs fail while PNGs, whose IHDR is always at byte 16, kept working.
   The same window is where the EXIF tags are parsed from, so the Media Info
-  panel costs no further reads; see [`images.md`](images.md#what-exif-adds).
+  panel costs no further reads except for a WebP's `EXIF` chunk, which comes
+  after the pixels; see [`images.md`](images.md#what-exif-adds).
 - **The picture itself is read by the decoder stage, not the reader.** A cover
   is a few hundred KB, so handing the bytes from stage one to stage two costs
   nothing; a photograph is megabytes, and with the reader already fetching the

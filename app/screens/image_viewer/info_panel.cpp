@@ -19,6 +19,7 @@ const char *image_kind_name(const MediaEntry &entry) {
     case ImageFormat::Bmp: return "BMP";
     case ImageFormat::Gif: return "GIF";
     case ImageFormat::Tiff: return "TIFF";
+    case ImageFormat::Webp: return "WebP";
     default: return "";
     }
 }

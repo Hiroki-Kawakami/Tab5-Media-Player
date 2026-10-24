@@ -6,6 +6,8 @@
 #include "image_exif.hpp"
 #include "image_codec.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
 
 namespace {
@@ -258,6 +260,59 @@ bool png_exif(const uint8_t *data, std::size_t size, const uint8_t **out, std::s
     return false;
 }
 
+uint32_t le32(const uint8_t *p) {
+    return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
+}
+
+bool is_webp(const uint8_t *data, std::size_t size) {
+    return size >= 12 && memcmp(data, "RIFF", 4) == 0 && memcmp(data + 8, "WEBP", 4) == 0;
+}
+
+/* Walks the chunks in the head. Returns the offset of the first chunk header
+   the head does not hold, or 0 once the EXIF chunk is found or the RIFF ends. */
+std::size_t webp_walk(const uint8_t *data, std::size_t size, const uint8_t **out,
+                      std::size_t *out_size) {
+    const uint64_t end = 8 + (uint64_t)le32(data + 4);
+    uint64_t i = 12;
+    while (i < end) {
+        if (i + 8 > size) return i < SIZE_MAX ? (std::size_t)i : 0;
+        const uint32_t length = le32(data + i + 4);
+        if (memcmp(data + i, "EXIF", 4) == 0) {
+            const std::size_t from = (std::size_t)i + 8;
+            *out = data + from;
+            *out_size = std::min((std::size_t)length, size - from);
+            return 0;
+        }
+        i += 8 + (uint64_t)length + (length & 1);
+    }
+    return 0;
+}
+
+/* The spec has the chunk start at the TIFF header; some writers put the
+   "Exif\0\0" of a JPEG APP1 in front of it. */
+void skip_exif_prefix(const uint8_t **tiff, std::size_t *bytes) {
+    if (*bytes >= 6 && memcmp(*tiff, "Exif\0\0", 6) == 0) {
+        *tiff += 6;
+        *bytes -= 6;
+    }
+}
+
+/* The size decides whether the thumbnail can stand in for the picture at a
+   given box, so a thumbnail whose own header will not parse is dropped.
+   `view` holds the file from offset `view_at` on. */
+void check_thumb(const uint8_t *view, std::size_t view_at, ImageExif *out) {
+    if (!out->thumb_bytes) return;
+    ImageHeader header;
+    if (image_header(view + (out->thumb_at - view_at), out->thumb_bytes, &header) &&
+        header.format == ImageFormat::Jpeg) {
+        out->thumb_width = (uint16_t)header.width;
+        out->thumb_height = (uint16_t)header.height;
+    } else {
+        out->thumb_at = 0;
+        out->thumb_bytes = 0;
+    }
+}
+
 }
 
 bool ImageExif::empty() const {
@@ -277,23 +332,36 @@ bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out) {
     } else if (size >= 4 && (memcmp(data, "II*\0", 4) == 0 || memcmp(data, "MM\0*", 4) == 0)) {
         tiff = data;
         bytes = size;
+    } else if (is_webp(data, size)) {
+        webp_walk(data, size, &tiff, &bytes);
+        if (!tiff) return false;
+        skip_exif_prefix(&tiff, &bytes);
     } else {
         return false;
     }
     if (!parse_tiff(tiff, bytes, (std::size_t)(tiff - data), out)) return false;
+    check_thumb(data, 0, out);
+    return true;
+}
 
-    /* The size decides whether the thumbnail can stand in for the picture at a
-       given box, so a thumbnail whose own header will not parse is dropped. */
-    if (out->thumb_bytes) {
-        ImageHeader header;
-        if (image_header(data + out->thumb_at, out->thumb_bytes, &header) &&
-            header.format == ImageFormat::Jpeg) {
-            out->thumb_width = (uint16_t)header.width;
-            out->thumb_height = (uint16_t)header.height;
-        } else {
-            out->thumb_at = 0;
-            out->thumb_bytes = 0;
-        }
+std::size_t image_exif_webp_resume(const uint8_t *data, std::size_t size) {
+    if (!is_webp(data, size) || size < 21 || memcmp(data + 12, "VP8X", 4) != 0 ||
+        !(data[20] & 0x08)) {
+        return 0;
     }
+    const uint8_t *tiff = nullptr;
+    std::size_t bytes = 0;
+    return webp_walk(data, size, &tiff, &bytes);
+}
+
+bool image_exif_parse_webp_chunk(const uint8_t *data, std::size_t size, std::size_t at,
+                                 ImageExif *out) {
+    *out = {};
+    const uint8_t *tiff = data;
+    std::size_t bytes = size;
+    skip_exif_prefix(&tiff, &bytes);
+    const std::size_t base = at + (std::size_t)(tiff - data);
+    if (!parse_tiff(tiff, bytes, base, out)) return false;
+    check_thumb(data, at, out);
     return true;
 }

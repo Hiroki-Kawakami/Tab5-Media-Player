@@ -46,6 +46,7 @@ constexpr Format kFormats[] = {
     { ".gif", "GIF", MediaKind::Image, nullptr },
     { ".tif", "TIFF", MediaKind::Image, nullptr },
     { ".tiff", "TIFF", MediaKind::Image, nullptr },
+    { ".webp", "WebP", MediaKind::Image, nullptr },
     { ".m3u", "M3U", MediaKind::Playlist, nullptr },
     { ".m3u8", "M3U", MediaKind::Playlist, nullptr },
 };

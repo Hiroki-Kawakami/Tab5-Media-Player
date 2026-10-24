@@ -35,6 +35,7 @@ release; it needs `ffmpeg` and `ffprobe` on `PATH`.
 - BMP (`.bmp`)
 - GIF (`.gif`), the first frame only
 - TIFF (`.tif`, `.tiff`), uncompressed, PackBits, LZW or Deflate
+- WebP (`.webp`), lossy, lossless and with alpha; the first frame of an animation
 
 For the fastest display, use baseline JPEG no larger than the screen in the
 orientation you view it (720x1280 portrait, 1280x720 landscape).

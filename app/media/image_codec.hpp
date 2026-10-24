@@ -19,6 +19,7 @@ enum class ImageFormat {
     Bmp,
     Gif,
     Tiff,
+    Webp,
 };
 
 struct ImageSize {

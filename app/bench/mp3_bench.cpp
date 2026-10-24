@@ -170,7 +170,16 @@ static bool bench_command(int argc, const char *const *argv, void *) {
     return true;
 }
 
+static bool kernel_test_command(int argc, const char *const *argv, void *) {
+    const int iterations = argc > 1 ? atoi(argv[1]) : 1000;
+    const uint32_t t0 = esp_cpu_get_cycle_count();
+    const int bad = audf_mp3_kernel_selftest(t0 | 1, iterations);
+    ESP_LOGI(TAG, "kernel selftest: %d iterations, %d mismatches", iterations, bad);
+    return bad == 0;
+}
+
 void mp3_bench_register() {
+    harness_register("mp3kerneltest", kernel_test_command, nullptr);
     harness_register("mp3bench", bench_command, nullptr);
 }
 

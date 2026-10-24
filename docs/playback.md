@@ -948,7 +948,8 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 
   `mp3bench <loops> [320|mp2] [internal]` prints cycles per frame, the share
   of a core and the stack a decode-only task used; `internal` allocates the
-  decoder in internal RAM.
+  decoder in internal RAM. `mp3kerneltest <n>` runs
+  `audf_mp3_kernel_selftest`.
 
 ## Simulator
 

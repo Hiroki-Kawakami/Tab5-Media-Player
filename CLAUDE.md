@@ -48,8 +48,8 @@ submodule.
   checks against the RFC 8251 test vectors and libopus.
 - `esp-devkit/libs/audio_framework/docs/mp3.md` — the in-house MP3/MP2
   decoder (Layer III and II): scope, the bit reservoir after a seek, the
-  32-bit products with block floating point and why, speed, and the checks
-  against mpg123 and the ISO conformance streams.
+  16-bit split products and block floating point, the PIE kernels, speed, and
+  the checks against mpg123 and the ISO conformance streams.
 - `esp-devkit/libs/audio_framework/docs/alac.md` — the in-house ALAC decoder
   shared by file playback and AirPlay: scope, error codes, and the bit-exact
   check against ffmpeg- and afconvert-encoded material.

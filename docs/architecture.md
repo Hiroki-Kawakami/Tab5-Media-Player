@@ -103,7 +103,7 @@ same failure mode, so the pool is gone rather than steered around.
 
 The `media_audio` task therefore takes a 4 KiB stack for every codec: ADPCM
 uses under 1 KiB, AAC (`audf_aac`) under 2 KiB including a bench task's own
-frames, MP3/MP2 (`audf_mp3`) under 2.2 KiB and Opus (`audf_opus`) under
+frames, MP3/MP2 (`audf_mp3`) under 2 KiB and Opus (`audf_opus`) under
 2.7 KiB.
 
 Decoded PCM goes out through a second task, `audio_output` (4 KiB, kept once

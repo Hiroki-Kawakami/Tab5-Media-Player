@@ -7,6 +7,8 @@
 #include "audio_output.hpp"
 #include "audf_aac.h"
 #include "audf_adpcm.h"
+#include "audf_convert.h"
+#include "audf_flac.h"
 #include "bsp.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -39,6 +41,7 @@ enum class Mode {
     Adpcm,
     Aac,
     PendingAac,
+    Flac,
     Decoder,
     Failed,
 };
@@ -59,6 +62,7 @@ static DecoderSetup s_setup;
 static uint16_t s_block_align;
 static audf_decoder_t *s_adpcm;
 static audf_decoder_t *s_aac;
+static audf_decoder_t *s_flac;
 static uint32_t s_rate;
 static uint8_t s_channels;
 static uint8_t s_bits;
@@ -462,6 +466,55 @@ static void write_adpcm(const uint8_t *data, std::size_t len) {
     }
 }
 
+static bool flac_open(const TrackInfo &track, std::string *note) {
+    audf_flac_config_t config = {};
+    config.streaminfo = track.codec_private.data();
+    config.streaminfo_len = track.codec_private.size();
+#ifdef ESP_PLATFORM
+    config.alloc_caps = MALLOC_CAP_SPIRAM;
+#endif
+    const esp_err_t err = audf_flac_decoder_create(&config, &s_flac);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "FLAC decoder: %s", esp_err_to_name(err));
+        if (note) *note = "unsupported FLAC format";
+        return false;
+    }
+    const uint8_t channels = audf_decoder_channels(s_flac);
+    if (channels > 2) {
+        if (note) *note = "unsupported FLAC channel count";
+        return false;
+    }
+    if (audf_decoder_max_frames(s_flac) * audf_frame_bytes(audf_decoder_fmt(s_flac), channels) >
+        kPcmBytes) {
+        if (note) *note = "FLAC block size too large";
+        return false;
+    }
+    s_setup.rate = audf_flac_decoder_rate(s_flac);
+    s_setup.channels = channels;
+    return true;
+}
+
+static void flac_close() {
+    audf_decoder_destroy(s_flac);
+    s_flac = nullptr;
+}
+
+static void write_flac(const uint8_t *data, std::size_t len) {
+    std::size_t frames = 0;
+    const esp_err_t err = audf_decoder_decode(s_flac, data, len, s_pcm, &frames);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "FLAC decode: %s", esp_err_to_name(err));
+        return;
+    }
+    const std::size_t samples = frames * s_channels;
+    if (audf_decoder_fmt(s_flac) == AUDF_FMT_S32) {
+        audf_convert_to_pcm(s_pcm, AUDF_FMT_S32, s_pcm, AUDF_PCM_S24, samples);
+        write_pcm(s_pcm, samples * 3);
+    } else {
+        write_pcm(s_pcm, samples * sizeof(int16_t));
+    }
+}
+
 static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *note) {
     s_setup = {};
     s_setup.codec = track.codec;
@@ -490,6 +543,13 @@ static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *n
             return false;
         }
         s_mode = Mode::PendingAac;
+        return true;
+    case CodecId::Flac:
+        if (!flac_open(track, note)) {
+            flac_close();
+            return false;
+        }
+        s_mode = Mode::Flac;
         return true;
     case CodecId::Opus:
         if (!prepare_opus(track, &s_setup, note)) return false;
@@ -553,6 +613,7 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
     s_rate = s_setup.rate;
     s_channels = s_setup.channels;
     s_bits = track.codec == CodecId::Pcm ? bits : 16;
+    if (s_mode == Mode::Flac && audf_decoder_fmt(s_flac) == AUDF_FMT_S32) s_bits = 24;
 
     s_content = content;
     const esp_err_t err = audio_output_open(s_rate, s_bits, s_channels, s_content);
@@ -561,6 +622,7 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
         decoder_close();
         adpcm_close();
         aac_close();
+        flac_close();
         s_mode = Mode::Pcm;
         if (note) *note = std::string("audio unavailable: ") + esp_err_to_name(err);
         return false;
@@ -588,6 +650,7 @@ void audio_decoder_close() {
     decoder_close();
     adpcm_close();
     aac_close();
+    flac_close();
     s_mode = Mode::Pcm;
     if (was_running) audio_output_close();
 }
@@ -602,6 +665,9 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
         return;
     case Mode::Aac:
         write_aac(data, len);
+        return;
+    case Mode::Flac:
+        write_flac(data, len);
         return;
     case Mode::Adpcm:
         write_adpcm(data, len);

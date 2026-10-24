@@ -22,6 +22,7 @@ enum class CodecId {
     AdpcmIma,
     Aac,
     Opus,
+    Flac,
     Unsupported,
 };
 
@@ -166,6 +167,7 @@ inline const char *codec_name(CodecId codec) {
     case CodecId::AdpcmIma: return "IMA ADPCM";
     case CodecId::Aac: return "AAC";
     case CodecId::Opus: return "Opus";
+    case CodecId::Flac: return "FLAC";
     case CodecId::Unsupported: return "unsupported";
     default: return "none";
     }

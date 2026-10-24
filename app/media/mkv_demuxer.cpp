@@ -28,6 +28,7 @@ CodecId map_audio(medf_mkv_audio_codec_t codec) {
     case MEDF_MKV_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
     case MEDF_MKV_AUDIO_CODEC_AAC: return CodecId::Aac;
     case MEDF_MKV_AUDIO_CODEC_OPUS: return CodecId::Opus;
+    case MEDF_MKV_AUDIO_CODEC_FLAC: return CodecId::Flac;
     case MEDF_MKV_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }

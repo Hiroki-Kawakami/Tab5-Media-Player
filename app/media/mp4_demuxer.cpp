@@ -27,6 +27,7 @@ CodecId map_audio(medf_mp4_audio_codec_t codec) {
     case MEDF_MP4_AUDIO_CODEC_MP3: return CodecId::Mp3;
     case MEDF_MP4_AUDIO_CODEC_AAC: return CodecId::Aac;
     case MEDF_MP4_AUDIO_CODEC_OPUS: return CodecId::Opus;
+    case MEDF_MP4_AUDIO_CODEC_FLAC: return CodecId::Flac;
     case MEDF_MP4_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }

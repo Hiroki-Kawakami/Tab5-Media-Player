@@ -39,6 +39,9 @@ submodule.
   HE-AAC v1/v2): fixed point and float split, the PIE kernels and chip facts,
   why PSRAM working set dominates, and how to check it against ffmpeg and the
   ISO conformance streams.
+- `esp-devkit/libs/audio_framework/docs/flac.md` — the in-house FLAC decoder:
+  scope, the error codes a frame-splitting caller relies on, speed, and the
+  MD5 check against the IETF test files.
 - `esp-devkit/libs/media_framework/README.md` — the read-ahead buffer, tags and
   the demuxers (`medf_*`); what each container's demuxer does is in its
   `docs/containers.md`.

@@ -2,15 +2,16 @@
 
 What plays today: MJPEG, H.264 or progressive MPEG-2 (up to 1280x720) in
 `*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
-audio, plus Opus in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
+audio, plus Opus and FLAC in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
 volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
 
 Audio-only files play too, in `AudioPlayerScreen` (see
-[Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus or PCM in MP4),
-`*.wav` (16/24/32-bit PCM or IMA ADPCM), and `*.mp3` / `*.aac` as elementary
-streams. `.opus`/Ogg is deliberately left out for now.
+[Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus, FLAC or PCM in
+MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, and `*.mp3` / `*.aac`
+as elementary streams. `.opus`/Ogg, and with it Ogg FLAC, is deliberately left
+out for now.
 
 Both screens play the files of one directory, or of an `.m3u`/`.m3u8`, in
 order (see [Playlists](#playlists)).
@@ -28,7 +29,7 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 medf_buffer           │           └─▶ present
-  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus) ──▶ audio_output
+  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus / FLAC) ──▶ audio_output
 ```
 
 | path | role |
@@ -403,7 +404,7 @@ than the browser second guessing the extension.
   - The reader's "produced something this pass" guard, which stops an empty
     file from seeking to 0 forever, used to count video packets only. An
     audio-only file therefore stopped at the end however loop was set.
-- **WAV, MP3 and ADTS AAC** have demuxers of their own in `media_framework`
+- **WAV, FLAC, MP3 and ADTS AAC** have demuxers of their own in `media_framework`
   (see its `docs/containers.md`). WAV packets are whole IMA ADPCM blocks,
   because `audio_decoder` splits ADPCM by `block_align`.
 
@@ -877,6 +878,26 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
   in ffmpeg and libsndfile), not alternating nibbles. MS ADPCM is not
   supported. A `block_align` that is 0, not a multiple of 4 bytes per
   channel, or decodes to more than the 64 KB PCM buffer is rejected at open.
+- **FLAC is decoded by esp-devkit's `audf_flac`, on both targets**, mono or
+  stereo up to 24 bits. 17-24-bit streams go to `audio_output` as packed 24-bit
+  rather than being narrowed, so an output without the BSP's 16-bit DSP chain
+  (USB Audio) gets every bit; the simulator's SDL output only opens 16-bit, so
+  those streams are silent there, as 24-bit WAV is. A block that decodes to
+  more than the 64 KB PCM buffer (16384 samples of 16-bit stereo, 8192 of
+  24-bit) is rejected at open. Decoder details:
+  [`esp-devkit/libs/audio_framework/docs/flac.md`](../esp-devkit/libs/audio_framework/docs/flac.md).
+- **`flacbench` times `audf_flac` on the device.** It needs a build with
+  `FLAC_BENCH_DIR` naming a directory with `cd.flac` and `hires.flac` (native
+  FLAC files, e.g. 44.1 kHz/16-bit and 96 kHz/24-bit stereo from
+  `esp-devkit/libs/audio_framework/test/make_flac_material.sh`):
+
+  ```sh
+  nix develop -c idf.py -C esp32p4 -B esp32p4/build-bench-flac \
+      -DFLAC_BENCH_DIR=/path/to/clips -p <port> flash
+  ```
+
+  `flacbench <loops> [hires] [internal]` prints cycles per frame and the share
+  of a core; `internal` allocates the decoder in internal RAM.
 - **Opus is MKV and MP4 only** (ffmpeg cannot mux it into AVI) and decodes at
   48 kHz. Only channel mapping family 0 (mono or stereo) is accepted. The
   OpusHead pre-skip is not applied on the device.

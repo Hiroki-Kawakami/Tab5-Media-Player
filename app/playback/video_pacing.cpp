@@ -12,7 +12,7 @@
 #include <algorithm>
 
 static constexpr int kVideoSlots = 64;
-static constexpr int kMjpegVideoSlots = 4;
+static constexpr int kMjpegVideoSlots = 5;
 static constexpr int64_t kKeyframeSkipUs = 500000;
 static constexpr int kKeyframeSkipIntervals = 5;
 static constexpr int kBacklogSkipIntervals = 3;
@@ -110,6 +110,7 @@ static void show(int slot, int64_t due_us = 0) {
     }
     player_core.next_us = s_video[slot].pts_us + player_core.interval_us;
     xSemaphoreGive(player_core.lock);
+    keep_for_repaint(slot);
     submit(slot, true, due_us);
     s_want_poster = false;
 }
@@ -224,7 +225,6 @@ bool video_pacing_wants_poster() {
 
 void video_pacing_repaint() {
     if (!video_presenter_needs_source() || s_repaint_slot < 0) return;
-    if (player_core.state == PlayerState::Playing) return;
     submit(s_repaint_slot, true, 0);
 }
 
@@ -232,7 +232,6 @@ void video_pacing_step_poster() {
     int slot = -1;
     if (xQueueReceive(s_ready, &slot, pdMS_TO_TICKS(20)) != pdTRUE) return;
     slot_acquire(slot);
-    keep_for_repaint(slot);
     take_seek_frame(slot);
     if (!before(s_video[slot].pts_us, player_core.next_us)) {
         show(slot);
@@ -252,7 +251,6 @@ void video_pacing_step() {
             return;
         }
         slot_acquire(s_pending_slot);
-        keep_for_repaint(s_pending_slot);
         take_seek_frame(s_pending_slot);
         s_have_pending = true;
     }

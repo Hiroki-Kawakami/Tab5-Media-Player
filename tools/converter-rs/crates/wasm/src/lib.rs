@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
@@ -21,7 +21,7 @@ use tab5conv_core::thumbnail::{Cover, Thumbnail};
 use tab5conv_core::video::mjpeg::Settings as MjpegSettings;
 use tab5conv_core::video::{Color, VideoCodec, VideoPlan};
 use tab5conv_core::yuv::{Output, SourceColor};
-use tab5conv_core::{Specs, audio, color, pcm, preset, video};
+use tab5conv_core::{Specs, audio, color, pcm, preset, summary, video};
 use wasm_bindgen::prelude::*;
 
 pub mod mpeg2;
@@ -63,12 +63,25 @@ pub fn presets() -> String {
     )
 }
 
+fn table(
+    codecs: &[&'static str],
+    defaults: fn(&str) -> Option<tab5conv_core::spec::Defaults>,
+) -> BTreeMap<&'static str, BTreeMap<&'static str, String>> {
+    codecs
+        .iter()
+        .filter(|&&codec| codec != "h264")
+        .map(|&codec| {
+            let keys = defaults(codec).expect("known codec");
+            (codec, keys.into_iter().collect())
+        })
+        .collect()
+}
+
 #[wasm_bindgen]
-pub fn help() -> String {
+pub fn defaults() -> String {
     json(&serde_json::json!({
-        "preset": preset::help(),
-        "video": video::HELP,
-        "audio": audio::HELP,
+        "video": table(&video::CODECS, video::defaults),
+        "audio": table(&audio::CODECS, audio::defaults),
     }))
 }
 
@@ -239,6 +252,8 @@ struct PlanInfo {
     applied: serde_json::Value,
     duration: Option<f64>,
     video_label: String,
+    source_parts: Vec<String>,
+    output_parts: Vec<String>,
     video_index: u32,
     video_codec: &'static str,
     picture: PictureInfo,
@@ -305,6 +320,8 @@ fn plan_info(info: &MediaInfo, planned: &Planned) -> PlanInfo {
             source.display_height.round(),
             planned.video.label
         ),
+        source_parts: summary::source(info),
+        output_parts: summary::output(info, &planned.video, &planned.audio),
         video_index: planned.video.index,
         video_codec: match planned.video.codec {
             VideoCodec::H264(_) => "h264",

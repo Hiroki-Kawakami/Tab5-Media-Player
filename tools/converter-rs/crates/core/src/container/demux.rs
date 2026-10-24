@@ -242,6 +242,7 @@ impl Info {
             duration: self.duration,
             video: media::Video {
                 index: track.index,
+                codec_name: track.codec.name().into(),
                 display_width,
                 display_height,
                 fps: video.frame_rate,

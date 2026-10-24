@@ -74,6 +74,10 @@ impl Tools {
         &self.ffmpeg
     }
 
+    pub fn ffprobe(&self) -> &Path {
+        &self.ffprobe
+    }
+
     pub fn version(&self) -> Result<String> {
         let output = capture(&self.ffmpeg, &["-version".as_ref()])?;
         let text = String::from_utf8_lossy(&output.stdout);

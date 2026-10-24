@@ -36,6 +36,12 @@ static PRESETS: [Preset; 4] = [
 
 pub const DEFAULT: &str = "default";
 
+const EXCLUSIVE: [&[&[&str]]; 3] = [
+    &[&["width", "height"], &["long", "short"]],
+    &[&["fps"], &["maxfps"]],
+    &[&["crf", "qscale", "vbr"], &["bitrate"]],
+];
+
 pub fn all() -> &'static [Preset] {
     &PRESETS
 }
@@ -44,8 +50,9 @@ pub fn help() -> String {
     let mut text = String::from(
         "--preset <name>\n\n\
          A preset sets --video and --audio. An explicit --video or --audio with the\n\
-         same codec adds to the preset's keys and wins on conflicts; one with another\n\
-         codec replaces the preset's side.\n\n",
+         same codec adds to the preset's keys and wins on conflicts, also against the\n\
+         keys it excludes (width/height and long/short, fps and maxfps, bitrate and\n\
+         crf/qscale/vbr); one with another codec replaces the preset's side.\n\n",
     );
     for preset in &PRESETS {
         text.push_str(&format!(
@@ -66,7 +73,7 @@ pub fn find(name: &str) -> Result<&'static Preset> {
 fn combine(base: &str, explicit: Option<&str>) -> Result<Spec> {
     let base = Spec::parse(base)?;
     Ok(match explicit {
-        Some(text) => base.merged(Spec::parse(text)?),
+        Some(text) => base.merged(Spec::parse(text)?, &EXCLUSIVE),
         None => base,
     })
 }
@@ -91,6 +98,7 @@ mod tests {
     fn every_preset_plans() {
         let source = media::Video {
             index: 0,
+            codec_name: "h264".into(),
             display_width: 1920.0,
             display_height: 1080.0,
             fps: Rate::new(60, 1),
@@ -117,6 +125,20 @@ mod tests {
         assert_eq!(
             tiny.video(Some("h264,crf=20,maxfps=24")).unwrap().to_text(),
             "h264,long=640,short=360,crf=20,maxfps=24"
+        );
+        assert_eq!(
+            tiny.video(Some("h264,width=800,fps=24,bitrate=1M"))
+                .unwrap()
+                .to_text(),
+            "h264,width=800,fps=24,bitrate=1M"
+        );
+        assert_eq!(
+            find("quality")
+                .unwrap()
+                .video(Some("mjpeg,fps=24"))
+                .unwrap()
+                .to_text(),
+            "mjpeg,long=1280,short=720,quality=80,bitrate=40M,fps=24"
         );
         assert_eq!(tiny.video(Some("mjpeg")).unwrap().to_text(), "mjpeg");
         assert_eq!(tiny.audio(Some("mp3")).unwrap().to_text(), "mp3");

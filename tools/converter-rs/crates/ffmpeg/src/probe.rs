@@ -112,6 +112,7 @@ fn video_info(stream: &Stream) -> Result<Video> {
 
     Ok(Video {
         index: stream.index,
+        codec_name: stream.codec_name.clone(),
         display_width,
         display_height,
         fps,

@@ -8,8 +8,8 @@ import { ask, open } from "@tauri-apps/plugin-dialog";
 
 import type {
   Backend,
+  Defaults,
   DropHandlers,
-  Help,
   Input,
   Outcome,
   Plan,
@@ -21,6 +21,7 @@ import type {
 interface ToolsStatus {
   configured: string | null;
   path: string | null;
+  probe: string | null;
   version: string | null;
   error: string | null;
 }
@@ -31,14 +32,16 @@ const VIDEO_EXTENSIONS = [
 ];
 
 function toStatus(tools: ToolsStatus): Status {
-  const where = tools.configured ? "set in the app" : "found automatically";
+  const paths = [tools.path, tools.probe].filter((p): p is string => !!p);
   if (tools.version) {
-    return { ok: true, text: tools.version, detail: `${tools.path} (${where})` };
+    const where = tools.configured ? "in the chosen folder" : "found";
+    return { ok: true, text: tools.version, title: `${tools.version} ${where}`, lines: paths };
   }
   return {
     ok: false,
-    text: tools.error ?? "ffmpeg is not available",
-    detail: tools.path ?? "Install ffmpeg, or choose the folder that contains ffmpeg and ffprobe.",
+    text: "ffmpeg not available",
+    title: tools.error ?? "ffmpeg is not available",
+    lines: paths.length > 0 ? paths : ["Install ffmpeg, or choose the folder that contains ffmpeg and ffprobe."],
   };
 }
 
@@ -49,12 +52,13 @@ function toInput(path: string): Input {
 export class NativeBackend implements Backend {
   readonly name = "native";
   readonly outputs = "folder";
+  readonly writes = { mpeg2Bitrate: true, openGop: true, mp3: true };
   private readonly listeners = new Map<string, (seconds: number) => void>();
   private readonly ready: Promise<unknown>;
 
   readonly actions = [
     {
-      label: "Choose ffmpeg folder…",
+      label: "Choose folder…",
       run: async (): Promise<Status | null> => {
         const dir = await open({ directory: true, title: "Folder with ffmpeg and ffprobe" });
         if (typeof dir !== "string") return null;
@@ -62,7 +66,7 @@ export class NativeBackend implements Backend {
       },
     },
     {
-      label: "Find ffmpeg automatically",
+      label: "Find automatically",
       run: async (): Promise<Status | null> =>
         toStatus(await invoke<ToolsStatus>("set_ffmpeg_dir", { dir: null })),
     },
@@ -82,8 +86,8 @@ export class NativeBackend implements Backend {
     return invoke("presets");
   }
 
-  help(): Promise<Help> {
-    return invoke("help");
+  defaults(): Promise<Defaults> {
+    return invoke("defaults");
   }
 
   async pickInputs(): Promise<Input[]> {
@@ -120,6 +124,11 @@ export class NativeBackend implements Backend {
 
   plan(inputs: Input[], settings: Settings): Promise<Plan> {
     return invoke("plan", { inputs: inputs.map((i) => i.key), settings });
+  }
+
+  async thumbnail(input: Input): Promise<string | null> {
+    const jpeg = await invoke<ArrayBuffer>("thumbnail", { input: input.key });
+    return URL.createObjectURL(new Blob([jpeg], { type: "image/jpeg" }));
   }
 
   async convert(

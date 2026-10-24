@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use crate::spec::{Spec, positive_int};
+use crate::spec::{Defaults, Spec, positive_int};
 
 pub const KEYS: [&str; 5] = ["width", "height", "long", "short", "scale"];
 
@@ -89,6 +89,15 @@ pub struct Resize {
     pub height: u32,
     pub scaled_width: u32,
     pub scaled_height: u32,
+}
+
+pub fn defaults(constraints: &Constraints) -> Defaults {
+    let mut keys = vec![("long", constraints.default_long.to_string())];
+    if let Some(short) = constraints.default_short {
+        keys.push(("short", short.to_string()));
+    }
+    keys.push(("scale", "contain".into()));
+    keys
 }
 
 impl SizeSpec {

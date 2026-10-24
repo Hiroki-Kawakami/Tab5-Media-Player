@@ -74,6 +74,23 @@ nix develop -c bash -c 'cd tools/converter-rs/crates/gui && cargo tauri build --
   talks to a `Backend` (`web/src/backend.ts`): `native.ts` calls the Tauri
   commands in `crates/gui`, and `mock.ts` fakes everything, so
   `npm run dev` and `?backend=mock` show the UI in a plain browser.
+- **The settings form only sends what the user changed.** It keeps its
+  changes as keys over the preset and sends them as `--video`/`--audio`
+  strings, so the preset merge above applies as in the CLI. To show the
+  value in effect it needs each codec's defaults: `video::defaults` and
+  `audio::defaults` in `core` (checked against an empty spec by their tests)
+  reach it through the `defaults` command and wasm export. The form repeats
+  `preset::EXCLUSIVE` (`web/src/settings.ts`) to show the merged values.
+- **The queue's chips come from `core/src/summary.rs`**, through `PlanItem`'s
+  `sourceParts`/`outputParts`, so both front ends describe a plan the same
+  way. The longer `video`/`audio` labels are the output chips' tooltip.
+- **Queue thumbnails are taken once, when a video is added**, one at a
+  time and independent of the settings. The app runs the cover art capture
+  (`tab5conv_ffmpeg::thumbnail`) with the default preset and
+  `jpeg,long=160`; the browser seeks a `<video>` element to the same time
+  (10 s, or half a shorter video) and draws it, since decoding up to that
+  point with WebCodecs would cost far more. A file the browser's `<video>`
+  cannot play keeps the placeholder icon.
 - **ffmpeg is still the user's, not bundled** (see
   [ffmpeg is a command](#ffmpeg-is-a-command-not-a-library)). An app
   started from Finder does not get the shell's `PATH`, so `location.rs`
@@ -286,8 +303,11 @@ played every rate down to 8 kHz, MPEG-2.5 included.
 them. Presets are plain spec strings run through the same parser, so they
 cannot drift from the options. An explicit spec with the same codec is merged
 over the preset's (its keys win), so `--preset tiny --video h264,crf=20`
-only changes the CRF. One with another codec replaces that side, because the
-preset's keys would not make sense for it. `default` names only the codecs,
+only changes the CRF. A key also removes the preset's keys it excludes
+(width/height against long/short, fps against maxfps, bitrate against
+crf/qscale/vbr; `EXCLUSIVE`), so `--preset tiny --video h264,fps=24` drops the
+preset's `maxfps` instead of failing. One with another codec replaces that
+side, because the preset's keys would not make sense for it. `default` names only the codecs,
 so it follows the codecs' own defaults when they change. The run prints the
 merged specs, so it is clear what was applied.
 

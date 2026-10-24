@@ -3,9 +3,18 @@
 
 use anyhow::Result;
 
-use crate::spec::{Spec, one_of, yes_no};
+use crate::spec::{Defaults, Spec, one_of, yes_no};
 
 pub const KEYS: [&str; 3] = ["rotate", "rotatewhen", "rotatemeta"];
+const DEFAULT_DEGREES: u32 = 90;
+
+pub fn defaults() -> Defaults {
+    vec![
+        ("rotate", DEFAULT_DEGREES.to_string()),
+        ("rotatewhen", "landscape".into()),
+        ("rotatemeta", "yes".into()),
+    ]
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum When {
@@ -37,7 +46,7 @@ fn degrees(value: &str) -> Result<u32> {
 
 impl RotationSpec {
     pub fn take(spec: &mut Spec) -> Result<Self> {
-        let degrees = spec.take("rotate", degrees)?.unwrap_or(90);
+        let degrees = spec.take("rotate", degrees)?.unwrap_or(DEFAULT_DEGREES);
         let when = match spec.take("rotatewhen", |v| {
             one_of(v, &["landscape", "portrait", "always"])
         })? {

@@ -3152,7 +3152,7 @@ dependencies = [
 
 [[package]]
 name = "tab5conv"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3162,7 +3162,7 @@ dependencies = [
 
 [[package]]
 name = "tab5conv-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "tempfile",
@@ -3170,7 +3170,7 @@ dependencies = [
 
 [[package]]
 name = "tab5conv-ffmpeg"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3181,7 +3181,7 @@ dependencies = [
 
 [[package]]
 name = "tab5conv-gui"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -3196,7 +3196,7 @@ dependencies = [
 
 [[package]]
 name = "tab5conv-wasm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "js-sys",

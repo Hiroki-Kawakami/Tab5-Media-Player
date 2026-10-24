@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use crate::framerate::{self, FrameRateSpec, Rate};
 use crate::media;
 use crate::size::{self, Constraints, Resize, SizeSpec};
-use crate::spec::Spec;
+use crate::spec::{Defaults, Spec};
 
 pub const HELP: &str = "\
 --video <codec>[,key=value]...
@@ -84,6 +84,21 @@ const DECODER_LIMITS: Constraints = Constraints {
     default_long: 640,
     default_short: None,
 };
+
+pub const CODECS: [&str; 3] = ["mjpeg", "mpeg2", "h264"];
+
+pub fn defaults(codec: &str) -> Option<Defaults> {
+    let (constraints, keys) = match codec {
+        "h264" => (&DECODER_LIMITS, h264::defaults()),
+        "mpeg2" => (&DECODER_LIMITS, mpeg2::defaults()),
+        "mjpeg" => (&mjpeg::LIMITS, mjpeg::defaults()),
+        _ => return None,
+    };
+    let mut all = size::defaults(constraints);
+    all.extend(framerate::defaults());
+    all.extend(keys);
+    Some(all)
+}
 
 pub struct VideoPlan {
     pub index: u32,
@@ -228,6 +243,7 @@ mod tests {
     pub fn source() -> media::Video {
         media::Video {
             index: 0,
+            codec_name: "h264".into(),
             display_width: 1920.0,
             display_height: 1080.0,
             fps: Rate::new(30000, 1001),
@@ -267,6 +283,36 @@ mod tests {
             assert_eq!(keyint(&p), 120);
         }
         assert!(parse("h264,fps=30,maxfps=30").is_err());
+    }
+
+    #[test]
+    fn defaults_match_an_empty_spec() {
+        let portrait = || media::Video {
+            display_width: 1080.0,
+            display_height: 1920.0,
+            ..source()
+        };
+        let describe = |plan: &VideoPlan| {
+            let codec = match &plan.codec {
+                VideoCodec::H264(p) => format!("{p:?}"),
+                VideoCodec::Mpeg2(p) => format!("{p:?}"),
+                VideoCodec::Mjpeg(s) => format!("{s:?}"),
+            };
+            format!("{} {codec} {:?}", plan.label, plan.picture.rotation)
+        };
+        for codec in CODECS {
+            let explicit: Vec<String> = defaults(codec)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            let explicit = format!("{codec},{}", explicit.join(","));
+            for video in [source(), portrait()] {
+                let bare = parse(codec).unwrap().plan(&video).unwrap();
+                let full = parse(&explicit).unwrap().plan(&video).unwrap();
+                assert_eq!(describe(&bare), describe(&full), "{explicit}");
+            }
+        }
     }
 
     #[test]

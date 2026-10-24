@@ -5,7 +5,7 @@ use std::fmt;
 
 use anyhow::{Context, Result, bail};
 
-use crate::spec::Spec;
+use crate::spec::{Defaults, Spec};
 
 pub const KEYS: [&str; 2] = ["fps", "maxfps"];
 const DEFAULT_MAX: Rate = Rate { num: 30, den: 1 };
@@ -92,7 +92,11 @@ impl fmt::Display for Rate {
     }
 }
 
-fn describe(fps: f64) -> String {
+pub fn defaults() -> Defaults {
+    vec![("maxfps", DEFAULT_MAX.to_string())]
+}
+
+pub(crate) fn describe(fps: f64) -> String {
     let text = format!("{fps:.3}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }

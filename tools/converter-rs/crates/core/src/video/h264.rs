@@ -5,11 +5,13 @@ use anyhow::{Result, bail};
 
 use super::{Color, DECODER_LIMITS, PictureSpec, VideoCodec, VideoPlan};
 use crate::media;
-use crate::spec::{Spec, int_in, one_of, quantity, seconds};
+use crate::spec::{Defaults, Spec, int_in, one_of, quantity, seconds};
 
 pub const KEYS: [&str; 5] = ["profile", "crf", "bitrate", "keyint", "preset"];
 const DEFAULT_CRF: u32 = 32;
 const DEFAULT_KEYINT: f64 = 4.0;
+const DEFAULT_PROFILE: Profile = Profile::Main;
+const DEFAULT_PRESET: &str = "medium";
 const PRESETS: [&str; 10] = [
     "ultrafast",
     "superfast",
@@ -22,6 +24,15 @@ const PRESETS: [&str; 10] = [
     "veryslow",
     "placebo",
 ];
+
+pub fn defaults() -> Defaults {
+    vec![
+        ("profile", DEFAULT_PROFILE.name().into()),
+        ("crf", DEFAULT_CRF.to_string()),
+        ("keyint", DEFAULT_KEYINT.to_string()),
+        ("preset", DEFAULT_PRESET.into()),
+    ]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Profile {
@@ -75,7 +86,7 @@ impl H264 {
         let picture = PictureSpec::take(spec, &DECODER_LIMITS)?;
         let profile = spec
             .take("profile", Profile::parse)?
-            .unwrap_or(Profile::Main);
+            .unwrap_or(DEFAULT_PROFILE);
         let crf = spec.take("crf", |v| int_in(v, 0, 51))?;
         let bitrate = spec.take("bitrate", quantity)?;
         let rate = match (crf, bitrate) {
@@ -86,7 +97,7 @@ impl H264 {
         let keyint = spec.take("keyint", seconds)?.unwrap_or(DEFAULT_KEYINT);
         let preset = spec
             .take("preset", |v| one_of(v, &PRESETS))?
-            .unwrap_or("medium");
+            .unwrap_or(DEFAULT_PRESET);
         Ok(Self {
             picture,
             profile,

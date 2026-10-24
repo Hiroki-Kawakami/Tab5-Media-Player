@@ -25,6 +25,23 @@ pub use probe::probe;
 pub use process::{Cancelled, Monitor, Tools};
 pub use tab5conv_core::mjpeg::Stats;
 
+pub fn thumbnail(tools: &Tools, input: &Path, specs: &Specs) -> Result<Option<Vec<u8>>> {
+    let info = probe::probe(tools, input)?;
+    let video = specs.video.plan(&info.video)?;
+    let Some(thumbnail) = specs.thumbnail.plan(&video.picture, info.duration) else {
+        return Ok(None);
+    };
+    Capture {
+        tools,
+        input,
+        index: video.index,
+        picture: &video.picture,
+        thumbnail: &thumbnail,
+    }
+    .run()
+    .map(Some)
+}
+
 pub struct Conversion {
     tools: Tools,
     input: PathBuf,

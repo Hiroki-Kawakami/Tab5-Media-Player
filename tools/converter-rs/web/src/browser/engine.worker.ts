@@ -6,7 +6,7 @@ import init, {
   Job,
   Media,
   YuvScaler,
-  help,
+  defaults,
   presets,
   resolve,
   rgbaToYuv420,
@@ -63,6 +63,8 @@ interface PlanInfo {
   applied: { preset: string; video: string; audio: string };
   duration: number | null;
   videoLabel: string;
+  sourceParts: string[];
+  outputParts: string[];
   videoIndex: number;
   videoCodec: "mjpeg" | "h264" | "mpeg2";
   picture: {
@@ -341,7 +343,13 @@ async function plan(files: File[], keys: string[], settings: Settings): Promise<
         media.plan(settings.preset, settings.video, settings.audio, await aacRates),
       );
       await checkSupport(media, info, JSON.parse(media.tracks()));
-      Object.assign(item, { video: info.videoLabel, audio: info.audio.label, duration: info.duration });
+      Object.assign(item, {
+        video: info.videoLabel,
+        audio: info.audio.label,
+        sourceParts: info.sourceParts,
+        outputParts: info.outputParts,
+        duration: info.duration,
+      });
     } catch (err) {
       item.error = err instanceof Error ? err.message : String(err);
     } finally {
@@ -756,8 +764,8 @@ async function handle<M extends keyof Requests>(
   switch (method) {
     case "presets":
       return JSON.parse(presets());
-    case "help":
-      return JSON.parse(help());
+    case "defaults":
+      return JSON.parse(defaults());
     case "plan": {
       const a = args as Requests["plan"]["args"];
       return plan(a.files, a.keys, a.settings);

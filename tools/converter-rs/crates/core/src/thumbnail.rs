@@ -222,6 +222,7 @@ mod tests {
             .unwrap()
             .plan(&media::Video {
                 index: 0,
+                codec_name: "h264".into(),
                 display_width: width,
                 display_height: height,
                 fps: Rate::new(30, 1),

@@ -32,14 +32,23 @@ impl Spec {
         Ok(Self { codec, options })
     }
 
-    pub fn merged(self, over: Spec) -> Spec {
+    pub fn merged(self, over: Spec, exclusive: &[&[&[&str]]]) -> Spec {
         if self.codec != over.codec {
             return over;
         }
+        let overridden = |key: &str| {
+            over.options.iter().any(|(k, _)| {
+                k == key
+                    || exclusive.iter().any(|choices| {
+                        let choice = |key: &str| choices.iter().position(|c| c.contains(&key));
+                        matches!((choice(k), choice(key)), (Some(a), Some(b)) if a != b)
+                    })
+            })
+        };
         let mut options: Vec<(String, String)> = self
             .options
             .into_iter()
-            .filter(|(key, _)| !over.options.iter().any(|(k, _)| k == key))
+            .filter(|(key, _)| !overridden(key))
             .collect();
         options.extend(over.options);
         Spec {
@@ -129,6 +138,18 @@ pub fn quantity(value: &str) -> Result<u64> {
     Ok(v)
 }
 
+pub type Defaults = Vec<(&'static str, String)>;
+
+pub fn quantity_text(value: u64) -> String {
+    if value >= 1_000_000 && value.is_multiple_of(1000) {
+        format!("{}M", value as f64 / 1e6)
+    } else if value >= 1000 && value.is_multiple_of(1000) {
+        format!("{}k", value / 1000)
+    } else {
+        value.to_string()
+    }
+}
+
 pub fn seconds(value: &str) -> Result<f64> {
     let v: f64 = value.parse().context("not a number")?;
     if !(v.is_finite() && v > 0.0) {
@@ -169,9 +190,13 @@ mod tests {
     #[test]
     fn merges_over_the_same_codec_only() {
         let base = || Spec::parse("h264,long=640,maxfps=15").unwrap();
-        let merged = base().merged(Spec::parse("h264,crf=20,maxfps=24").unwrap());
-        assert_eq!(merged.to_text(), "h264,long=640,crf=20,maxfps=24");
-        let replaced = base().merged(Spec::parse("mjpeg,quality=90").unwrap());
+        let merge = |text| base().merged(Spec::parse(text).unwrap(), &[&[&["fps"], &["maxfps"]]]);
+        assert_eq!(
+            merge("h264,crf=20,maxfps=24").to_text(),
+            "h264,long=640,crf=20,maxfps=24"
+        );
+        assert_eq!(merge("h264,fps=24").to_text(), "h264,long=640,fps=24");
+        let replaced = merge("mjpeg,quality=90");
         assert_eq!(replaced.to_text(), "mjpeg,quality=90");
     }
 
@@ -211,5 +236,16 @@ mod tests {
         assert!(quantity("k").is_err());
         assert!(quantity("1.2.3k").is_err());
         assert!(quantity("fast").is_err());
+        for (value, text) in [
+            (800, "800"),
+            (128_000, "128k"),
+            (44_100, "44100"),
+            (24_000_000, "24M"),
+            (1_500_000, "1.5M"),
+            (1_048_576, "1048576"),
+        ] {
+            assert_eq!(quantity_text(value), text);
+            assert_eq!(quantity(text).unwrap(), value);
+        }
     }
 }

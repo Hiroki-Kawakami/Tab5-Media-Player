@@ -193,6 +193,7 @@ mod tests {
     fn source() -> media::Video {
         media::Video {
             index: 0,
+            codec_name: "h264".into(),
             display_width: 1920.0,
             display_height: 1080.0,
             fps: Rate::new(30000, 1001),

@@ -8,7 +8,7 @@ use super::{Color, PictureSpec, VideoCodec, VideoPlan};
 use crate::jpeg::{HuffmanMode, Limits};
 use crate::media;
 use crate::size::Constraints;
-use crate::spec::{Spec, int_in, one_of, quantity, yes_no};
+use crate::spec::{Defaults, Spec, int_in, one_of, quantity, quantity_text, yes_no};
 
 pub const KEYS: [&str; 10] = [
     "quality",
@@ -28,7 +28,7 @@ const DEFAULT_QUALITY: u8 = 75;
 const DEFAULT_MIN_QUALITY: u8 = 30;
 const DEFAULT_BITRATE: u64 = 24_000_000;
 
-static LIMITS: Constraints = Constraints {
+pub(super) static LIMITS: Constraints = Constraints {
     align: 2,
     max_width: 2560,
     max_height: u32::MAX,
@@ -37,6 +37,20 @@ static LIMITS: Constraints = Constraints {
     default_long: 1280,
     default_short: Some(720),
 };
+
+pub fn defaults() -> Defaults {
+    let mut keys = vec![
+        ("quality", DEFAULT_QUALITY.to_string()),
+        ("minquality", DEFAULT_MIN_QUALITY.to_string()),
+        ("bitrate", quantity_text(DEFAULT_BITRATE)),
+        ("buffer", PLAYER_READ_AHEAD.to_string()),
+        ("maxframe", PLAYER_MAX_FRAME.to_string()),
+        ("huffman", "optimal".into()),
+        ("dedup", "yes".into()),
+    ];
+    keys.extend(rotation::defaults());
+    keys
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {

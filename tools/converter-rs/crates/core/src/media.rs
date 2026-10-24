@@ -5,6 +5,7 @@ use crate::framerate::Rate;
 
 pub struct Video {
     pub index: u32,
+    pub codec_name: String,
     pub display_width: f64,
     pub display_height: f64,
     pub fps: Option<Rate>,

@@ -5,7 +5,7 @@
 
 mod location;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tab5conv_core::container::Container;
 use tab5conv_core::video::VideoCodec;
-use tab5conv_core::{Specs, audio, preset, video};
+use tab5conv_core::{Specs, audio, preset, summary, video};
 use tab5conv_ffmpeg::{Cancelled, Conversion, Monitor, Tools, batch};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+const THUMBNAIL: &str = "jpeg,long=160";
 
 struct App {
     configured: Mutex<Option<PathBuf>>,
@@ -88,19 +89,32 @@ fn presets() -> Vec<PresetInfo> {
         .collect()
 }
 
+type CodecDefaults = BTreeMap<&'static str, BTreeMap<&'static str, String>>;
+
 #[derive(Serialize)]
-struct Help {
-    preset: String,
-    video: &'static str,
-    audio: &'static str,
+struct Defaults {
+    video: CodecDefaults,
+    audio: CodecDefaults,
+}
+
+fn table(
+    codecs: &[&'static str],
+    defaults: fn(&str) -> Option<tab5conv_core::spec::Defaults>,
+) -> CodecDefaults {
+    codecs
+        .iter()
+        .map(|&codec| {
+            let keys = defaults(codec).expect("known codec");
+            (codec, keys.into_iter().collect())
+        })
+        .collect()
 }
 
 #[tauri::command]
-fn help() -> Help {
-    Help {
-        preset: preset::help(),
-        video: video::HELP,
-        audio: audio::HELP,
+fn defaults() -> Defaults {
+    Defaults {
+        video: table(&video::CODECS, video::defaults),
+        audio: table(&audio::CODECS, audio::defaults),
     }
 }
 
@@ -109,6 +123,7 @@ fn help() -> Help {
 struct ToolsStatus {
     configured: Option<String>,
     path: Option<String>,
+    probe: Option<String>,
     version: Option<String>,
     error: Option<String>,
 }
@@ -125,21 +140,25 @@ fn status(state: &App) -> ToolsStatus {
         return ToolsStatus {
             configured,
             path: None,
+            probe: None,
             version: None,
             error: Some("ffmpeg and ffprobe were not found".into()),
         };
     };
     let path = Some(tools.ffmpeg().display().to_string());
+    let probe = Some(tools.ffprobe().display().to_string());
     match tools.version() {
         Ok(version) => ToolsStatus {
             configured,
             path,
+            probe,
             version: Some(version),
             error: None,
         },
         Err(err) => ToolsStatus {
             configured,
             path,
+            probe,
             version: None,
             error: Some(format!("{err:#}")),
         },
@@ -172,6 +191,8 @@ struct PlanItem {
     skip: Option<String>,
     video: Option<String>,
     audio: Option<String>,
+    source_parts: Option<Vec<String>>,
+    output_parts: Option<Vec<String>>,
     error: Option<String>,
     exists: bool,
     duration: Option<f64>,
@@ -228,6 +249,12 @@ fn plan_blocking(tools: &Tools, inputs: &[PathBuf], settings: &Settings) -> anyh
                                 conversion.video.label
                             )),
                             audio: Some(conversion.audio.label.clone()),
+                            source_parts: Some(summary::source(&conversion.info)),
+                            output_parts: Some(summary::output(
+                                &conversion.info,
+                                &conversion.video,
+                                &conversion.audio,
+                            )),
                             duration: conversion.info.duration,
                             ..item
                         }
@@ -262,6 +289,20 @@ async fn plan(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn thumbnail(state: State<'_, App>, input: String) -> Result<tauri::ipc::Response, String> {
+    let tools = state.tools()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let specs = Specs::resolve(preset::DEFAULT, None, None, Some(THUMBNAIL))?;
+        tab5conv_ffmpeg::thumbnail(&tools, Path::new(&input), &specs)?
+            .ok_or_else(|| anyhow::anyhow!("no thumbnail"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map(tauri::ipc::Response::new)
+    .map_err(|e| format!("{e:#}"))
 }
 
 #[derive(Serialize)]
@@ -363,10 +404,11 @@ fn cancel(state: State<'_, App>, key: String) {
 fn commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder.invoke_handler(tauri::generate_handler![
         presets,
-        help,
+        defaults,
         tools_status,
         set_ffmpeg_dir,
         plan,
+        thumbnail,
         convert,
         cancel
     ])
@@ -396,7 +438,7 @@ mod tests {
 
     use serde_json::{Value, json};
     use tauri::Listener;
-    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
     use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder};
     use tauri::webview::InvokeRequest;
     use tauri::{WebviewWindow, WebviewWindowBuilder};
@@ -465,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn presets_and_help() {
+    fn presets_and_defaults() {
         let (_app, webview) = app();
         let presets = invoke(&webview, "presets", json!({})).unwrap();
         let names: Vec<&str> = presets
@@ -475,8 +517,11 @@ mod tests {
             .map(|p| p["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, ["tiny", "small", "default", "quality"]);
-        let help = invoke(&webview, "help", json!({})).unwrap();
-        assert!(help["video"].as_str().unwrap().contains("--video"));
+        let defaults = invoke(&webview, "defaults", json!({})).unwrap();
+        assert_eq!(defaults["video"]["mjpeg"]["quality"], "75");
+        assert_eq!(defaults["video"]["h264"]["long"], "640");
+        assert_eq!(defaults["audio"]["aac"]["bitrate"], "160k");
+        assert_eq!(defaults["audio"]["none"], json!({}));
     }
 
     #[test]
@@ -489,6 +534,7 @@ mod tests {
             "{status}"
         );
         assert_eq!(status["path"], "ffmpeg");
+        assert_eq!(status["probe"], "ffprobe");
     }
 
     #[test]
@@ -521,6 +567,14 @@ mod tests {
                 .contains("H.264 main 320x240"),
             "{items:?}"
         );
+        assert_eq!(
+            items[0]["sourceParts"],
+            json!(["320×240 H.264", "30 fps", "0:01"])
+        );
+        assert_eq!(
+            items[0]["outputParts"],
+            json!(["320×240 H.264 crf 20", "30 fps", "no audio"])
+        );
         assert_eq!(items[0]["duration"], 1.0);
         assert_eq!(items[0]["exists"], false);
         assert!(
@@ -530,6 +584,26 @@ mod tests {
                 .contains("ffprobe failed"),
             "{items:?}"
         );
+    }
+
+    #[test]
+    fn thumbnail_is_a_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = source(dir.path(), 1);
+        let (_app, webview) = app();
+        let request = InvokeRequest {
+            cmd: "thumbnail".into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: LOCAL_URL.parse().unwrap(),
+            body: InvokeBody::Json(json!({ "input": input })),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        };
+        match get_ipc_response(&webview, request).unwrap() {
+            InvokeResponseBody::Raw(bytes) => assert_eq!(bytes[..2], [0xff, 0xd8]),
+            other => panic!("not raw bytes: {other:?}"),
+        }
     }
 
     #[test]

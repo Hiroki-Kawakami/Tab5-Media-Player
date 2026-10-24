@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Hiroki Kawakami
 
-import type { Help, Outcome, Plan, PresetInfo, Settings } from "../backend";
+import type { Defaults, Outcome, Plan, PresetInfo, Settings } from "../backend";
 
 export interface Requests {
   presets: { args: Record<string, never>; result: PresetInfo[] };
-  help: { args: Record<string, never>; result: Help };
+  defaults: { args: Record<string, never>; result: Defaults };
   plan: { args: { files: File[]; keys: string[]; settings: Settings }; result: Plan };
   convert: {
     args: { file: File; settings: Settings; temp: string };

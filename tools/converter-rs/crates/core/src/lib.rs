@@ -16,6 +16,7 @@ pub mod ratecontrol;
 pub mod resample;
 pub mod size;
 pub mod spec;
+pub mod summary;
 pub mod thumbnail;
 pub mod video;
 pub mod yuv;

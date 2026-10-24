@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 
 use crate::media;
-use crate::spec::{Spec, int_in, one_of, quantity};
+use crate::spec::{Defaults, Spec, int_in, one_of, quantity, quantity_text};
 
 pub const HELP: &str = "\
 --audio <codec>[,key=value]...
@@ -45,6 +45,21 @@ const MP3_MPEG1_KBPS: [u64; 14] = [
 const MP3_LSF_KBPS: [u64; 14] = [8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 const MP3_MPEG1_MIN_RATE: u32 = 32000;
 const BITRATE_TOLERANCE: f64 = 1.05;
+
+pub const CODECS: [&str; 3] = ["aac", "mp3", "none"];
+
+pub fn defaults(codec: &str) -> Option<Defaults> {
+    let bitrate = match codec {
+        "aac" => AAC_DEFAULT_BITRATE,
+        "mp3" => MP3_DEFAULT_BITRATE,
+        "none" => return Some(Vec::new()),
+        _ => return None,
+    };
+    Some(vec![
+        ("keep", "auto".into()),
+        ("bitrate", quantity_text(bitrate)),
+    ])
+}
 
 pub struct AudioPlan {
     pub label: String,
@@ -145,7 +160,7 @@ impl AudioPlan {
     }
 }
 
-fn describe(input: &media::Audio) -> String {
+pub(crate) fn describe(input: &media::Audio) -> String {
     match (input.codec_name.as_str(), input.profile.as_deref()) {
         ("aac", Some("LC")) => "AAC-LC".into(),
         ("aac", Some(p)) if p.starts_with("HE") => p.into(),
@@ -452,6 +467,36 @@ mod tests {
         match encoded(plan).0 {
             Codec::Aac { .. } => panic!("not MP3: {}", plan.label),
             codec => codec,
+        }
+    }
+
+    #[test]
+    fn defaults_match_an_empty_spec() {
+        let sources = || {
+            [
+                lc(),
+                input("mp3", None, 2, 48000),
+                input("opus", None, 6, 48000),
+            ]
+        };
+        for codec in CODECS {
+            let explicit: Vec<String> = defaults(codec)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            let explicit = [codec.to_string()]
+                .into_iter()
+                .chain(explicit)
+                .collect::<Vec<_>>()
+                .join(",");
+            for source in sources() {
+                assert_eq!(
+                    plan(codec, &source).label,
+                    plan(&explicit, &source).label,
+                    "{explicit}"
+                );
+            }
         }
     }
 

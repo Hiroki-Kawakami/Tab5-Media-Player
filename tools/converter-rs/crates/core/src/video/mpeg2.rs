@@ -5,12 +5,24 @@ use anyhow::{Result, bail};
 
 use super::{Color, DECODER_LIMITS, PictureSpec, VideoCodec, VideoPlan};
 use crate::media;
-use crate::spec::{Spec, int_in, one_of, quantity, seconds, yes_no};
+use crate::spec::{Defaults, Spec, int_in, one_of, quantity, seconds, yes_no};
 
 pub const KEYS: [&str; 6] = ["qscale", "bitrate", "bframes", "keyint", "gop", "hq"];
 const MAX_BFRAMES: u32 = 3;
 pub const MAX_GOP: u32 = 600;
 const DEFAULT_QSCALE: u32 = 8;
+const DEFAULT_BFRAMES: u32 = 2;
+const DEFAULT_KEYINT: f64 = 2.0;
+
+pub fn defaults() -> Defaults {
+    vec![
+        ("qscale", DEFAULT_QSCALE.to_string()),
+        ("bframes", DEFAULT_BFRAMES.to_string()),
+        ("keyint", DEFAULT_KEYINT.to_string()),
+        ("gop", "closed".into()),
+        ("hq", "yes".into()),
+    ]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Rate {
@@ -48,8 +60,8 @@ impl Mpeg2 {
         };
         let bframes = spec
             .take("bframes", |v| int_in(v, 0, MAX_BFRAMES))?
-            .unwrap_or(2);
-        let keyint = spec.take("keyint", seconds)?.unwrap_or(2.0);
+            .unwrap_or(DEFAULT_BFRAMES);
+        let keyint = spec.take("keyint", seconds)?.unwrap_or(DEFAULT_KEYINT);
         let closed_gop = spec
             .take("gop", |v| one_of(v, &["closed", "open"]))?
             .is_none_or(|gop| gop == "closed");

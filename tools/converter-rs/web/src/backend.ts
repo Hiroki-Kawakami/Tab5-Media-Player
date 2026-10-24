@@ -7,10 +7,9 @@ export interface PresetInfo {
   audio: string;
 }
 
-export interface Help {
-  preset: string;
-  video: string;
-  audio: string;
+export interface Defaults {
+  video: Record<string, Record<string, string>>;
+  audio: Record<string, Record<string, string>>;
 }
 
 export interface Settings {
@@ -26,6 +25,8 @@ export interface PlanItem {
   skip?: string | null;
   video?: string | null;
   audio?: string | null;
+  sourceParts?: string[] | null;
+  outputParts?: string[] | null;
   error?: string | null;
   exists: boolean;
   duration?: number | null;
@@ -49,7 +50,14 @@ export interface Input {
 export interface Status {
   ok: boolean;
   text: string;
-  detail?: string;
+  title?: string;
+  lines?: string[];
+}
+
+export interface Writes {
+  mpeg2Bitrate: boolean;
+  openGop: boolean;
+  mp3: boolean;
 }
 
 export interface Action {
@@ -65,14 +73,16 @@ export interface DropHandlers {
 export interface Backend {
   readonly name: string;
   readonly outputs: "folder" | "download";
+  readonly writes: Writes;
   readonly actions: Action[];
   status(): Promise<Status>;
   presets(): Promise<PresetInfo[]>;
-  help(): Promise<Help>;
+  defaults(): Promise<Defaults>;
   pickInputs(): Promise<Input[]>;
   pickOutdir(): Promise<string | null>;
   watchDrops(target: HTMLElement, handlers: DropHandlers): void;
   plan(inputs: Input[], settings: Settings): Promise<Plan>;
+  thumbnail(input: Input): Promise<string | null>;
   convert(
     input: Input,
     output: string,

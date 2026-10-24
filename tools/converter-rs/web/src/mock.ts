@@ -3,8 +3,8 @@
 
 import type {
   Backend,
+  Defaults,
   DropHandlers,
-  Help,
   Input,
   Outcome,
   Plan,
@@ -20,6 +20,29 @@ const PRESETS: PresetInfo[] = [
   { name: "default", video: "mjpeg", audio: "aac" },
   { name: "quality", video: "mjpeg,long=1280,short=720,maxfps=60,quality=80,bitrate=40M", audio: "aac" },
 ];
+const SIZE = { long: "640", scale: "contain", maxfps: "30" };
+const DEFAULTS: Defaults = {
+  video: {
+    mjpeg: {
+      ...SIZE,
+      long: "1280",
+      short: "720",
+      quality: "75",
+      minquality: "30",
+      bitrate: "24M",
+      buffer: "1048576",
+      maxframe: "1048576",
+      huffman: "optimal",
+      dedup: "yes",
+      rotate: "90",
+      rotatewhen: "landscape",
+      rotatemeta: "yes",
+    },
+    mpeg2: { ...SIZE, qscale: "8", bframes: "2", keyint: "2", gop: "closed", hq: "yes" },
+    h264: { ...SIZE, profile: "main", crf: "32", keyint: "4", preset: "medium" },
+  },
+  audio: { aac: { keep: "auto", bitrate: "160k" }, mp3: { keep: "auto", bitrate: "192k" }, none: {} },
+};
 const DURATION = 4;
 const STEP_MS = 100;
 
@@ -41,20 +64,21 @@ function stem(name: string): string {
 export class MockBackend implements Backend {
   readonly name = "mock";
   readonly outputs = "folder";
+  readonly writes = { mpeg2Bitrate: true, openGop: true, mp3: true };
   readonly actions = [];
   private readonly cancelled = new Set<string>();
   private picked = 0;
 
   async status(): Promise<Status> {
-    return { ok: true, text: "Mock backend", detail: "Nothing is converted" };
+    return { ok: true, text: "Mock backend", title: "Nothing is converted" };
   }
 
   async presets(): Promise<PresetInfo[]> {
     return PRESETS;
   }
 
-  async help(): Promise<Help> {
-    return { preset: "(mock) preset help", video: "(mock) video help", audio: "(mock) audio help" };
+  async defaults(): Promise<Defaults> {
+    return DEFAULTS;
   }
 
   async pickInputs(): Promise<Input[]> {
@@ -101,11 +125,25 @@ export class MockBackend implements Backend {
         output,
         video: `1920x1080 -> (mock) ${video}`,
         audio: `(mock) ${audio}`,
+        sourceParts: ["1920×1080 H.264", "29.97 fps", "0:04"],
+        outputParts: [`(mock) ${video.split(",")[0]}`, "29.97 fps", `(mock) ${audio.split(",")[0]}`],
         exists: input.name.includes("exists"),
         duration: DURATION,
       };
     });
     return { applied: { preset: preset.name, video, audio }, items };
+  }
+
+  async thumbnail(input: Input): Promise<string | null> {
+    if (input.name.includes("broken")) return null;
+    const canvas = new OffscreenCanvas(160, 90);
+    const ctx = canvas.getContext("2d")!;
+    const gradient = ctx.createLinearGradient(0, 0, 160, 90);
+    gradient.addColorStop(0, "#2b5ce6");
+    gradient.addColorStop(1, "#e6a82b");
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 160, 90);
+    return URL.createObjectURL(await canvas.convertToBlob({ type: "image/jpeg" }));
   }
 
   async convert(
@@ -121,7 +159,7 @@ export class MockBackend implements Backend {
       await new Promise((resolve) => setTimeout(resolve, STEP_MS));
     }
     if (input.name.includes("fail")) return { kind: "failed", message: "ffmpeg failed (mock)" };
-    return { kind: "done", report: [] };
+    return { kind: "done", report: ["mjpeg: (mock) 40 frames, 80.0 KiB average", "warning: (mock) 1 frames went over the budget"] };
   }
 
   async cancel(input: Input): Promise<void> {

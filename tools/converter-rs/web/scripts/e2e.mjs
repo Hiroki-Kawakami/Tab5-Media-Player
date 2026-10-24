@@ -69,17 +69,17 @@ try {
 
   await page.goto(`${url}?backend=mock`);
   await page.click("[data-ref=add]");
-  await page.waitForSelector(".row .badge:text('Ready')");
-  await page.fill("[data-ref=video]", "mjpeg,error=1");
-  await page.waitForSelector("[data-ref=applied].bad");
-  check(await page.isDisabled("[data-ref=convert]"), "mock: a bad spec disables Convert");
-  await page.fill("[data-ref=video]", "");
+  await page.waitForSelector(".qrow .st:text('Ready')");
+  await page.fill("#mbr", "error");
+  await page.waitForSelector("[data-ref=summary].bad");
+  check(await page.isDisabled("[data-ref=convert]"), "mock: a bad setting disables Convert");
+  await page.fill("#mbr", "");
   await page.waitForFunction(() => !document.querySelector("[data-ref=convert]").disabled);
   await page.click("[data-ref=convert]");
-  await page.waitForSelector(".row:nth-child(2) .badge:text-matches('Converting')");
+  await page.waitForSelector(".qrow:nth-child(2) .st:text-matches('Converting')");
   await page.click("[data-ref=cancel]");
-  await page.waitForSelector(".row:nth-child(2) .badge:text('Cancelled')");
-  const badges = await page.$$eval(".badge", (b) => b.map((x) => x.textContent));
+  await page.waitForSelector(".qrow:nth-child(2) .st:text('Cancelled')");
+  const badges = await page.$$eval(".qrow .st", (b) => b.map((x) => x.firstChild.textContent));
   check(badges.join() === "Done,Cancelled", `mock: convert then cancel (${badges})`);
 
   await page.goto(url);
@@ -91,7 +91,7 @@ try {
     await page.click("[data-ref=add]");
     await (await chooser).setFiles(list);
     await page.waitForFunction(
-      (n) => [...document.querySelectorAll(".row .badge")].filter((b) => /Ready|Cannot/.test(b.textContent)).length === n,
+      (n) => [...document.querySelectorAll(".qrow .st")].filter((b) => /Ready|Cannot/.test(b.textContent)).length === n,
       list.length,
       { timeout: 60_000 },
     );
@@ -99,23 +99,33 @@ try {
     const start = Date.now();
     await page.click("[data-ref=convert]");
     await page.waitForFunction(
-      () => [...document.querySelectorAll(".row .badge")].every((b) => /Done|Failed|Cannot/.test(b.textContent)),
+      () => [...document.querySelectorAll(".qrow .st")].every((b) => /Done|Failed|Cannot/.test(b.textContent)),
       null,
       { timeout: 600_000 },
     );
     console.log(`browser ${label} conversion: ${(Date.now() - start) / 1000} s`);
-    for (const row of await page.$$(".row")) {
-      const text = (await row.innerText()).split("\n");
-      check(text[1] === "Done", `browser ${label}: ${text[0]} ${text[1]}${text[1] === "Done" ? "" : ": " + text.slice(3).join(" ")}`);
+    const rows = await page.$$eval(".qrow", (items) =>
+      items.map((item) => ({
+        name: item.querySelector(".qname .n").textContent,
+        status: item.querySelector(".st").firstChild.textContent,
+        problem: item.querySelector(".qerr")?.textContent ?? "",
+      })),
+    );
+    for (const { name, status, problem } of rows) {
+      check(status === "Done", `browser ${label}: ${name} ${status}${status === "Done" ? "" : ": " + problem}`);
     }
     await new Promise((r) => setTimeout(r, 500));
     for (const d of downloads.slice(before)) await d.saveAs(join(dir, out, d.suggestedFilename()));
   };
   await convertAll(files, "out", "mjpeg");
   const mpeg2Files = ["hd.mp4", "portrait.mkv", "sd.webm", "long.mkv", "untagged.mp4", "rotated.mov"].map((n) => join(dir, n));
-  await page.selectOption("[data-ref=preset]", "small");
+  const pickPreset = async (name) => {
+    await page.click("[data-ref=preset]");
+    await page.click(`[data-preset=${name}]`);
+  };
+  await pickPreset("small");
   await convertAll(mpeg2Files, "mpeg2", "mpeg2");
-  await page.selectOption("[data-ref=preset]", "default");
+  await pickPreset("default");
 
   const long = join(dir, "long.mp4");
   ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=30:d=30", "-c:v", "libx264", "-preset", "ultrafast", long);
@@ -123,12 +133,12 @@ try {
   const again = page.waitForEvent("filechooser");
   await page.click("[data-ref=add]");
   await (await again).setFiles([long]);
-  await page.waitForSelector(".row .badge:text('Ready')", { timeout: 60_000 });
+  await page.waitForSelector(".qrow .st:text('Ready')", { timeout: 60_000 });
   const before = downloads.length;
   await page.click("[data-ref=convert]");
-  await page.waitForSelector(".row .badge:text-matches('Converting [1-9]')", { timeout: 60_000 });
+  await page.waitForSelector(".qrow .st:text-matches('Converting [1-9]')", { timeout: 60_000 });
   await page.click("[data-ref=cancel]");
-  await page.waitForSelector(".row .badge:text('Cancelled')", { timeout: 60_000 });
+  await page.waitForSelector(".qrow .st:text('Cancelled')", { timeout: 60_000 });
   await new Promise((r) => setTimeout(r, 500));
   check(downloads.length === before, "browser: a cancelled conversion downloads nothing");
   check(errors.length === 0, `no page errors ${errors}`);

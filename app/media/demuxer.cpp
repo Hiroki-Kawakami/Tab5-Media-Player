@@ -42,6 +42,10 @@ constexpr Format kFormats[] = {
     { ".jpg", "JPEG", MediaKind::Image, nullptr },
     { ".jpeg", "JPEG", MediaKind::Image, nullptr },
     { ".png", "PNG", MediaKind::Image, nullptr },
+    { ".bmp", "BMP", MediaKind::Image, nullptr },
+    { ".gif", "GIF", MediaKind::Image, nullptr },
+    { ".tif", "TIFF", MediaKind::Image, nullptr },
+    { ".tiff", "TIFF", MediaKind::Image, nullptr },
     { ".m3u", "M3U", MediaKind::Playlist, nullptr },
     { ".m3u8", "M3U", MediaKind::Playlist, nullptr },
 };

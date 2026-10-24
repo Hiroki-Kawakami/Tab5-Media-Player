@@ -274,6 +274,9 @@ bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out) {
         if (!jpeg_exif(data, size, &tiff, &bytes)) return false;
     } else if (size >= 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0) {
         if (!png_exif(data, size, &tiff, &bytes)) return false;
+    } else if (size >= 4 && (memcmp(data, "II*\0", 4) == 0 || memcmp(data, "MM\0*", 4) == 0)) {
+        tiff = data;
+        bytes = size;
     } else {
         return false;
     }

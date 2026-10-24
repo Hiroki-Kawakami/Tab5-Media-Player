@@ -1,9 +1,14 @@
 # Image viewer
 
-JPEG and PNG files in a directory, shown one at a time, scaled down to fit the
-screen with the aspect ratio kept. Nothing is ever enlarged, and there is no
-zoom: a picture smaller than the screen is shown at its own size in the middle
-of it.
+JPEG, PNG, BMP, GIF and TIFF files in a directory, shown one at a time, scaled
+down to fit the screen with the aspect ratio kept. Nothing is ever enlarged, and
+there is no zoom: a picture smaller than the screen is shown at its own size in
+the middle of it.
+
+A GIF shows its first frame and nothing else. Playing an animation would make
+the viewer a player: a timer, frames composed onto the previous one per their
+disposal, and pixels that change under a cache built around one decoded picture
+per box.
 
 ## Why it is an ordinary screen
 
@@ -60,7 +65,10 @@ Media Info panel shows them as a Camera and an Exposure section.
 - **It is parsed by the probe, out of the window it already read.** The 128 KB
   the probe pulls in for the format and the id starts at the file's first byte,
   which is where a JPEG's `APP1` and a PNG's `eXIf` are, so the tags cost a
-  parse and no card access at all. A picture whose tags run past the window is
+  parse and no card access at all. A TIFF file is itself the structure EXIF
+  borrows, so its IFD0 is read the same way — when it is inside the window:
+  libtiff and ffmpeg write the IFD after the pixels, and such a file shows no
+  tags and is not turned by its `Orientation`. A picture whose tags run past the window is
   parsed as far as the window goes — every offset is checked against the bytes
   in hand rather than against the length the segment claims.
 - **The result hangs off `MediaEntry` as a pointer**, allocated only when
@@ -332,6 +340,12 @@ wants some 29 MB against 22 MB free, and is reported as too large rather than
 as a broken file. The same picture as baseline JPEG or PNG opens, because both
 of those are decoded a band or a row at a time.
 
+The other formats are decoded a row at a time as well, with two exceptions that
+hold the picture at one byte per pixel: a BMP compressed with RLE, whose rows
+cannot be found without decoding everything before them, and an interlaced GIF,
+whose rows arrive in four passes. A tiled TIFF holds one row of tiles, decoded,
+at 3 bytes per pixel.
+
 ## Test material
 
 `simulator/sdcard/Pictures/` (gitignored) is what
@@ -401,6 +415,33 @@ for name, value, progressive in (("m_orient6_800.jpg", 6, False),
     exif[0x0112] = value
     image.save(name, exif=exif, quality=90, progressive=progressive)
 ```
+
+The other formats are `o_` to `t_`: a bottom-up 24-bit BMP, a still and an
+animated GIF, an LZW TIFF in strips, a Deflate TIFF with `Orientation` 6 and its
+IFD before the pixels, and a tiled TIFF (`tiffcp` from libtiff, which the flake
+does not have). ffmpeg writes a TIFF as subsampled YCbCr unless told otherwise,
+and the decoder does not take that:
+
+```sh
+ffmpeg -f lavfi -i "testsrc2=size=1200x800" -frames:v 1 o_bmp_1200.bmp
+ffmpeg -f lavfi -i "mandelbrot=size=640x480,trim=end_frame=1" \
+       -vf "split[a][b];[a]palettegen[p];[b][p]paletteuse" p_gif_640.gif
+ffmpeg -f lavfi -i "testsrc2=size=320x240:rate=10:duration=2" q_gif_anim_320.gif
+ffmpeg -f lavfi -i "smptebars=size=1500x1000" -frames:v 1 -pix_fmt rgb24 \
+       -compression_algo lzw r_tiff_lzw_1500.tif
+ffmpeg -f lavfi -i "testsrc2=size=2400x1600" -frames:v 1 -pix_fmt rgb24 \
+       -compression_algo raw tmp.tif
+nix-shell -p libtiff --run "tiffcp -t -w 256 -l 256 -c zip tmp.tif t_tiff_tiled_2400.tif"
+rm tmp.tif
+```
+
+```python
+image = Image.open("tmp.png").convert("RGB")   # testsrc2=size=800x600
+image.save("s_tiff_orient6_800.tif", compression="tiff_adobe_deflate", tiffinfo={274: 6})
+```
+
+The RLE BMPs, 16- and 32-bit BMPs, transparency, and the less common TIFF
+layouts are covered by the image_framework host tests instead.
 
 `h_exif_3000.jpg` is `a_landscape_3000.jpg` with three maximum-size APP1
 segments inserted after the SOI, which puts its frame header ~190 KB into the

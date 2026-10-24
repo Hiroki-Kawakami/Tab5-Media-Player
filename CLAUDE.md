@@ -53,6 +53,8 @@ submodule.
 - `esp-devkit/libs/audio_framework/docs/alac.md` — the in-house ALAC decoder
   shared by file playback and AirPlay: scope, error codes, and the bit-exact
   check against ffmpeg- and afconvert-encoded material.
+- `esp-devkit/libs/compression_framework/README.md` — the inflate and LZW
+  decompressors the image decoders use, and why they never allocate.
 - `esp-devkit/libs/media_framework/README.md` — the read-ahead buffer, tags and
   the demuxers (`medf_*`); what each container's demuxer does is in its
   `docs/containers.md`.

@@ -638,7 +638,7 @@ static std::shared_ptr<MediaEntry> probe_image(const std::string &path, CoverArt
        it. */
     if (!image_header(data.data->data(), data.data->size(), &header) &&
         header.format == ImageFormat::Unknown) {
-        ESP_LOGE(TAG, "not a JPEG or PNG: %s (%u bytes)", path.c_str(), (unsigned)size);
+        ESP_LOGE(TAG, "not a supported picture: %s (%u bytes)", path.c_str(), (unsigned)size);
         return entry;
     }
     entry->ok = true;

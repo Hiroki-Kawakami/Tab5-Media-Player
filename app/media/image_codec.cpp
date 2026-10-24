@@ -68,10 +68,16 @@ int cancel_read(void *user, void *dst, std::size_t n) {
     return source->inner.read(source->inner.user, dst, n);
 }
 
+int cancel_seek(void *user, std::size_t pos) {
+    auto *source = static_cast<CancelSource *>(user);
+    if (source->cancel && *source->cancel) return -1;
+    return source->inner.seek(source->inner.user, pos);
+}
+
 imgf_stream_t with_cancel(CancelSource *state, imgf_stream_t inner, const volatile bool *cancel) {
     state->inner = inner;
     state->cancel = cancel;
-    return { cancel_read, state };
+    return { cancel_read, state, inner.seek ? cancel_seek : nullptr };
 }
 
 bool stopped(const volatile bool *cancel) {
@@ -214,6 +220,56 @@ static bool jpeg_header(const uint8_t *data, std::size_t size, ImageHeader *out)
     return false;
 }
 
+static uint32_t le(const uint8_t *p, int bytes) {
+    uint32_t value = 0;
+    for (int i = bytes - 1; i >= 0; i--) value = (value << 8) | p[i];
+    return value;
+}
+
+static uint32_t be(const uint8_t *p, int bytes) {
+    uint32_t value = 0;
+    for (int i = 0; i < bytes; i++) value = (value << 8) | p[i];
+    return value;
+}
+
+static bool bmp_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
+    if (size < 26) return false;
+    if (le(data + 14, 4) == 12) {
+        out->width = le(data + 18, 2);
+        out->height = le(data + 20, 2);
+    } else {
+        const int32_t width = (int32_t)le(data + 18, 4);
+        const int32_t height = (int32_t)le(data + 22, 4);
+        if (width <= 0 || height == INT32_MIN) return false;
+        out->width = (uint32_t)width;
+        out->height = (uint32_t)(height < 0 ? -height : height);
+    }
+    return out->width && out->height;
+}
+
+/* Only an IFD inside the bytes given is read; a writer may put it at the end
+   of the file. */
+static bool tiff_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
+    const bool big = data[0] == 'M';
+    auto read = [&](std::size_t at, int bytes) {
+        return big ? be(data + at, bytes) : le(data + at, bytes);
+    };
+    if (size < 8) return false;
+    const uint32_t ifd = read(4, 4);
+    if (ifd < 8 || (std::size_t)ifd + 2 > size) return false;
+    const uint32_t count = read(ifd, 2);
+    for (uint32_t i = 0; i < count; i++) {
+        const std::size_t at = ifd + 2 + (std::size_t)i * 12;
+        if (at + 12 > size) break;
+        const uint32_t tag = read(at, 2);
+        const uint32_t type = read(at + 2, 2);
+        const uint32_t value = type == 3 ? read(at + 8, 2) : type == 4 ? read(at + 8, 4) : 0;
+        if (tag == 256) out->width = value;
+        if (tag == 257) out->height = value;
+    }
+    return out->width && out->height;
+}
+
 bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
     *out = {};
     switch (imgf_sniff(data, size)) {
@@ -223,13 +279,45 @@ bool image_header(const uint8_t *data, std::size_t size, ImageHeader *out) {
     case IMGF_FMT_PNG:
         out->format = ImageFormat::Png;
         if (size < 24 || memcmp(data + 12, "IHDR", 4) != 0) return false;
-        out->width = ((uint32_t)data[16] << 24) | ((uint32_t)data[17] << 16) |
-                     ((uint32_t)data[18] << 8) | data[19];
-        out->height = ((uint32_t)data[20] << 24) | ((uint32_t)data[21] << 16) |
-                      ((uint32_t)data[22] << 8) | data[23];
+        out->width = be(data + 16, 4);
+        out->height = be(data + 20, 4);
         return out->width && out->height;
+    case IMGF_FMT_BMP:
+        out->format = ImageFormat::Bmp;
+        return bmp_header(data, size, out);
+    case IMGF_FMT_GIF:
+        out->format = ImageFormat::Gif;
+        if (size < 10) return false;
+        out->width = le(data + 6, 2);
+        out->height = le(data + 8, 2);
+        return out->width && out->height;
+    case IMGF_FMT_TIFF:
+        out->format = ImageFormat::Tiff;
+        return tiff_header(data, size, out);
     default:
         return false;
+    }
+}
+
+static imgf_format_t imgf_format(ImageFormat format) {
+    switch (format) {
+    case ImageFormat::Jpeg: return IMGF_FMT_JPEG;
+    case ImageFormat::Png: return IMGF_FMT_PNG;
+    case ImageFormat::Bmp: return IMGF_FMT_BMP;
+    case ImageFormat::Gif: return IMGF_FMT_GIF;
+    case ImageFormat::Tiff: return IMGF_FMT_TIFF;
+    default: return IMGF_FMT_UNKNOWN;
+    }
+}
+
+static const char *format_name(const ImageHeader &header) {
+    switch (header.format) {
+    case ImageFormat::Jpeg: return header.hardware ? "baseline JPEG" : "JPEG that is not baseline";
+    case ImageFormat::Png: return "PNG";
+    case ImageFormat::Bmp: return "BMP";
+    case ImageFormat::Gif: return "GIF";
+    case ImageFormat::Tiff: return "TIFF";
+    default: return "picture";
     }
 }
 
@@ -437,9 +525,9 @@ static std::shared_ptr<ImagePixels> decode_hardware(const uint8_t *data, std::si
 static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, ImageFormat format,
                                                      ImageSize box, bool rgb888,
                                                      ImageOrientation orientation,
-                                                     const volatile bool *cancel, bool *oom) {
-    imgf_decoder_t *dec =
-        imgf_make_decoder(format == ImageFormat::Png ? IMGF_FMT_PNG : IMGF_FMT_JPEG);
+                                                     const volatile bool *cancel,
+                                                     ImageNotes *notes) {
+    imgf_decoder_t *dec = imgf_make_decoder(imgf_format(format));
     if (!dec) {
         ESP_LOGE(TAG, "no decoder for format %d", (int)format);
         return nullptr;
@@ -452,7 +540,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
     options.alloc_caps = MALLOC_CAP_SPIRAM;
     const imgf_err_t open_err = imgf_decoder_open(dec, stream, &options);
     if (open_err != IMGF_OK) {
-        if (open_err == IMGF_ERR_OOM && oom) *oom = true;
+        if (open_err == IMGF_ERR_OOM && notes) notes->out_of_memory = true;
         if (!stopped(cancel)) ESP_LOGE(TAG, "decoder open failed: imgf error %d", (int)open_err);
         imgf_decoder_destroy(dec);
         return nullptr;
@@ -462,6 +550,10 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
     const uint16_t src_h = imgf_decoder_height(dec);
     const imgf_pixfmt_t src_pf = imgf_decoder_pixfmt(dec);
     const imgf_resize_opts_t opts = contain_opts(src_w, src_h, box, rgb888, orientation);
+    if (notes && !notes->header.width) {
+        notes->header.width = src_w;
+        notes->header.height = src_h;
+    }
 
     imgf_err_t err = IMGF_OK;
     imgf_resizer_t *resizer = imgf_resizer_create(src_w, src_h, src_pf, &opts, &err);
@@ -474,7 +566,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
             imgf_alloc((std::size_t)src_w * imgf_pixfmt_bpp(src_pf), MALLOC_CAP_SPIRAM));
     }
     if (!resizer || !pixels || !row) {
-        if (oom && (!pixels || !row || err == IMGF_ERR_OOM)) *oom = true;
+        if (notes && (!pixels || !row || err == IMGF_ERR_OOM)) notes->out_of_memory = true;
         if (!resizer) ESP_LOGE(TAG, "no resizer for %ux%u: imgf error %d", src_w, src_h, (int)err);
         if (resizer && !row) {
             ESP_LOGE(TAG, "no memory for a %u byte row (psram free %u largest %u)",
@@ -497,7 +589,7 @@ static std::shared_ptr<ImagePixels> decode_streaming(imgf_stream_t stream, Image
         }
         if (!imgf_decoder_next_row(dec, row)) {
             const imgf_err_t row_err = imgf_decoder_last_error(dec);
-            if (row_err == IMGF_ERR_OOM && oom) *oom = true;
+            if (row_err == IMGF_ERR_OOM && notes) notes->out_of_memory = true;
             ESP_LOGE(TAG, "decode stopped at row %u of %u: imgf error %d", y, src_h, (int)row_err);
             ok = false;
             break;
@@ -541,7 +633,7 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
     if (notes) notes->header = header;
     if (!parsed) {
         if (header.format == ImageFormat::Unknown) {
-            ESP_LOGE(TAG, "not a JPEG or PNG (%u bytes)", (unsigned)size);
+            ESP_LOGE(TAG, "not a supported picture (%u bytes)", (unsigned)size);
             return nullptr;
         }
         ESP_LOGW(TAG, "no usable header in a %u byte picture", (unsigned)size);
@@ -556,17 +648,12 @@ std::shared_ptr<ImagePixels> image_decode(const uint8_t *data, std::size_t size,
 
     imgf_buffer_source_t memory;
     CancelSource state;
-    bool oom = false;
     auto pixels = decode_streaming(with_cancel(&state, imgf_stream_from_buffer(&memory, data, size),
                                                cancel), header.format, box, rgb888, orientation,
-                                  cancel, &oom);
-    if (notes) notes->out_of_memory = oom;
+                                  cancel, notes);
     if (!pixels && !stopped(cancel)) {
         ESP_LOGE(TAG, "no pixels from a %ux%u %s (%u bytes, psram free %u largest %u)",
-                 (unsigned)header.width, (unsigned)header.height,
-                 header.format == ImageFormat::Png ? "PNG"
-                 : header.hardware                 ? "baseline JPEG"
-                                                   : "JPEG that is not baseline",
+                 (unsigned)header.width, (unsigned)header.height, format_name(header),
                  (unsigned)size, psram_free(), psram_largest());
     }
     return pixels;
@@ -721,8 +808,7 @@ static bool hardware_to_fit(const uint8_t *data, std::size_t size, const ImageHe
 
 static bool stream_to_fit(const uint8_t *data, std::size_t size, ImageFormat format, ImageSize box,
                           bool rgb888, uint8_t *dst, std::size_t capacity, ImageSize *out) {
-    imgf_decoder_t *dec =
-        imgf_make_decoder(format == ImageFormat::Png ? IMGF_FMT_PNG : IMGF_FMT_JPEG);
+    imgf_decoder_t *dec = imgf_make_decoder(imgf_format(format));
     if (!dec) return false;
     imgf_buffer_source_t memory;
     imgf_decode_opts_t options = {};
@@ -852,14 +938,13 @@ std::shared_ptr<ImagePixels> image_decode_file(const std::string &path, int64_t 
         }
     }
 
+    fseek(fp, (long)offset, SEEK_SET);
     imgf_file_source_t file;
     CancelSource state;
-    bool oom = false;
     pixels = decode_streaming(with_cancel(&state, imgf_stream_from_file(&file, fp, (long)offset,
                                                                         (std::size_t)size),
                                           cancel),
-                              header.format, box, rgb888, orientation, cancel, &oom);
-    if (notes) notes->out_of_memory = oom;
+                              header.format, box, rgb888, orientation, cancel, notes);
     fclose(fp);
     return pixels;
 }

@@ -16,6 +16,9 @@ const char *image_kind_name(const MediaEntry &entry) {
     switch (entry.image_format) {
     case ImageFormat::Png: return "PNG";
     case ImageFormat::Jpeg: return entry.image_baseline ? "JPEG" : "progressive JPEG";
+    case ImageFormat::Bmp: return "BMP";
+    case ImageFormat::Gif: return "GIF";
+    case ImageFormat::Tiff: return "TIFF";
     default: return "";
     }
 }

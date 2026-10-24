@@ -248,7 +248,8 @@ every pass of the browser.
 An image file is its own picture, so there is no demuxer and no tag walk:
 
 - **The probe reads a 128 KB window**, hashes the id from it and takes the
-  picture's size from the JPEG SOF or the PNG IHDR if it is in there. Whether
+  picture's size from the header if it is in there (the JPEG SOF, the PNG
+  IHDR, a TIFF's IFD). Whether
   the size was found says nothing about whether the file can be decoded — a
   camera JPEG puts EXIF, a thumbnail and an ICC profile before its frame
   header, and 200 KB of that is ordinary — so only the format has to be
@@ -267,9 +268,9 @@ An image file is its own picture, so there is no demuxer and no tag walk:
   time, paid for with the overlap between a read and the decode before it.
 - **Only a baseline JPEG is read into memory**, up to 8 MB, because the
   hardware decoder is the one thing that wants the stream as one contiguous
-  block. PNG and progressive JPEG are pulled off the card a row at a time,
-  which asks nothing of the heap: a 7.5 MB PNG used to fail on a heap with
-  15 MB free but no block bigger than 7.4 MB, for a buffer it never needed.
+  block. Every other picture is pulled off the card a row at a time, which
+  asks nothing of the heap: a 7.5 MB PNG used to fail on a heap with 15 MB
+  free but no block bigger than 7.4 MB, for a buffer it never needed.
   When the block for a baseline JPEG cannot be found either, the decode falls
   back to the same streaming path instead of failing.
 - **A failed decode is recorded as a flag on the entry**, not by taking the
@@ -356,9 +357,9 @@ Baseline JPEG goes through `jpeg_ppa_pipeline` (Layer 2 of
 jpeg_decode_enhanced): the hardware decoder writes 16-row strips and PPA SRM
 scales each strip down as it lands. Both targets take this path — the host
 build is backed by image_framework, so the simulator exercises what the board
-runs. For PNG, a progressive JPEG or a picture wider than the strip buffers can
-take, the fallback streams rows out of image_framework's decoder through the
-resizer, which never materialises the full picture. On the board that path runs
+runs. For any other format, a progressive JPEG or a picture wider than the
+strip buffers can take, the fallback streams rows out of image_framework's
+decoder through the resizer, which never materialises the full picture. On the board that path runs
 PIE kernels (colour conversion, the IDCT and the resizer's row packing) and on
 the host their C counterparts, which write the same bytes — so the simulator
 still shows the same pixels, but not the same timings.
@@ -413,9 +414,9 @@ the strips out of PSRAM, not by per-strip overhead. Internal RAM would be the
 fast place for them, but 2 x 34 KB is most of what the board has free and the
 video path already claims that budget.
 
-`image_header()` parses the JPEG frame header and the PNG IHDR; a JPEG that is
-not baseline is marked as such there, so the hardware path is never tried for a
-picture it cannot take.
+`image_header()` parses the JPEG frame header, the PNG IHDR and the other
+formats' headers; a JPEG that is not baseline is marked as such there, so the
+hardware path is never tried for a picture it cannot take.
 
 A progressive JPEG is the expensive case: the hardware cannot decode one at
 all, and image_framework has to hold int16 coefficients for the whole frame

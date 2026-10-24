@@ -16,6 +16,9 @@ enum class ImageFormat {
     Unknown,
     Jpeg,
     Png,
+    Bmp,
+    Gif,
+    Tiff,
 };
 
 struct ImageSize {

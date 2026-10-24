@@ -35,6 +35,6 @@ struct ImageExif {
     bool empty() const;
 };
 
-/* `data` is the head of a JPEG or PNG file, which may stop inside the segment
-   that carries the tags: whatever is readable is taken. */
+/* `data` is the head of a JPEG, PNG or TIFF file, which may stop inside the
+   segment that carries the tags: whatever is readable is taken. */
 bool image_exif_parse(const uint8_t *data, std::size_t size, ImageExif *out);

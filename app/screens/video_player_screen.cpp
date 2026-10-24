@@ -245,9 +245,10 @@ void VideoPlayerScreen::setMode(UiMode mode) {
         populateInfo();
         lv_obj_set_hidden(info_, false);
     }
-    if (mode == UiMode::Hidden) return;
-    lv_display_trigger_activity(ui_);
-    refresh();
+    if (mode != UiMode::Hidden) {
+        lv_display_trigger_activity(ui_);
+        refresh();
+    }
 
     /* After refresh(): the command is async, so the status it reads there still
      * says paused and the icon would flip back. */

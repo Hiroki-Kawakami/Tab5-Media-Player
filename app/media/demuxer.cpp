@@ -35,6 +35,7 @@ constexpr Format kFormats[] = {
     { ".m4a", "MP4", MediaKind::Audio, mp4_demuxer_create },
     { ".wav", "WAVE", MediaKind::Audio, wav_demuxer_create },
     { ".mp3", "MP3", MediaKind::Audio, es_audio_demuxer_create },
+    { ".mp2", "MP2", MediaKind::Audio, es_audio_demuxer_create },
     { ".aac", "AAC", MediaKind::Audio, es_audio_demuxer_create },
     { ".flac", "FLAC", MediaKind::Audio, flac_demuxer_create },
     { ".opus", "Ogg", MediaKind::Audio, ogg_demuxer_create },

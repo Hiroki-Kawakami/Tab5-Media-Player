@@ -13,6 +13,7 @@
 #include "bench/aac_bench.hpp"
 #include "bench/flac_bench.hpp"
 #include "bench/h264_bench.hpp"
+#include "bench/mp3_bench.hpp"
 #include "bench/mpeg2_bench.hpp"
 #include "bench/opus_bench.hpp"
 #include "media/media_cache.hpp"
@@ -174,6 +175,7 @@ void app_entry() {
     aac_bench_register();
     flac_bench_register();
     h264_bench_register();
+    mp3_bench_register();
     mpeg2_bench_register();
     opus_bench_register();
 #ifndef ESP_PLATFORM

@@ -19,6 +19,7 @@ enum class CodecId {
     Mpeg2,
     Pcm,
     Mp3,
+    Mp2,
     AdpcmIma,
     Aac,
     Opus,
@@ -165,6 +166,7 @@ inline const char *codec_name(CodecId codec) {
     case CodecId::Mpeg2: return "MPEG-2";
     case CodecId::Pcm: return "PCM";
     case CodecId::Mp3: return "MP3";
+    case CodecId::Mp2: return "MP2";
     case CodecId::AdpcmIma: return "IMA ADPCM";
     case CodecId::Aac: return "AAC";
     case CodecId::Opus: return "Opus";

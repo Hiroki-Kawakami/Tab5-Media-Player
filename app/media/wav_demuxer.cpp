@@ -12,6 +12,7 @@ CodecId map_audio(medf_riff_audio_codec_t codec) {
     switch (codec) {
     case MEDF_RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
     case MEDF_RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case MEDF_RIFF_AUDIO_CODEC_MP2: return CodecId::Mp2;
     case MEDF_RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
     case MEDF_RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
     case MEDF_RIFF_AUDIO_CODEC_NONE: return CodecId::None;

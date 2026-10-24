@@ -9,7 +9,7 @@ file(GLOB_RECURSE APP_SRCS ${APP_GLOB_FLAGS}
 
 set(APP_REQUIRES bsp ui_framework harness image_framework media_framework vdec_common h264_dec mpeg2_dec usb_host airplay jpeg_decode_enhanced esp_timer wifi)
 if(ESP_PLATFORM)
-    list(APPEND APP_REQUIRES espressif__esp_audio_codec esp_mm esp_driver_jpeg esp_driver_ppa esp_driver_dma hal nvs_flash)
+    list(APPEND APP_REQUIRES esp_mm esp_driver_jpeg esp_driver_ppa esp_driver_dma hal nvs_flash)
 endif()
 
 idf_component_register(
@@ -54,6 +54,16 @@ if(ESP_PLATFORM AND FLAC_BENCH_DIR)
         target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/${clip}.flac" BINARY)
     endforeach()
     target_compile_definitions(${COMPONENT_LIB} PRIVATE FLAC_BENCH)
+    idf_component_get_property(harness_lib harness COMPONENT_LIB)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE ${harness_lib})
+endif()
+
+if(ESP_PLATFORM AND MP3_BENCH_DIR)
+    foreach(clip cbr128.mp3 cbr320.mp3 layer2.mp2)
+        configure_file("${MP3_BENCH_DIR}/${clip}" "${CMAKE_CURRENT_BINARY_DIR}/${clip}" COPYONLY)
+        target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_BINARY_DIR}/${clip}" BINARY)
+    endforeach()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE MP3_BENCH)
     idf_component_get_property(harness_lib harness COMPONENT_LIB)
     target_link_libraries(${COMPONENT_LIB} PRIVATE ${harness_lib})
 endif()

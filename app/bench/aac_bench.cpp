@@ -22,11 +22,6 @@
 #include "harness.h"
 #include "video/video_threads.hpp"
 
-extern "C" {
-#include "esp_aac_dec.h"
-#include "esp_audio_dec.h"
-}
-
 static const char *TAG = "AAC";
 
 extern const uint8_t bench_lc_start[] asm("_binary_lc_aac_start");
@@ -47,7 +42,6 @@ struct BenchArgs {
     std::size_t clip_bytes;
     He he;
     bool hash;
-    bool esp;
     uint32_t caps;
 };
 
@@ -84,50 +78,6 @@ static void report(int loop, int frames, uint64_t cycles, uint64_t worst, uint64
     ESP_LOGI(TAG, "loop %d: %d frames, %u Hz, %.0f cycles/frame (worst %" PRIu64 "), %.2f%% of a core",
              loop, frames, (unsigned)rate, frames ? (double)cycles / frames : 0, worst, load);
     if (with_hash) printf("[AACPCM] h=%08" PRIx32 " samples=%" PRIu64 "\n", hash, samples);
-}
-
-static void run_esp(const BenchArgs *args, const std::vector<Frame> &frames, uint8_t *pcm) {
-    esp_aac_dec_register();
-    esp_aac_dec_cfg_t aac = {};
-    aac.aac_plus_enable = args->he != He::Off;
-    esp_audio_dec_cfg_t config = {};
-    config.type = ESP_AUDIO_TYPE_AAC;
-    config.cfg = &aac;
-    config.cfg_sz = sizeof(aac);
-    esp_audio_dec_handle_t dec = nullptr;
-    if (esp_audio_dec_open(&config, &dec) != ESP_AUDIO_ERR_OK) {
-        ESP_LOGE(TAG, "esp_audio_dec_open failed");
-        return;
-    }
-    for (int loop = 0; loop < args->loops; loop++) {
-        esp_audio_dec_reset(dec);
-        uint64_t cycles = 0;
-        uint64_t worst = 0;
-        uint64_t samples = 0;
-        uint32_t rate = 0;
-        uint32_t hash = 2166136261u;
-        for (const Frame &f : frames) {
-            esp_audio_dec_in_raw_t raw = {};
-            raw.buffer = const_cast<uint8_t *>(args->clip + f.offset);
-            raw.len = f.len;
-            esp_audio_dec_out_frame_t out = {};
-            out.buffer = pcm;
-            out.len = kPcmBytes;
-            const uint32_t t0 = esp_cpu_get_cycle_count();
-            const esp_audio_err_t err = esp_audio_dec_process(dec, &raw, &out);
-            const uint32_t dt = esp_cpu_get_cycle_count() - t0;
-            cycles += dt;
-            if (dt > worst) worst = dt;
-            if (err != ESP_AUDIO_ERR_OK) continue;
-            esp_audio_dec_info_t info = {};
-            esp_audio_dec_get_info(dec, &info);
-            rate = info.sample_rate;
-            if (info.channel) samples += out.decoded_size / (2u * info.channel);
-            if (args->hash && loop == 0) hash = fnv1a(hash, pcm, out.decoded_size);
-        }
-        report(loop, (int)frames.size(), cycles, worst, samples, rate, hash, args->hash && loop == 0);
-    }
-    esp_audio_dec_close(dec);
 }
 
 static uint32_t cycles_now() {
@@ -197,11 +147,7 @@ static void bench_task(void *arg) {
         const std::vector<Frame> frames = split_adts(clip, args->clip_bytes);
         ESP_LOGI(TAG, "%u frames, internal free %u", (unsigned)frames.size(),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-        if (args->esp) {
-            run_esp(args, frames, pcm);
-        } else {
-            run_audf(args, frames, pcm);
-        }
+        run_audf(args, frames, pcm);
     } else {
         ESP_LOGE(TAG, "no memory");
     }
@@ -217,7 +163,7 @@ static bool bench_command(int argc, const char *const *argv, void *) {
     const int loops = argc > 1 ? atoi(argv[1]) : 3;
     if (loops <= 0 || s_busy.exchange(true)) return false;
     auto *args = new BenchArgs{ loops, bench_lc_start, (std::size_t)(bench_lc_end - bench_lc_start),
-                                He::V2, false, false, MALLOC_CAP_SPIRAM };
+                                He::V2, false, MALLOC_CAP_SPIRAM };
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "lc") == 0) {
             args->clip = bench_lc_start;
@@ -236,8 +182,6 @@ static bool bench_command(int argc, const char *const *argv, void *) {
             args->he = He::V2;
         } else if (strcmp(argv[i], "hash") == 0) {
             args->hash = true;
-        } else if (strcmp(argv[i], "esp") == 0) {
-            args->esp = true;
         } else if (strcmp(argv[i], "internal") == 0) {
             args->caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
         }

@@ -1,8 +1,8 @@
 # Playback
 
 What plays today: MJPEG, H.264 or progressive MPEG-2 (up to 1280x720) in
-`*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, IMA ADPCM or AAC
-audio, plus Opus, FLAC and ALAC in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
+`*.avi`, `*.mkv` and `*.mp4`/`*.m4v`/`*.mov` with PCM, MP3, MP2, IMA ADPCM or
+AAC audio, plus Opus, FLAC and ALAC in MKV and MP4 (or no audio), full screen, with play/pause, restart, seek, loop and
 volume. Picking one in the file browser opens `VideoPlayerScreen`. The H.264 and
 MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 [`mpeg2.md`](mpeg2.md).
@@ -10,7 +10,8 @@ MPEG-2 decoders themselves are described in [`h264.md`](h264.md) and
 Audio-only files play too, in `AudioPlayerScreen` (see
 [Audio-only files](#audio-only-files)): `*.m4a` (AAC, MP3, Opus, FLAC, ALAC or PCM
 in MP4), `*.wav` (16/24/32-bit PCM or IMA ADPCM), `*.flac`, `*.opus` (Opus in
-Ogg; no other codec in Ogg), and `*.mp3` / `*.aac` as elementary streams.
+Ogg; no other codec in Ogg), and `*.mp3` / `*.mp2` / `*.aac` as elementary
+streams.
 
 Both screens play the files of one directory, or of an `.m3u`/`.m3u8`, in
 order (see [Playlists](#playlists)).
@@ -28,7 +29,7 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
 medf_buffer           │           └─▶ present
-  (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus / FLAC / ALAC) ──▶ audio_output
+  (arena)             └──▶ audio_decoder (PCM / MP3 / MP2 / ADPCM / AAC / Opus / FLAC / ALAC) ──▶ audio_output
 ```
 
 | path | role |
@@ -271,8 +272,8 @@ at the end and the restart on flush. What differs:
   extradata, when there is one, is handed up as `codec_private` unchanged and
   probed on open, so MPEG-1 and 4:2:2 fail before the first picture. Seeking and
   the keyframe index are the same as for H.264.
-- **Audio that usually comes with MPEG-2 is not decoded.** MP2 and AC-3 are not
-  in `esp_audio_codec`; such a track is ignored and the video plays silent.
+- **AC-3, which often comes with MPEG-2, is not decoded**; such a track is
+  ignored and the video plays silent. MP2 is.
 
 ## Deliberately not done yet
 
@@ -401,7 +402,7 @@ than the browser second guessing the extension.
   - The reader's "produced something this pass" guard, which stops an empty
     file from seeking to 0 forever, used to count video packets only. An
     audio-only file therefore stopped at the end however loop was set.
-- **WAV, FLAC, MP3 and ADTS AAC** have demuxers of their own in `media_framework`
+- **WAV, FLAC, MP3/MP2 and ADTS AAC** have demuxers of their own in `media_framework`
   (see its `docs/containers.md`). WAV packets are whole IMA ADPCM blocks,
   because `audio_decoder` splits ADPCM by `block_align`.
 
@@ -833,8 +834,8 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
 - **The decoder follows the stream, not the container.** When a decoder
   reports a different rate or channel count (HE-AAC doubles the rate the
   AudioSpecificConfig states), `audio_output_open` is called again.
-- **Decoders are reset on seek** (`audio_decoder_flush()`), so AAC and Opus do not
-  carry state from before the jump. The audio task is parked by then.
+- **Decoders are reset on seek** (`audio_decoder_flush()`), so AAC, MP3 and Opus
+  do not carry state from before the jump. The audio task is parked by then.
 - **Opus drops the OpusHead pre-skip at the start, and pre-rolls on seek in
   audio-only files.** A decoder reset leaves Opus wrong for its first tens of
   milliseconds, so `rewind_to()` seeks 80 ms
@@ -865,18 +866,17 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
       -DAAC_BENCH_DIR=/path/to/clips -p <port> flash
   ```
 
-  `aacbench <loops> [lc|he|ps] [off|v1|v2] [hash] [esp] [internal]` prints
+  `aacbench <loops> [lc|he|ps] [off|v1|v2] [hash] [internal]` prints
   cycles per frame and per stage. `hash` prints the FNV-1a that
-  `aac_dec_test --hash` prints on the host, `esp` runs esp_audio_codec on the
-  same clip instead, and `internal` allocates the decoder in internal RAM.
+  `aac_dec_test --hash` prints on the host, and `internal` allocates the
+  decoder in internal RAM.
   `aackerneltest <n>` runs `audf_aac_kernel_selftest`.
 - **AAC decides raw or ADTS from the first packet**, not from the container:
   AVI has several format tags for AAC and they are not used consistently. Raw
   AAC with no AudioSpecificConfig gets one built from the track's rate and
   channels (LC).
 - **IMA ADPCM is decoded by esp-devkit's `audf_adpcm`**, on both targets.
-  `esp_audio_codec`'s ADPCM decoder has no block-align setting, so it cannot
-  follow the file's block size. Packets are split by `block_align`. Stereo
+  Packets are split by `block_align`. Stereo
   blocks hold 4 bytes of the left channel, then 4 of the right, and so on (as
   in ffmpeg and libsndfile), not alternating nibbles. MS ADPCM is not
   supported. A `block_align` that is 0, not a multiple of 4 bytes per
@@ -921,20 +921,34 @@ portrait. Icons come from `app/resources` (Tabler, see [`resources.md`](resource
       -DOPUS_BENCH_DIR=/path/to/clips -p <port> flash
   ```
 
-  `opusbench <loops> [hybrid|speech] [internal] [esp]` prints cycles per
-  packet, the share of a core and the stack a decode-only task used; `esp`
-  runs esp_audio_codec's Opus decoder on the same clip instead, and
-  `internal` allocates the decoder in internal RAM.
+  `opusbench <loops> [hybrid|speech] [internal]` prints cycles per packet,
+  the share of a core and the stack a decode-only task used; `internal`
+  allocates the decoder in internal RAM.
 - **The playback position is PCM frames written divided by the sample rate.**
   It feeds the clock correction above.
-- **The device MP3 decoder is `espressif/esp_audio_codec`, pinned below
-  2.6.**
-  2.6 and later refuse to build unless the ESP32-P4 is chip revision 3.0 or
-  newer, and this board's P4 is older (`CONFIG_ESP32P4_SELECTS_REV_LESS_V3`).
-  Check the silicon before raising the pin. The dependency is device-only.
-- **The simulator decodes MP3 with ffmpeg's libavcodec.** It is
-  linked in `simulator/CMakeLists.txt`, and `flake.nix` provides it.
-- **MP3 uses `ESP_AUDIO_DEC_RECOVERY_PLC` on every packet.**
+- **MP3 and MP2 are decoded by esp-devkit's `audf_mp3`, on both targets**,
+  from AVI, MKV, MP4, `.mp3` and `.mp2`. The decoder opens with the track's
+  channel count and the output follows each frame's rate. Decoder details:
+  [`esp-devkit/libs/audio_framework/docs/mp3.md`](../esp-devkit/libs/audio_framework/docs/mp3.md).
+- **`audio_decoder` cuts MP3 and MP2 into frames itself.** AVI packets end
+  anywhere in a frame, so the bytes go through a 4 KB carry buffer and each
+  frame is taken whole from its header. A frame that fails to decode is
+  replaced by the same length of silence, so the audio clock keeps its pace.
+  After a seek the first Layer III frames are silent too, until the bit
+  reservoir has refilled.
+- **`mp3bench` times `audf_mp3` on the device.** It needs a build with
+  `MP3_BENCH_DIR` naming a directory with `cbr128.mp3`, `cbr320.mp3` and
+  `layer2.mp2` (the `l3_44_128`, `l3_44_320` and `l2_44_256` files of
+  `esp-devkit/libs/audio_framework/test/make_mp3_material.sh`):
+
+  ```sh
+  nix develop -c idf.py -C esp32p4 -B esp32p4/build-bench-mp3 \
+      -DMP3_BENCH_DIR=/path/to/clips -p <port> flash
+  ```
+
+  `mp3bench <loops> [320|mp2] [internal]` prints cycles per frame, the share
+  of a core and the stack a decode-only task used; `internal` allocates the
+  decoder in internal RAM.
 
 ## Simulator
 
@@ -977,8 +991,6 @@ nix develop -c ffmpeg -display_rotation 90 -i upright_cw.mkv -c copy \
 - **Seek drags need a `wait` between `down` and each `move`.** A `move` in the
   same frame as the `down` never becomes a drag, and the seek silently does
   nothing.
-- **`[mp3float] overread` after a seek is harmless.** ffmpeg's MP3 parser was
-  handed a chunk from the middle of a frame and resynchronises.
 
 `simulator/verify/audio_codecs.txt` plays every file in `Test Audio/` (a root
 directory named to sort after `Music/`, so the other scripts' rows do not

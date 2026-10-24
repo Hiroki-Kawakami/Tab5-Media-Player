@@ -35,7 +35,9 @@ bool EsAudioDemuxer::open(const std::string &path, const medf_arena_t &arena, bo
     buffer_ = medf_es_demux_buffer(demux_);
 
     const medf_es_info_t *es = medf_es_demux_info(demux_);
-    info_.audio.codec = es->codec == MEDF_ES_CODEC_AAC ? CodecId::Aac : CodecId::Mp3;
+    info_.audio.codec = es->codec == MEDF_ES_CODEC_AAC   ? CodecId::Aac
+                        : es->codec == MEDF_ES_CODEC_MP2 ? CodecId::Mp2
+                                                         : CodecId::Mp3;
     info_.audio.sample_rate = es->sample_rate;
     info_.audio.bitrate_bps = es->bitrate_bps;
     info_.audio.channels = es->channels;

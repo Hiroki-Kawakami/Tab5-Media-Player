@@ -22,11 +22,6 @@
 #include "harness.h"
 #include "video/video_threads.hpp"
 
-extern "C" {
-#include "esp_audio_dec.h"
-#include "esp_opus_dec.h"
-}
-
 static const char *TAG = "OPUS";
 
 extern const uint8_t bench_music_start[] asm("_binary_music_opus_start");
@@ -44,7 +39,6 @@ struct BenchArgs {
     const uint8_t *clip;
     std::size_t clip_bytes;
     uint32_t caps;
-    bool esp;
 };
 
 struct Packet {
@@ -148,69 +142,13 @@ static void run_audf(BenchArgs *args, const uint8_t *buf, const std::vector<Pack
     audf_decoder_destroy(dec);
 }
 
-static void run_esp(BenchArgs *args, const uint8_t *buf, const std::vector<Packet> &packets) {
-    const uint8_t *head = buf + packets[0].offset;
-    esp_opus_dec_register();
-    esp_opus_dec_cfg_t opus = {};
-    opus.sample_rate = AUDF_OPUS_RATE;
-    opus.channel = head[9];
-    opus.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_INVALID;
-    opus.self_delimited = false;
-    esp_audio_dec_cfg_t config = {};
-    config.type = ESP_AUDIO_TYPE_OPUS;
-    config.cfg = &opus;
-    config.cfg_sz = sizeof(opus);
-    esp_audio_dec_handle_t dec = nullptr;
-    if (esp_audio_dec_open(&config, &dec) != ESP_AUDIO_ERR_OK) {
-        ESP_LOGE(TAG, "cannot open esp_opus_dec");
-        return;
-    }
-    static constexpr std::size_t kPcmBytes = 5760 * 2 * 2;
-    auto *pcm = static_cast<uint8_t *>(heap_caps_malloc(kPcmBytes, MALLOC_CAP_SPIRAM));
-    const double cpu_hz = (double)CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ * 1e6;
-    for (int loop = 0; pcm && loop < args->loops; loop++) {
-        esp_audio_dec_reset(dec);
-        uint64_t cycles = 0, worst = 0, bytes = 0;
-        int errors = 0;
-        for (std::size_t i = 2; i < packets.size(); i++) {
-            esp_audio_dec_in_raw_t raw = {};
-            raw.buffer = const_cast<uint8_t *>(buf + packets[i].offset);
-            raw.len = packets[i].len;
-            esp_audio_dec_out_frame_t frame = {};
-            frame.buffer = pcm;
-            frame.len = kPcmBytes;
-            const uint32_t t0 = esp_cpu_get_cycle_count();
-            const esp_audio_err_t e = esp_audio_dec_process(dec, &raw, &frame);
-            const uint32_t dt = esp_cpu_get_cycle_count() - t0;
-            cycles += dt;
-            if (dt > worst) worst = dt;
-            if (e != ESP_AUDIO_ERR_OK) {
-                errors++;
-                continue;
-            }
-            bytes += frame.decoded_size;
-        }
-        const double secs = (double)bytes / (2.0 * opus.channel) / AUDF_OPUS_RATE;
-        ESP_LOGI(TAG, "esp_opus_dec loop %d: %d errors, %.0f cycles/packet (worst %" PRIu64
-                 "), %.2f%% of a core",
-                 loop, errors, packets.size() > 2 ? (double)cycles / (packets.size() - 2) : 0.0, worst,
-                 secs > 0 ? 100.0 * cycles / cpu_hz / secs : 0.0);
-    }
-    heap_caps_free(pcm);
-    esp_audio_dec_close(dec);
-}
-
 static void bench_task(void *arg) {
     auto *args = static_cast<BenchArgs *>(arg);
     auto *buf = static_cast<uint8_t *>(heap_caps_malloc(args->clip_bytes, MALLOC_CAP_SPIRAM));
     if (buf) {
         const std::vector<Packet> packets = split_packets(args->clip, args->clip_bytes, buf);
         if (packets.size() > 2 && packets[0].len >= AUDF_OPUS_HEAD_BYTES) {
-            if (args->esp) {
-                run_esp(args, buf, packets);
-            } else {
-                run_audf(args, buf, packets);
-            }
+            run_audf(args, buf, packets);
         } else {
             ESP_LOGE(TAG, "cannot set up the clip");
         }
@@ -226,8 +164,7 @@ static bool bench_command(int argc, const char *const *argv, void *) {
     const int loops = argc > 1 ? atoi(argv[1]) : 3;
     if (loops <= 0 || s_busy.exchange(true)) return false;
     auto *args = new BenchArgs{ loops, bench_music_start,
-                                (std::size_t)(bench_music_end - bench_music_start), MALLOC_CAP_SPIRAM,
-                                false };
+                                (std::size_t)(bench_music_end - bench_music_start), MALLOC_CAP_SPIRAM };
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "hybrid") == 0) {
             args->clip = bench_hybrid_start;
@@ -237,8 +174,6 @@ static bool bench_command(int argc, const char *const *argv, void *) {
             args->clip_bytes = (std::size_t)(bench_speech_end - bench_speech_start);
         } else if (strcmp(argv[i], "internal") == 0) {
             args->caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-        } else if (strcmp(argv[i], "esp") == 0) {
-            args->esp = true;
         }
     }
     if (video_create_task(bench_task, "opus_bench", kBenchStackBytes, args, 5, 1, nullptr) != pdPASS) {

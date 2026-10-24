@@ -3,7 +3,3 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../esp-devkit/devkit.cmake)
 devkit_simulator_init()
 project(simulator C CXX)
 devkit_simulator(COMPONENT_DIRS ../components ../app)
-
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavutil)
-target_link_libraries(simulator PkgConfig::FFMPEG)

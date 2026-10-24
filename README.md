@@ -17,12 +17,12 @@ release; it needs `ffmpeg` and `ffprobe` on `PATH`.
 - **Video:** MJPEG (up to 2560 px wide), H.264 (Constrained Baseline/Main/High,
   progressive 4:2:0 8-bit, up to 1280x720), MPEG-2 (Simple/Main, progressive,
   up to 1280x720)
-- **Audio:** PCM, MP3, IMA ADPCM, AAC, Opus, FLAC, ALAC (the last three in MKV
-  and MP4 only)
+- **Audio:** PCM, MP3, MP2, IMA ADPCM, AAC, Opus, FLAC, ALAC (the last three
+  in MKV and MP4 only)
 
 ### Audio
 
-- `.mp3`, `.aac` (ADTS)
+- `.mp3`, `.mp2`, `.aac` (ADTS)
 - `.wav` (16/24/32-bit PCM, IMA ADPCM)
 - `.flac`
 - `.m4a` (AAC, MP3, Opus, FLAC, ALAC or PCM)

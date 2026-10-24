@@ -95,15 +95,16 @@ opens files for their tags and cover art while the player holds the big one
 `CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n` keeps the P4's 32 KiB LP/RTC
 SRAM out of the heap. It is reachable from the HP core but uncached and behind
 the LP bus, so it is far slower than PSRAM, which is cached: once internal SRAM
-ran short, `esp_audio_codec` picked up ~25 KiB of MP3 working buffers there and
+ran short, an MP3 decoder's ~25 KiB of working buffers landed there and
 decoding one frame went from 3 ms to 37 ms — 26 cycles per instruction, below
 real time, which dragged the whole timeline down because the media clock
 follows the audio position. Anything that quietly lands in that pool has the
 same failure mode, so the pool is gone rather than steered around.
 
-The `media_audio` task therefore takes a 4 KiB stack for every codec: MP3/ADPCM
-use under 1 KiB, AAC (`audf_aac`) under 2 KiB including a bench task's own
-frames, and Opus (`audf_opus`) under 2.7 KiB.
+The `media_audio` task therefore takes a 4 KiB stack for every codec: ADPCM
+uses under 1 KiB, AAC (`audf_aac`) under 2 KiB including a bench task's own
+frames, MP3/MP2 (`audf_mp3`) under 2.2 KiB and Opus (`audf_opus`) under
+2.7 KiB.
 
 Decoded PCM goes out through a second task, `audio_output` (4 KiB, kept once
 created), with two 64 KB PSRAM buffers handed back and forth: the decoder fills

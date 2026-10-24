@@ -10,6 +10,7 @@
 #include "audf_alac.h"
 #include "audf_convert.h"
 #include "audf_flac.h"
+#include "audf_mp3.h"
 #include "audf_opus.h"
 #include "bsp.h"
 #include "esp_heap_caps.h"
@@ -18,26 +19,14 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include <algorithm>
 #include <cstring>
-
-#ifdef ESP_PLATFORM
-extern "C" {
-#include "esp_audio_dec.h"
-#include "esp_mp3_dec.h"
-}
-#else
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavutil/channel_layout.h>
-#include <libavutil/mem.h>
-#include <libavutil/samplefmt.h>
-}
-#endif
 
 static const char *TAG = "audio_decoder";
 
 static constexpr std::size_t kPcmBytes = 64 * 1024;
 static constexpr int64_t kOpusPrerollUs = 80000;
+static constexpr std::size_t kMpegCarryBytes = 4 * 1024;
 static constexpr uint32_t kOutputStackBytes = 4 * 1024;
 static constexpr UBaseType_t kOutputPriority = 7;
 
@@ -49,7 +38,7 @@ enum class Mode {
     Flac,
     Alac,
     Opus,
-    Decoder,
+    Mpeg,
     Failed,
 };
 
@@ -72,6 +61,9 @@ static audf_decoder_t *s_aac;
 static audf_decoder_t *s_flac;
 static audf_decoder_t *s_alac;
 static audf_decoder_t *s_opus;
+static audf_decoder_t *s_mpeg;
+static uint8_t *s_mpeg_carry;
+static std::size_t s_mpeg_carry_len;
 static uint32_t s_discard;
 static uint32_t s_rate;
 static uint8_t s_channels;
@@ -248,200 +240,6 @@ static std::vector<uint8_t> make_audio_specific_config(uint32_t rate, uint8_t ch
 static bool is_adts(const uint8_t *data, std::size_t len) {
     return len >= 2 && data[0] == 0xFF && (data[1] & 0xF6) == 0xF0;
 }
-
-#ifdef ESP_PLATFORM
-
-static esp_audio_dec_handle_t s_decoder;
-
-static bool decoder_open() {
-    const DecoderSetup &setup = s_setup;
-    esp_audio_dec_cfg_t config = {};
-    switch (setup.codec) {
-    case CodecId::Mp3:
-        esp_mp3_dec_register();
-        config.type = ESP_AUDIO_TYPE_MP3;
-        break;
-    default:
-        return false;
-    }
-    if (esp_audio_dec_open(&config, &s_decoder) != ESP_AUDIO_ERR_OK) {
-        s_decoder = nullptr;
-        return false;
-    }
-    return true;
-}
-
-static void decoder_close() {
-    if (!s_decoder) return;
-    esp_audio_dec_close(s_decoder);
-    s_decoder = nullptr;
-}
-
-static void decoder_reset() {
-    if (s_decoder) esp_audio_dec_reset(s_decoder);
-}
-
-static void decoder_write(const uint8_t *data, std::size_t len) {
-    esp_audio_dec_in_raw_t raw = {};
-    raw.buffer = const_cast<uint8_t *>(data);
-    raw.len = (uint32_t)len;
-    raw.frame_recover = s_setup.codec == CodecId::Mp3 ? ESP_AUDIO_DEC_RECOVERY_PLC
-                                                      : ESP_AUDIO_DEC_RECOVERY_NONE;
-
-    while (raw.len > 0) {
-        esp_audio_dec_out_frame_t frame = {};
-        frame.buffer = s_pcm;
-        frame.len = kPcmBytes;
-        const esp_audio_err_t err = esp_audio_dec_process(s_decoder, &raw, &frame);
-        if (err != ESP_AUDIO_ERR_OK) {
-            ESP_LOGW(TAG, "%s decode: %d", codec_name(s_setup.codec), (int)err);
-            return;
-        }
-
-        esp_audio_dec_info_t info = {};
-        if (esp_audio_dec_get_info(s_decoder, &info) == ESP_AUDIO_ERR_OK) {
-            follow_format(info.sample_rate, (uint8_t)info.channel);
-        }
-        write_pcm(s_pcm, frame.decoded_size);
-        if (raw.consumed == 0 || raw.consumed > raw.len) return;
-        raw.buffer += raw.consumed;
-        raw.len -= raw.consumed;
-    }
-}
-
-#else
-
-static AVCodecContext *s_context;
-static AVCodecParserContext *s_parser;
-static AVPacket *s_packet;
-static AVFrame *s_frame;
-
-static AVCodecID codec_id_of(CodecId codec) {
-    switch (codec) {
-    case CodecId::Mp3: return AV_CODEC_ID_MP3;
-    default: return AV_CODEC_ID_NONE;
-    }
-}
-
-static bool uses_parser() {
-    return s_setup.codec == CodecId::Mp3;
-}
-
-static bool decoder_open() {
-    const DecoderSetup &setup = s_setup;
-    const AVCodecID id = codec_id_of(setup.codec);
-    if (id == AV_CODEC_ID_NONE) return false;
-    const AVCodec *codec = avcodec_find_decoder(id);
-    if (!codec) return false;
-    s_context = avcodec_alloc_context3(codec);
-    if (!s_context) return false;
-
-    s_context->sample_rate = (int)setup.rate;
-    av_channel_layout_default(&s_context->ch_layout, setup.channels);
-    if (!setup.extradata.empty()) {
-        s_context->extradata = static_cast<uint8_t *>(
-            av_mallocz(setup.extradata.size() + AV_INPUT_BUFFER_PADDING_SIZE));
-        if (!s_context->extradata) return false;
-        memcpy(s_context->extradata, setup.extradata.data(), setup.extradata.size());
-        s_context->extradata_size = (int)setup.extradata.size();
-    }
-    if (avcodec_open2(s_context, codec, nullptr) < 0) return false;
-
-    if (uses_parser()) {
-        s_parser = av_parser_init(id);
-        if (!s_parser) return false;
-    }
-    s_packet = av_packet_alloc();
-    s_frame = av_frame_alloc();
-    return s_packet && s_frame;
-}
-
-static void decoder_close() {
-    if (s_parser) {
-        av_parser_close(s_parser);
-        s_parser = nullptr;
-    }
-    if (s_packet) av_packet_free(&s_packet);
-    if (s_frame) av_frame_free(&s_frame);
-    if (s_context) avcodec_free_context(&s_context);
-}
-
-static void decoder_reset() {
-    if (!s_context) return;
-    avcodec_flush_buffers(s_context);
-    if (s_parser) {
-        av_parser_close(s_parser);
-        s_parser = av_parser_init(codec_id_of(s_setup.codec));
-    }
-}
-
-static void emit_frame() {
-    const int channels = s_frame->ch_layout.nb_channels;
-    if (channels <= 0 || s_frame->nb_samples <= 0) return;
-    follow_format((uint32_t)s_frame->sample_rate, (uint8_t)channels);
-
-    const std::size_t bytes = (std::size_t)s_frame->nb_samples * channels * sizeof(int16_t);
-    if (bytes > kPcmBytes) return;
-    int16_t *out = reinterpret_cast<int16_t *>(s_pcm);
-
-    for (int i = 0; i < s_frame->nb_samples; i++) {
-        for (int c = 0; c < channels; c++) {
-            float sample = 0.0f;
-            switch (s_frame->format) {
-            case AV_SAMPLE_FMT_FLTP:
-                sample = reinterpret_cast<const float *>(s_frame->data[c])[i];
-                break;
-            case AV_SAMPLE_FMT_FLT:
-                sample = reinterpret_cast<const float *>(s_frame->data[0])[i * channels + c];
-                break;
-            case AV_SAMPLE_FMT_S16P:
-                sample = reinterpret_cast<const int16_t *>(s_frame->data[c])[i] / 32768.0f;
-                break;
-            case AV_SAMPLE_FMT_S16:
-                sample = reinterpret_cast<const int16_t *>(s_frame->data[0])[i * channels + c] / 32768.0f;
-                break;
-            default:
-                return;
-            }
-            if (sample > 1.0f) sample = 1.0f;
-            if (sample < -1.0f) sample = -1.0f;
-            out[i * channels + c] = (int16_t)(sample * 32767.0f);
-        }
-    }
-    write_pcm(s_pcm, bytes);
-}
-
-static void send_packet(const uint8_t *data, int len) {
-    if (av_new_packet(s_packet, len) < 0) return;
-    memcpy(s_packet->data, data, (std::size_t)len);
-    const int err = avcodec_send_packet(s_context, s_packet);
-    av_packet_unref(s_packet);
-    if (err < 0) return;
-    while (avcodec_receive_frame(s_context, s_frame) == 0) emit_frame();
-}
-
-static void decoder_write(const uint8_t *data, std::size_t len) {
-    if (!uses_parser()) {
-        send_packet(data, (int)len);
-        return;
-    }
-    while (len > 0) {
-        uint8_t *chunk = nullptr;
-        int chunk_len = 0;
-        const int used = av_parser_parse2(s_parser, s_context, &chunk, &chunk_len,
-                                          data, (int)len, AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
-        if (used < 0) return;
-        data += used;
-        len -= (std::size_t)used;
-        if (chunk_len <= 0) {
-            if (used == 0) return;
-            continue;
-        }
-        send_packet(chunk, chunk_len);
-    }
-}
-
-#endif
 
 static void aac_close() {
     audf_decoder_destroy(s_aac);
@@ -633,6 +431,82 @@ static void write_opus(const uint8_t *data, std::size_t len) {
     write_pcm(s_pcm, frames * frame_bytes);
 }
 
+static bool mpeg_open(const TrackInfo &track, std::string *note) {
+    if (track.channels > 2) {
+        if (note) *note = std::string("unsupported ") + codec_name(track.codec) + " channel count";
+        return false;
+    }
+    if (!s_mpeg_carry) {
+        s_mpeg_carry = static_cast<uint8_t *>(heap_caps_malloc(kMpegCarryBytes, MALLOC_CAP_SPIRAM));
+        if (!s_mpeg_carry) {
+            s_mpeg_carry = static_cast<uint8_t *>(heap_caps_malloc(kMpegCarryBytes, MALLOC_CAP_DEFAULT));
+        }
+        if (!s_mpeg_carry) {
+            if (note) *note = "out of memory for the audio buffer";
+            return false;
+        }
+    }
+    s_mpeg_carry_len = 0;
+    audf_mp3_config_t config = {};
+    config.channels = track.channels;
+#ifdef ESP_PLATFORM
+    config.alloc_caps = MALLOC_CAP_SPIRAM;
+#endif
+    const esp_err_t err = audf_mp3_decoder_create(&config, &s_mpeg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "%s decoder: %s", codec_name(track.codec), esp_err_to_name(err));
+        if (note) *note = std::string(codec_name(track.codec)) + " decoder unavailable";
+        return false;
+    }
+    return true;
+}
+
+static void mpeg_close() {
+    audf_decoder_destroy(s_mpeg);
+    s_mpeg = nullptr;
+    heap_caps_free(s_mpeg_carry);
+    s_mpeg_carry = nullptr;
+    s_mpeg_carry_len = 0;
+}
+
+static void decode_mpeg_frame(const uint8_t *frame, const audf_mp3_header_t &header) {
+    const std::size_t frame_bytes = (std::size_t)s_channels * sizeof(int16_t);
+    std::size_t frames = 0;
+    const esp_err_t err = audf_decoder_decode(s_mpeg, frame, header.bytes, s_pcm, &frames);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s decode: %s", codec_name(s_setup.codec), esp_err_to_name(err));
+        frames = header.frames;
+        memset(s_pcm, 0, frames * frame_bytes);
+    }
+    follow_format(header.rate, s_channels);
+    write_pcm(s_pcm, frames * frame_bytes);
+}
+
+/* AVI packets cut MP3 frames anywhere, so frames are cut out here. */
+static void write_mpeg(const uint8_t *data, std::size_t len) {
+    while (len > 0) {
+        const std::size_t take = std::min(len, kMpegCarryBytes - s_mpeg_carry_len);
+        memcpy(s_mpeg_carry + s_mpeg_carry_len, data, take);
+        s_mpeg_carry_len += take;
+        data += take;
+        len -= take;
+
+        std::size_t pos = 0;
+        while (pos + AUDF_MP3_HEADER_BYTES <= s_mpeg_carry_len) {
+            audf_mp3_header_t header;
+            if (!audf_mp3_parse_header(s_mpeg_carry + pos, &header)) {
+                pos++;
+                continue;
+            }
+            if (pos + header.bytes > s_mpeg_carry_len) break;
+            decode_mpeg_frame(s_mpeg_carry + pos, header);
+            pos += header.bytes;
+        }
+        s_mpeg_carry_len -= pos;
+        memmove(s_mpeg_carry, s_mpeg_carry + pos, s_mpeg_carry_len);
+    }
+}
+
 static void write_lossless(audf_decoder_t *decoder, const uint8_t *data, std::size_t len) {
     std::size_t frames = 0;
     const esp_err_t err = audf_decoder_decode(decoder, data, len, s_pcm, &frames);
@@ -700,19 +574,17 @@ static bool prepare(const TrackInfo &track, audf_aac_he_t aac_he, std::string *n
         s_mode = Mode::Opus;
         return true;
     case CodecId::Mp3:
-        break;
+    case CodecId::Mp2:
+        if (!mpeg_open(track, note)) {
+            mpeg_close();
+            return false;
+        }
+        s_mode = Mode::Mpeg;
+        return true;
     default:
         if (note) *note = std::string(codec_name(track.codec)) + " decoder unavailable";
         return false;
     }
-
-    if (!decoder_open()) {
-        decoder_close();
-        if (note) *note = std::string(codec_name(track.codec)) + " decoder unavailable";
-        return false;
-    }
-    s_mode = Mode::Decoder;
-    return true;
 }
 
 void audio_decoder_start() {
@@ -767,7 +639,7 @@ bool audio_decoder_open(const TrackInfo &track, audf_aac_he_t aac_he, AudioConte
     const esp_err_t err = audio_output_open(s_rate, s_bits, s_channels, s_content);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "audio_output_open: %s", esp_err_to_name(err));
-        decoder_close();
+        mpeg_close();
         adpcm_close();
         aac_close();
         flac_close();
@@ -798,7 +670,7 @@ void audio_decoder_close() {
     s_frames = 0;
     xSemaphoreGive(s_lock);
 
-    decoder_close();
+    mpeg_close();
     adpcm_close();
     aac_close();
     flac_close();
@@ -813,8 +685,8 @@ void audio_decoder_write(const uint8_t *data, std::size_t len) {
     if (s_mode == Mode::PendingAac) open_pending_aac(data, len);
 
     switch (s_mode) {
-    case Mode::Decoder:
-        decoder_write(data, len);
+    case Mode::Mpeg:
+        write_mpeg(data, len);
         return;
     case Mode::Aac:
         write_aac(data, len);
@@ -852,7 +724,10 @@ int64_t audio_decoder_preroll_us() {
 void audio_decoder_flush(int64_t discard_us, bool start) {
     if (!s_lock) return;
     output_drain(true);
-    if (s_mode == Mode::Decoder) decoder_reset();
+    if (s_mode == Mode::Mpeg) {
+        audf_decoder_reset(s_mpeg);
+        s_mpeg_carry_len = 0;
+    }
     if (s_mode == Mode::Aac) audf_decoder_reset(s_aac);
     if (s_mode == Mode::Opus) {
         audf_decoder_reset(s_opus);

@@ -242,7 +242,7 @@ fn quantize(coefficients: &Coefficients, tables: &QuantTables) -> Vec<[i16; 64]>
                 let q = num::round(block[n] as f32 / divisor[n]) as i16;
                 if n == 0 { q } else { q.clamp(-MAX_AC, MAX_AC) }
             });
-            ZIGZAG.map(|n| natural[n])
+            ZIGZAG.map(|n| natural[n & 63])
         })
         .collect()
 }
@@ -272,9 +272,9 @@ fn category(value: i32) -> u8 {
     (32 - value.unsigned_abs().leading_zeros()) as u8
 }
 
-fn magnitude_bits(value: i32, category: u8) -> u16 {
+fn magnitude_bits(value: i32, category: u8) -> u32 {
     let v = if value < 0 { value - 1 } else { value };
-    (v as u32 & ((1u32 << category) - 1)) as u16
+    v as u32 & ((1u32 << category) - 1)
 }
 
 enum Symbol {
@@ -384,12 +384,30 @@ struct BitWriter {
 }
 
 impl BitWriter {
-    fn put(&mut self, bits: u16, len: u8) {
-        if len == 0 {
-            return;
-        }
+    /// `len` is at most 32.
+    fn put(&mut self, bits: u32, len: u32) {
         self.acc = (self.acc << len) | bits as u64;
-        self.count += len as u32;
+        self.count += len;
+        if self.count >= 32 {
+            self.count -= 32;
+            let word = (self.acc >> self.count) as u32;
+            if (!word).wrapping_sub(0x0101_0101) & word & 0x8080_8080 == 0 {
+                self.out.extend_from_slice(&word.to_be_bytes());
+            } else {
+                for byte in word.to_be_bytes() {
+                    self.out.push(byte);
+                    if byte == 0xFF {
+                        self.out.push(0x00);
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        let pad = (8 - self.count % 8) % 8;
+        self.acc = (self.acc << pad) | ((1 << pad) - 1);
+        self.count += pad;
         while self.count >= 8 {
             self.count -= 8;
             let byte = (self.acc >> self.count) as u8;
@@ -397,14 +415,6 @@ impl BitWriter {
             if byte == 0xFF {
                 self.out.push(0x00);
             }
-        }
-        self.acc &= (1u64 << self.count) - 1;
-    }
-
-    fn finish(mut self) -> Vec<u8> {
-        if self.count > 0 {
-            let pad = 8 - self.count as u8;
-            self.put((1u16 << pad) - 1, pad);
         }
         self.out
     }
@@ -458,8 +468,10 @@ fn encode_blocks(coefficients: &Coefficients, quality: u8, mode: HuffmanMode) ->
             diff,
         } => {
             let code = tables.dc[chroma as usize].codes[category as usize];
-            writer.put(code.bits, code.len);
-            writer.put(magnitude_bits(diff, category), category);
+            writer.put(
+                (code.bits as u32) << category | magnitude_bits(diff, category),
+                (code.len + category) as u32,
+            );
         }
         Symbol::Ac {
             chroma,
@@ -468,8 +480,10 @@ fn encode_blocks(coefficients: &Coefficients, quality: u8, mode: HuffmanMode) ->
             category,
         } => {
             let code = tables.ac[chroma as usize].codes[symbol as usize];
-            writer.put(code.bits, code.len);
-            writer.put(magnitude_bits(value, category), category);
+            writer.put(
+                (code.bits as u32) << category | magnitude_bits(value, category),
+                (code.len + category) as u32,
+            );
         }
     });
     let mut out = writer.finish();

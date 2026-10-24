@@ -16,7 +16,7 @@ static constexpr int64_t kKeyframeAtUs = 10 * 1000 * 1000;
 static constexpr uint32_t kMaxKeyframeBytes = 2 * 1024 * 1024;
 static constexpr uint32_t kMjpegHeadBytes = 16 * 1024;
 
-bool media_probe(const std::string &path, const media_arena_t &arena, bool want_cover,
+bool media_probe(const std::string &path, const medf_arena_t &arena, bool want_cover,
                  MediaSummary *out, std::string *error) {
     *out = {};
     error->clear();
@@ -38,17 +38,17 @@ bool media_probe(const std::string &path, const media_arena_t &arena, bool want_
     return true;
 }
 
-CoverArt media_probe_cover(const std::string &path, const media_arena_t &arena,
+CoverArt media_probe_cover(const std::string &path, const medf_arena_t &arena,
                            const CoverLocation &at) {
     CoverArt cover;
     if (!at) return cover;
 
-    media_buffer_t *reader = mb_open(path.c_str(), &arena);
+    medf_buffer_t *reader = medf_buffer_open(path.c_str(), &arena);
     if (!reader) return cover;
 
     void *owner = nullptr;
-    uint8_t *data = mb_read_alloc(reader, (off_t)at.offset, at.size, &owner);
-    mb_close(reader);
+    uint8_t *data = medf_buffer_read_alloc(reader, (off_t)at.offset, at.size, &owner);
+    medf_buffer_close(reader);
     if (!data) return cover;
 
     cover.data = psram_make_shared<CoverBytes>((uint8_t *)owner, data, at.size);
@@ -57,7 +57,7 @@ CoverArt media_probe_cover(const std::string &path, const media_arena_t &arena,
     return cover;
 }
 
-bool media_probe_keyframe(const std::string &path, const media_arena_t &arena,
+bool media_probe_keyframe(const std::string &path, const medf_arena_t &arena,
                           VideoKeyframe *out) {
     *out = {};
     std::unique_ptr<Demuxer> demuxer = demuxer_create(path);

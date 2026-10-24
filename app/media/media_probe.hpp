@@ -5,16 +5,16 @@
 
 #pragma once
 #include "media/media_types.hpp"
-#include "media_buffer.h"
+#include "medf_buffer.h"
 #include <string>
 
 /* `want_cover` false leaves `out->cover` empty but still fills `out->cover_at`
    when the container said where the picture is. */
-bool media_probe(const std::string &path, const media_arena_t &arena, bool want_cover,
+bool media_probe(const std::string &path, const medf_arena_t &arena, bool want_cover,
                  MediaSummary *out, std::string *error);
 
 /* Reads just the picture at `at`, for a file already probed without it. */
-CoverArt media_probe_cover(const std::string &path, const media_arena_t &arena,
+CoverArt media_probe_cover(const std::string &path, const medf_arena_t &arena,
                            const CoverLocation &at);
 
 /* A frame of the video that decodes on its own, for a file without cover art.
@@ -29,5 +29,5 @@ struct VideoKeyframe {
     uint8_t nal_length_size = 0;
 };
 
-bool media_probe_keyframe(const std::string &path, const media_arena_t &arena,
+bool media_probe_keyframe(const std::string &path, const medf_arena_t &arena,
                           VideoKeyframe *out);

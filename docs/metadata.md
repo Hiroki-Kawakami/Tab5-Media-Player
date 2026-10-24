@@ -14,9 +14,9 @@ second one. Everything below applies to both unless it says otherwise; see
 
 ## Why a second arena
 
-`Demuxer::open()` wants a `media_arena_t`, and the player holds the 4 MB one
+`Demuxer::open()` wants a `medf_arena_t`, and the player holds the 4 MB one
 for as long as a file is open — prefetching the next track while one plays
-cannot share it. Header parsing never takes a `mb_view()` (checked across all
+cannot share it. Header parsing never takes a `medf_buffer_view()` (checked across all
 five demuxers: every view is on a read path), so a probe only needs enough
 arena for `mb_read` and the index scans, and `media_player.cpp` allocates a
 separate 512 KB one at boot. It is never freed, for the same reason the media
@@ -117,7 +117,7 @@ to make `vApplicationGetTimerTaskMemory` fail — the board panicked before
   (`app/media/psram_allocator.hpp`), because `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL`
   is 16 KiB and the default allocator would put every map node, key and entry in
   internal RAM;
-- the entries hold fixed-size UTF-8 like `media_tags_t` does, so a cached title
+- the entries hold fixed-size UTF-8 like `medf_tags_t` does, so a cached title
   is not a heap string either;
 - the worker's 8 KiB stack is allocated with `MALLOC_CAP_SPIRAM`
   (`xTaskCreatePinnedToCoreWithCaps`). With it in internal RAM the player could
@@ -146,9 +146,9 @@ are opened with are all `MALLOC_CAP_SPIRAM` in `image_codec.cpp`.
 ## Prefetching gives way to playback
 
 Internal SRAM, not PSRAM, is what runs out: after boot about 74 KiB is free and
-opening a file for playback takes 25 KiB of it (the reader, its `media_buffer`
+opening a file for playback takes 25 KiB of it (the reader, its `medf_buffer`
 and the audio codec). A directory of a hundred MP3s probed back to back walked
-that down until `mb_open()` could not create its semaphores any more, and the
+that down until `medf_buffer_open()` could not create its semaphores any more, and the
 file the user tapped failed with "cannot open the file". So:
 
 - `image_codec` asks for a JPEG engine only when there is a clear block of
@@ -157,15 +157,15 @@ file the user tapped failed with "cannot open the file". So:
   out-of-memory path (IDF v6.1), so running the heap down to them is a panic,
   not a failed call. Without an engine the decode falls back to the software
   path and the artwork is simply not re-encoded;
-- a probe opens the file with `media_arena_t::direct`, which is what the
+- a probe opens the file with `medf_arena_t::direct`, which is what the
   metadata arena is marked as: no read-ahead task at all. Read-ahead exists to
-  keep video decoding fed; header and tag reads only need `mb_read`, which the
+  keep video decoding fed; header and tag reads only need `medf_buffer_read`, which the
   direct path serves from a 64 KiB window over the bounce area so an index scan
-  is still one read per window rather than one per entry. `mb_view()` fails in
+  is still one read per window rather than one per entry. `medf_buffer_view()` fails in
   that mode, which is fine because no demuxer takes a view while parsing
   headers. The playing file's own read-ahead is untouched, and its task stack
   now comes from PSRAM;
-- `es_audio_demux` keeps its 4 KiB resync scan buffer in its own (PSRAM)
+- `medf_es_demux` keeps its 4 KiB resync scan buffer in its own (PSRAM)
   struct instead of on the caller's stack, which is what overflowed the
   worker's first 4 KiB stack;
 - the browser prefetches `kPrefetchLimit` files beyond the ones on screen, not

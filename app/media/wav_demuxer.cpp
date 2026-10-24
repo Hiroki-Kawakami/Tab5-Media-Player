@@ -4,17 +4,17 @@
  */
 
 #include "demuxer.hpp"
-#include "wav_demux.h"
+#include "medf_wav.h"
 
 namespace {
 
-CodecId map_audio(riff_audio_codec_t codec) {
+CodecId map_audio(medf_riff_audio_codec_t codec) {
     switch (codec) {
-    case RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
-    case RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
-    case RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
-    case RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
-    case RIFF_AUDIO_CODEC_NONE: return CodecId::None;
+    case MEDF_RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
+    case MEDF_RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case MEDF_RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
+    case MEDF_RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
+    case MEDF_RIFF_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }
@@ -23,29 +23,29 @@ class WavDemuxer : public Demuxer {
 public:
     ~WavDemuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
+    bool open(const std::string &path, const medf_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
     bool seek(int64_t pts_us, int64_t *landed_us) override;
 
 private:
-    wav_demux_t *demux_ = nullptr;
+    medf_wav_demux_t *demux_ = nullptr;
 };
 
-bool WavDemuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
+bool WavDemuxer::open(const std::string &path, const medf_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = wav_demux_open(path.c_str(), &arena, want_cover, &failure);
+    demux_ = medf_wav_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this WAV";
         return false;
     }
-    buffer_ = wav_demux_buffer(demux_);
+    buffer_ = medf_wav_demux_buffer(demux_);
 
-    const wav_info_t *wav = wav_demux_info(demux_);
+    const medf_wav_info_t *wav = medf_wav_demux_info(demux_);
     info_.audio.codec = map_audio(wav->codec);
     info_.audio.sample_rate = wav->sample_rate;
     info_.audio.bitrate_bps = wav->bitrate_bps;
@@ -62,7 +62,7 @@ bool WavDemuxer::open(const std::string &path, const media_arena_t &arena, bool 
 
 void WavDemuxer::close() {
     if (demux_) {
-        wav_demux_close(demux_);
+        medf_wav_demux_close(demux_);
         demux_ = nullptr;
     }
     buffer_ = nullptr;
@@ -72,8 +72,8 @@ void WavDemuxer::close() {
 bool WavDemuxer::read(bool, Packet *out) {
     if (!demux_) return false;
 
-    wav_packet_t packet = {};
-    if (!wav_demux_read(demux_, &packet)) return false;
+    medf_wav_packet_t packet = {};
+    if (!medf_wav_demux_read(demux_, &packet)) return false;
     out->track = TrackType::Audio;
     out->pts_us = packet.pts_us;
     out->keyframe = true;
@@ -84,7 +84,7 @@ bool WavDemuxer::read(bool, Packet *out) {
 }
 
 bool WavDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
-    return demux_ && wav_demux_seek(demux_, pts_us, landed_us);
+    return demux_ && medf_wav_demux_seek(demux_, pts_us, landed_us);
 }
 
 }

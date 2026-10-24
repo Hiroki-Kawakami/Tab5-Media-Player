@@ -316,8 +316,8 @@ small, for the price of one JPEG decode.
 - **Always BT.601 full range**, whatever the video's own colour is, because
   that is how a JFIF JPEG is read.
 - **Where it goes.** MP4 keeps it in `moov/udta/meta/ilst/covr` and MKV as an
-  attachment whose name is `cover.jpg`, which is what `mp4_demux` and
-  `mkv_demux` look for. ffmpeg's MP4 muxer writes an `attached_pic` stream as
+  attachment whose name is `cover.jpg`, which is what `medf_mp4_demux` and
+  `medf_mkv_demux` look for. ffmpeg's MP4 muxer writes an `attached_pic` stream as
   `covr` rather than a track of its own, so the player still sees exactly two
   tracks.
 - **The frame is taken by a second, short ffmpeg run**, not tapped out of the
@@ -593,7 +593,7 @@ ffmpeg (decode, fps, scale; raw video + audio in one Matroska stream)
   only stops outliers from growing the file. Audio is not counted: it is small next to
   the video, and counting it would tie video settings to audio ones.
 - **`maxframe` defaults to the player's hard limit, 1 MiB** (the
-  `media_buffer` bounce area; larger packets are skipped), and cannot be set
+  `medf_buffer` bounce area; larger packets are skipped), and cannot be set
   above it. The controller respects it through the estimate. The one
   re-encode left is in the encode worker: a frame that really comes out over
   `maxframe` is re-quantised from its kept coefficients at the highest

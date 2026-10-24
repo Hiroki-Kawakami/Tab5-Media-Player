@@ -39,6 +39,9 @@ submodule.
   HE-AAC v1/v2): fixed point and float split, the PIE kernels and chip facts,
   why PSRAM working set dominates, and how to check it against ffmpeg and the
   ISO conformance streams.
+- `esp-devkit/libs/media_framework/README.md` — the read-ahead buffer, tags and
+  the demuxers (`medf_*`); what each container's demuxer does is in its
+  `docs/containers.md`.
 - `esp-devkit/README.md` — the `devkit.cmake` macros (`devkit_idf_init`,
   `devkit_simulator`) shared across every esp-devkit-based project.
 - `esp-devkit/docs/resgen.md` — resgen, which generates LVGL fonts, icon

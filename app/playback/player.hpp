@@ -5,7 +5,7 @@
 
 #pragma once
 #include "media/media_types.hpp"
-#include "media_buffer.h"
+#include "medf_buffer.h"
 #include <cstdint>
 #include <string>
 
@@ -30,9 +30,9 @@ struct PlayerStatus {
     std::string error;
 };
 
-void player_start(const media_arena_t &arena);
+void player_start(const medf_arena_t &arena);
 /* Free for others from player_close() until the next player_open(). */
-media_arena_t player_arena();
+medf_arena_t player_arena();
 void player_observe_state(void (*on_change)());
 void player_open(const std::string &path);
 void player_close();

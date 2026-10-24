@@ -227,7 +227,7 @@ struct CacheState {
 
 }
 
-static media_arena_t s_arena;
+static medf_arena_t s_arena;
 static SemaphoreHandle_t s_lock;
 static SemaphoreHandle_t s_wake;
 static SemaphoreHandle_t s_decode_wake;
@@ -1026,7 +1026,7 @@ static void dispatch(lv_timer_t *) {
     }
 }
 
-void media_cache_init(const media_arena_t &arena) {
+void media_cache_init(const medf_arena_t &arena) {
     if (s_lock) return;
     void *memory = heap_caps_malloc(sizeof(CacheState), MALLOC_CAP_SPIRAM);
     if (!memory) {

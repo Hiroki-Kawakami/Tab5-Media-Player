@@ -369,7 +369,7 @@ bool VideoInputScreen::startCapture(std::string *error) {
     if (!video_presenter_open_stream(track, error)) return false;
 
     player_close();
-    const media_arena_t arena = player_arena();
+    const medf_arena_t arena = player_arena();
     if (!arena.data || arena.size < kSlots * kSlotBytes) {
         *error = "no memory for camera frames";
         return false;
@@ -378,7 +378,7 @@ bool VideoInputScreen::startCapture(std::string *error) {
 }
 
 bool VideoInputScreen::startStream(std::string *error) {
-    const media_arena_t arena = player_arena();
+    const medf_arena_t arena = player_arena();
     uint8_t *slots[kSlots];
     for (std::size_t i = 0; i < kSlots; i++) slots[i] = arena.data + i * kSlotBytes;
     const esp_err_t err = camera_->start(format_.width, format_.height, format_.interval, slots,

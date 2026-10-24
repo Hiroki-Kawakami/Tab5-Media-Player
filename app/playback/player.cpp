@@ -70,7 +70,7 @@ static bool s_audio_quit;
 
 static AudioSlot s_audio[kAudioSlots];
 static std::string s_path;
-static media_arena_t s_arena;
+static medf_arena_t s_arena;
 
 static bool s_audio_active;
 static bool s_have_audio;
@@ -579,7 +579,7 @@ static bool send_command(Command command, const std::string *path = nullptr, int
     return false;
 }
 
-void player_start(const media_arena_t &arena) {
+void player_start(const medf_arena_t &arena) {
     if (player_core.lock) return;
     s_arena = arena;
     player_core.lock = xSemaphoreCreateMutex();
@@ -610,7 +610,7 @@ void player_start(const media_arena_t &arena) {
 void player_observe_state(void (*on_change)()) { s_state_observer.store(on_change); }
 
 void player_open(const std::string &path) { send_command(Command::Open, &path); }
-media_arena_t player_arena() {
+medf_arena_t player_arena() {
     return s_arena;
 }
 

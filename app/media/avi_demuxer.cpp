@@ -4,7 +4,7 @@
  */
 
 #include "demuxer.hpp"
-#include "avi_demux.h"
+#include "medf_avi.h"
 #include "mpeg2_dec.h"
 #include "esp_log.h"
 
@@ -12,23 +12,23 @@ static const char *TAG = "avi_demuxer";
 
 namespace {
 
-CodecId map_video(avi_video_codec_t codec) {
+CodecId map_video(medf_avi_video_codec_t codec) {
     switch (codec) {
-    case AVI_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
-    case AVI_VIDEO_CODEC_H264: return CodecId::H264;
-    case AVI_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
-    case AVI_VIDEO_CODEC_NONE: return CodecId::None;
+    case MEDF_AVI_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
+    case MEDF_AVI_VIDEO_CODEC_H264: return CodecId::H264;
+    case MEDF_AVI_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
+    case MEDF_AVI_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }
 
-CodecId map_audio(riff_audio_codec_t codec) {
+CodecId map_audio(medf_riff_audio_codec_t codec) {
     switch (codec) {
-    case RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
-    case RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
-    case RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
-    case RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
-    case RIFF_AUDIO_CODEC_NONE: return CodecId::None;
+    case MEDF_RIFF_AUDIO_CODEC_PCM: return CodecId::Pcm;
+    case MEDF_RIFF_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case MEDF_RIFF_AUDIO_CODEC_ADPCM_IMA: return CodecId::AdpcmIma;
+    case MEDF_RIFF_AUDIO_CODEC_AAC: return CodecId::Aac;
+    case MEDF_RIFF_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }
@@ -37,7 +37,7 @@ class AviDemuxer : public Demuxer {
 public:
     ~AviDemuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
+    bool open(const std::string &path, const medf_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -46,27 +46,27 @@ public:
     bool keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) override;
 
 private:
-    avi_demux_t *demux_ = nullptr;
-    int64_t video_pts_us(const avi_packet_t &packet);
+    medf_avi_demux_t *demux_ = nullptr;
+    int64_t video_pts_us(const medf_avi_packet_t &packet);
 
     int64_t interval_us_ = 0;
     int64_t next_video_pts_us_ = 0;
     int64_t gop_frame_ = -1;
 };
 
-bool AviDemuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
+bool AviDemuxer::open(const std::string &path, const medf_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = avi_demux_open(path.c_str(), &arena, want_cover, &failure);
+    demux_ = medf_avi_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this AVI";
         return false;
     }
-    buffer_ = avi_demux_buffer(demux_);
+    buffer_ = medf_avi_demux_buffer(demux_);
 
-    const avi_info_t *avi = avi_demux_info(demux_);
+    const medf_avi_info_t *avi = medf_avi_demux_info(demux_);
     interval_us_ = avi->video.frame_interval_us;
 
     info_.video.codec = map_video(avi->video.codec);
@@ -109,7 +109,7 @@ bool AviDemuxer::open(const std::string &path, const media_arena_t &arena, bool 
 
 void AviDemuxer::close() {
     if (demux_) {
-        avi_demux_close(demux_);
+        medf_avi_demux_close(demux_);
         demux_ = nullptr;
     }
     buffer_ = nullptr;
@@ -122,9 +122,9 @@ void AviDemuxer::close() {
 bool AviDemuxer::read(bool want_audio, Packet *out) {
     if (!demux_) return false;
 
-    avi_packet_t packet = {};
-    if (!avi_demux_read(demux_, &packet, want_audio)) return false;
-    if (packet.type == AVI_PACKET_VIDEO) {
+    medf_avi_packet_t packet = {};
+    if (!medf_avi_demux_read(demux_, &packet, want_audio)) return false;
+    if (packet.type == MEDF_AVI_PACKET_VIDEO) {
         out->track = TrackType::Video;
         out->pts_us = video_pts_us(packet);
         next_video_pts_us_ = (int64_t)(packet.frame_index + 1) * interval_us_;
@@ -139,7 +139,7 @@ bool AviDemuxer::read(bool want_audio, Packet *out) {
     return true;
 }
 
-int64_t AviDemuxer::video_pts_us(const avi_packet_t &packet) {
+int64_t AviDemuxer::video_pts_us(const medf_avi_packet_t &packet) {
     const int64_t decode_order = (int64_t)packet.frame_index * interval_us_;
     if (info_.video.codec != CodecId::Mpeg2) return decode_order;
     mpeg2_dec_header_t header;
@@ -153,7 +153,7 @@ bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
     if (!demux_ || interval_us_ <= 0) return false;
     const uint32_t frame = (uint32_t)(pts_us > 0 ? pts_us / interval_us_ : 0);
     uint32_t landed = 0;
-    if (!avi_demux_seek(demux_, frame, &landed)) {
+    if (!medf_avi_demux_seek(demux_, frame, &landed)) {
         ESP_LOGW(TAG, "cannot seek to frame %u", (unsigned)frame);
         return false;
     }
@@ -166,7 +166,7 @@ bool AviDemuxer::seek(int64_t pts_us, int64_t *landed_us) {
 bool AviDemuxer::keyframeBefore(int64_t pts_us, int64_t *key_us) const {
     if (!demux_ || interval_us_ <= 0 || pts_us < 0) return false;
     uint32_t key = 0;
-    if (!avi_demux_keyframe_before(demux_, (uint32_t)(pts_us / interval_us_), &key)) return false;
+    if (!medf_avi_demux_keyframe_before(demux_, (uint32_t)(pts_us / interval_us_), &key)) return false;
     *key_us = (int64_t)key * interval_us_;
     return true;
 }
@@ -175,7 +175,7 @@ bool AviDemuxer::keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) {
     if (!demux_ || interval_us_ <= 0) return false;
     const uint32_t frame = (uint32_t)(pts_us > 0 ? pts_us / interval_us_ : 0);
     uint64_t at = 0;
-    if (!avi_demux_keyframe_at(demux_, frame, &at, size)) return false;
+    if (!medf_avi_demux_keyframe_at(demux_, frame, &at, size)) return false;
     *offset = (int64_t)at;
     return true;
 }

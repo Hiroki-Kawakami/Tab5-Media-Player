@@ -5,8 +5,8 @@
 
 #pragma once
 #include "media_types.hpp"
-#include "media_buffer.h"
-#include "media_tags.h"
+#include "medf_buffer.h"
+#include "medf_tags.h"
 #include <memory>
 #include <string>
 
@@ -14,7 +14,7 @@ class Demuxer {
 public:
     virtual ~Demuxer() = default;
 
-    virtual bool open(const std::string &path, const media_arena_t &arena,
+    virtual bool open(const std::string &path, const medf_arena_t &arena,
                       bool want_cover) = 0;
     virtual void close() = 0;
     virtual bool isOpen() const = 0;
@@ -25,26 +25,26 @@ public:
        May move the read position: seek before reading packets again. */
     virtual bool keyframeAt(int64_t, int64_t *, uint32_t *) { return false; }
 
-    off_t bytes() const { return buffer_ ? mb_size(buffer_) : 0; }
-    void release(uint32_t ref) { mb_release(buffer_, ref); }
-    void releaseAll() { mb_release_all(buffer_); }
-    void interrupt(bool interrupted) { mb_interrupt(buffer_, interrupted); }
+    off_t bytes() const { return buffer_ ? medf_buffer_size(buffer_) : 0; }
+    void release(uint32_t ref) { medf_buffer_release(buffer_, ref); }
+    void releaseAll() { medf_buffer_release_all(buffer_); }
+    void interrupt(bool interrupted) { medf_buffer_interrupt(buffer_, interrupted); }
     uint8_t *readAlloc(int64_t offset, uint32_t size, void **owner) {
-        return buffer_ ? mb_read_alloc(buffer_, (off_t)offset, size, owner) : nullptr;
+        return buffer_ ? medf_buffer_read_alloc(buffer_, (off_t)offset, size, owner) : nullptr;
     }
 
     const MediaInfo &info() const { return info_; }
     const std::string &error() const { return error_; }
 
 protected:
-    media_buffer_t *buffer_ = nullptr;
+    medf_buffer_t *buffer_ = nullptr;
     MediaInfo info_;
     std::string error_;
 };
 
 /* Moves the picture out of `tags` instead of copying it, so the bytes stay in
    the buffer the tag reader read them into. */
-void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info);
+void demuxer_apply_tags(const medf_tags_t &tags, MediaInfo *info);
 
 MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,
                                 const std::string &audio_note);

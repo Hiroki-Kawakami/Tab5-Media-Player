@@ -27,17 +27,13 @@ Demuxer ──Packet──▶ ring ──▶ video_presenter ──▶ MjpegRend
   (Avi/Mkv/Mp4)       │         placement, FB,  │                  └─ JPEG ▶ strips ▶ PPA ▶ FB (pipeline)
   │                   │         letterbox,      └─ decoder task ─▶ H264Renderer / Mpeg2Renderer ▶ packed DPB
   │                   │         UI clip ◀── ready queue ◀──────────────┘   ▶ PPA (YUV420) ▶ FB
-media_buffer          │           └─▶ present
+medf_buffer           │           └─▶ present
   (arena)             └──▶ audio_decoder (PCM / MP3 / ADPCM / AAC / Opus) ──▶ audio_output
 ```
 
 | path | role |
 |---|---|
-| `components/media_buffer/` | aligned read-ahead into the arena, packets as views into it |
-| `components/riff_demux/` | RIFF parsing, plain C with no app types: the chunk walk and WAVEFORMATEX in `riff.c`, then `avi_demux` and `wav_demux` on top |
-| `components/es_audio_demux/` | MP3 and ADTS AAC elementary streams, plain C with no app types |
-| `components/mkv_demux/` | EBML/Matroska parsing, plain C with no app types |
-| `components/mp4_demux/` | ISO BMFF/QuickTime parsing, plain C with no app types |
+| `esp-devkit/libs/media_framework/` | the read-ahead buffer (`medf_buffer`), tags, and the AVI, WAV, MP3/AAC, MKV and MP4 demuxers (see its README and `docs/containers.md`) |
 | `components/vdec_common/` | PIE kernels on the packed picture layout and the thread hooks, shared by both decoders |
 | `components/h264_dec/` | the H.264 decoder, plain C, host-testable (see [`h264.md`](h264.md)) |
 | `components/mpeg2_dec/` | the MPEG-2 decoder, plain C, host-testable (see [`mpeg2.md`](mpeg2.md)) |
@@ -151,7 +147,7 @@ after the current file is decided above it, by the screen (see
 
 **One engine, a screen per medium.** `Player` is meant to serve audio-only
 files as well, so what it does for any file — the reader, the slot lifetime, the
-`media_buffer` pin rules, the state machine, seek and loop — stays in
+`medf_buffer` pin rules, the state machine, seek and loop — stays in
 `player.cpp`, and a second copy of those rules is the mistake this split exists
 to prevent. Everything that is there only because there is a picture lives in
 `video_pacing.cpp` behind `video_pacing_*`, and a file with no video track
@@ -295,13 +291,11 @@ at the end and the restart on flush. What differs:
 
 ## Reading: one buffer from the card to the decoder
 
-FatFs only reads straight into the caller's buffer, via DMA, for whole sectors.
-A partial sector at either end of a read goes through its window buffer and
-costs an extra copy. Chunks and blocks sit at whatever offset the muxer chose,
-so `media_buffer` reads 64 KB chunks at sector-aligned offsets on its own task
-(`media_readahead`) into the arena, and a demuxer hands out **views** of that
-memory instead of copying packets out. It uses `open()/read()` rather than
-`fopen/fread`, and the file I/O happens outside the buffer's state lock.
+`medf_buffer` reads 64 KB chunks ahead into an arena on its own task, and a
+demuxer hands out **views** of that memory instead of copying packets out. Its
+rules (pins, the bounce area, the interrupt) are in
+`esp-devkit/libs/media_framework/README.md`; this is how the player lives with
+them.
 
 - **Why views.** Measured on the Tab5 with the old design, copying a 20-45 KB
   frame out of the read-ahead cost 1-2 ms (PSRAM to PSRAM runs at about
@@ -310,60 +304,33 @@ memory instead of copying packets out. It uses `open()/read()` rather than
   A 60 fps clip that drops frames went from 34.5 to 39.3 fps after the change.
 - **The arena is 4 MB, allocated once at boot and never freed**
   (`app_entry()`), so PSRAM fragmentation after many open/close cycles cannot
-  make it unavailable. One quarter is a bounce area; the rest is a ring of
-  64 KB chunks filled in ring order, so consecutive chunks are adjacent in
-  memory. The HW JPEG decoder only needs its input contiguous, not aligned
-  (it syncs the input with `ESP_CACHE_MSYNC_FLAG_UNALIGNED`).
-- **A view pins the chunks it covers.** Read-ahead never writes into a pinned
-  chunk; it waits. A view that would cross the ring's end is copied into the
-  bounce area instead, once per trip around the ring, and pins that.
-- **Nothing may hold a view longer than the reader takes to lap the ring.**
-  Read-ahead parks on a pinned chunk and `mb_view` waits for read-ahead, so a
-  pin the reader catches up with from behind stops both, with nothing in the
-  log; only the `interrupt()` and `releaseAll()` of the next seek clear it. The
-  player therefore pins the last packet it *consumed*, not the last one it
-  drew: a pin that follows the reader cannot be lapped, while a pin on the
+  make it unavailable. Its 1 MB bounce area is the largest packet. The HW JPEG
+  decoder only needs its input contiguous, not aligned (it syncs the input with
+  `ESP_CACHE_MSYNC_FLAG_UNALIGNED`).
+- **The player pins the last packet it *consumed*, not the last one it
+  drew**, because no view may be held longer than the reader takes to lap the
+  ring: a pin that follows the reader cannot be lapped, while a pin on the
   frame last drawn freezes as soon as frames run late enough to be dropped
   instead of drawn, and the reader walks into it.
 - **A view can wait on the player** (pins held by the player or the ring), so
   `reader_stop()` interrupts the buffer before waiting for the reader to park.
-  An interrupted read rewinds the demuxer to the element it started on.
 - **The interrupt is dropped as soon as the reader has parked**, not when the
   reader is started again: `Demuxer::seek()` runs in between, and the MP3/AAC
   resync reads the file to find its frame boundaries. With the flag still up
-  `wait_for()` refuses every read, so those seeks failed silently — and only
-  where the target was outside the ring, which is why short files (the whole
-  file resident) and every index-driven seek looked fine.
+  those seeks fail silently — and only where the target is outside the ring,
+  which is why short files (the whole file resident) and every index-driven
+  seek look fine.
 - **Pins are dropped wholesale** (`releaseAll()`) in `refill_free_queues()`,
   after every holder has been flushed. A packet still queued in a ring is never
   released one by one.
-- **Header parsing runs with read-ahead off** and reads the file directly.
-  Only the sequential passes (`idx1`, `Cues`, playback) turn it on.
 
-Things about AVIs from other tools:
+## AVI
 
-- **Streams are matched by `strl` order, not by fixed chunk ids.** A file that
-  declares audio first still plays.
-- **`idx1` offsets are ambiguous.** Some muxers make them relative to `movi`,
-  others make them absolute. The demuxer tries both against the first video
-  chunk. If neither matches, seeking is disabled and playback still works.
-- **`suggested_buffer_size` is ignored.** Muxers often write 0 there. Ring
-  slots are sized from the largest chunk listed in `idx1`, and a chunk that
-  does not fit its slot is skipped.
-- **H.264 and MPEG-2 keyframes come from `idx1` (`AVIIF_KEYFRAME`).** The
-  index keeps only keyframes as seek points, so `avi_demux_seek()` lands on the
-  last keyframe at or before the target and reports that frame; the adapter
-  derives pts from it. Without `idx1` a packet is a keyframe when its first
-  slice NAL is IDR (type 5) or its picture header says I, and only `seek(0)`
-  works. MJPEG ignores the flags.
-- **Zero-size video chunks are frames.** ffmpeg writes them to keep the frame
-  clock (its H.264 AVIs have one right after the first frame), so pts counts
-  them, matching ffprobe's dts, and every keyframe there is one frame later
-  than in the same encode muxed to MKV.
-- **ffmpeg's H.264 AVIs have no extradata** (libx264 only emits it with
-  `-flags +global_header`, and then as Annex-B). ffmpeg refuses to mux
-  length-prefixed H.264 into AVI, so the avcC branch is untested on real files.
-  `strf` extradata is cut to `biSize - 40`; the chunk carries a pad byte.
+What `medf_avi_demux` does with files from other tools is in
+`esp-devkit/libs/media_framework/docs/containers.md`. Its API is
+frame-numbered, so the adapter derives pts from the frame a seek landed on.
+Ring slots are sized from `max_frame_bytes` (the largest chunk listed in
+`idx1`), and a chunk that does not fit its slot is skipped.
 
 An AVI written by ffmpeg (`-c:v mjpeg -pix_fmt yuvj420p`, with PCM or
 `libmp3lame` audio) plays on the simulator. The P4's hardware decoder only
@@ -372,132 +339,46 @@ message.
 
 ## MKV
 
-`mkv_demux` walks the stream flat: `Cluster` and `BlockGroup` are entered, and
-every other element is skipped by its size. Top-level IDs never collide with
-cluster children, so an unknown-size `Cluster` ends where the next top-level
-element starts without tracking the hierarchy.
+What `medf_mkv_demux` reads and how it seeks is in
+`esp-devkit/libs/media_framework/docs/containers.md`. On the player's side:
 
-- **Tracks.** The first video track must be `V_MJPEG`, `V_MPEG4/ISO/AVC` or
-  `V_MPEG2` (their `CodecPrivate`, avcC or a sequence header, is copied and
-  handed up raw). Audio is
-  `A_PCM/INT/LIT`, `A_MPEG/L3`, `A_AAC*`, `A_OPUS`, or `A_MS/ACM` whose
-  WAVEFORMATEX is IMA ADPCM (`0x0011`); anything else is ignored as
-  unsupported. `CodecPrivate` is handed up as-is, except for `A_MS/ACM`, where
-  the rate, channels and block align come from the WAVEFORMATEX and only its
-  extra bytes are passed on. A track with `ContentEncodings` (header stripping,
-  compression) is unsupported.
-- **Lacing.** A laced audio block is split and each frame is a packet of its
-  own, because raw AAC and Opus frames carry no length and a decoder cannot
-  find the boundaries in concatenated data. mkvmerge laces audio by default;
-  ffmpeg never does. Every frame takes its own `mb_view()` instead of one view
-  over the whole block: the pending frames then hold no pin, so
-  `releaseAll()` in `reader_stop()` cannot pull memory from under them (a
-  failed seek restarts the reader without seeking), and an interrupted view
-  rewinds to that frame. A block whose lace sizes do not add up is skipped, and
-  so is a laced video block.
-- **Keyframes.** A `SimpleBlock` has a keyframe flag; a `Block` has none and is
-  a keyframe when its `BlockGroup` has no `ReferenceBlock`. The walk is flat,
-  so for a video `Block` the rest of its group is read ahead and the reader
-  steps back to the payload. That backward seek can throw away the read-ahead
-  window, which is acceptable because muxers use `BlockGroup` for video only
-  on odd frames (ffmpeg: a duration that differs from the default).
-- **Timing.** `DefaultDuration` gives the frame interval; without it, the first
-  two video blocks are measured. `Info/Duration` gives the length; without it,
-  the last cue plus one interval.
-- **Seeking needs `Cues`**, found through `SeekHead` or before the first
-  cluster. Without them only `seek(0)` works (restart and loop). A seek jumps to
-  the last cue at or before the target. The index is decimated past 60000
-  entries.
-  - MJPEG lands on the block on screen at the target, which starts up to 2 s
-    before it when the converter merged unchanged frames: from the cue it
-    reads block headers up to the first video block past the target and goes
-    back to the last one before it. Audio blocks before the target are
-    skipped. ffmpeg starts a cluster for every MJPEG frame, so the index keeps
-    one entry per cluster.
-  - H.264 must start at a keyframe, so nothing near the target is skipped:
-    blocks before the cue's own time are dropped (a cluster can hold more than
-    one cued keyframe, so cues are not merged per cluster) and so are video
-    blocks until the first keyframe, in case a cue points at a cluster that
-    does not start with one. The first video packet's pts is where the seek
-    landed. ffmpeg cues only video keyframes.
 - **Timestamps are rounded to `TimestampScale`** (1 ms from ffmpeg), so a frame
   at `k × interval` can be a fraction of a millisecond early. The player
   compares pts with half an interval of tolerance, otherwise a seek would drop
   its first frame or be taken for a loop wrap.
+- **Laced frames hold no pin until they are read**, so `releaseAll()` in
+  `reader_stop()` cannot pull memory from under them when a failed seek
+  restarts the reader without seeking.
 - **The end is known from the reader, not from the duration.** The reader sets
   an EOF flag when it parks at the end, and the player finishes once the ring
-  is empty. A `Duration` a little past the last frame no longer leaves it
+  is empty, so a `Duration` a little past the last frame cannot leave it
   playing forever.
 
 ## MP4
 
-`mp4_demux` reads `moov` whole into PSRAM (up to 16 MB) and uses the sample
-tables in place. They are never expanded per sample, since a two-hour file has
-over half a million samples. Each track has a cursor (sample, chunk, current
-`stsc`/`stts`/`ctts` run, next sync sample) that steps in constant time; a seek
-rebuilds it by walking the runs, which are few.
+What `medf_mp4_demux` reads, how it seeks and why packets come out in timestamp
+order are in `esp-devkit/libs/media_framework/docs/containers.md`. On the
+player's side:
 
-- **Finding `moov`.** Top-level boxes are skipped by size, so a `moov` after
-  `mdat` (no faststart) works at the cost of one seek on open.
-- **Tracks.** The best `vide` and `soun` track wins: a supported codec first,
-  then the `tkhd` enabled flag. Video is `avc1`/`avc3` (`avcC`), `jpeg`/`mjpa`,
-  `m2v1`, or `mp4v` whose esds says MJPEG (object type 0x6C, which is what ffmpeg
-  writes for MJPEG in `.mp4`) or MPEG-2 video (0x60-0x65). Audio is `mp4a` with an AAC or MP3 object type (the esds
-  may sit inside a QuickTime `wave`), `.mp3`, `Opus`, or 16-bit `sowt`.
-  QuickTime sound descriptions v1/v2 are longer, and their extra header is
-  skipped.
-- **`dOps` is rewritten as an OpusHead**, because that is what both Opus
-  decoders take (big-endian fields become little-endian; the mapping table is
-  the same).
-- **A `sowt` sample is one PCM frame**, and `stsz` often says 1 byte, so the
-  size comes from the channel count and a chunk is handed out in packets of up
-  to 32 KB rather than one packet per frame.
-- **Timing.** pts is dts + ctts − the first edit's `media_time`, plus any
-  leading empty edits. ffmpeg's AAC edit skips 1024 priming samples, so the
-  first audio packet has a negative pts. Later edits are ignored with a warning.
-  The frame interval is the most common `stts` delta, or for MJPEG the
-  shortest one: a converted slideshow stores each still once, and its long
-  delta can be the most common. The length is `mvhd`'s, or the video `mdhd`'s
-  without it.
-- **Rotation** is `-atan2(b, a)` of the `tkhd` matrix, as in ffmpeg's
-  `av_display_rotation_get`, which is the same counter-clockwise angle as the
-  MKV roll: an ffmpeg `-display_rotation 90` file shows the same as
-  `rotated.mkv` in all four UI rotations.
-- **Seeking** uses `stss`. H.264 lands on the last sync sample at or before the
-  target and reports its pts; MJPEG lands on the sample on screen at the target
-  and reports the target. Audio starts at its first sample at or after where
-  the video landed.
-
-**Packets come out in timestamp order, not file order.** Cameras, phones and
-Apple tools interleave in chunks of 0.5-1 s (ffmpeg interleaves much finer).
-Read in file order, a second of audio fills the 8-slot audio ring and stalls the
-reader while the video for that second is still behind it, or a second of video
-fills the 4-slot ring and the audio drains. Growing the rings would change the
-ring-full rules the H.264 pacing relies on. So the demuxer returns whichever
-track's next sample is earlier and reads backwards in the file when needed.
-
-- **`mb_view_at()` is a view at an offset that leaves the cursor alone.** The
-  cursor becomes a floor: the demuxer moves it forward to the lower of the two
-  tracks' next offsets, so the window keeps everything between them and a
-  backward read is a cache hit.
-- **Files that are not interleaved at all still play, slowly.** When the view
-  would end more than half the ring past the cursor, `mb_view_at()` moves the
-  cursor to the view, which drops the window, and the next read of the other
-  track drops it again, so every switch re-reads from the card. Such files are
-  rare, so nothing smarter is done; the demuxer logs once when the tracks are
-  that far apart. On the Tab5, `j_separate_big.mp4` plays but skips a burst of
-  frames about once a second, which is accepted. 720p in a normal MP4 plays as
-  fast as the same stream in MKV.
+- **Timestamp order is what the rings need.** Read in file order, a second of
+  audio fills the 8-slot audio ring and stalls the reader while the video for
+  that second is still behind it, or a second of video fills the 4-slot ring
+  and the audio drains. Growing the rings would change the ring-full rules the
+  H.264 pacing relies on.
+- **Non-interleaved files play, slowly.** On the Tab5, `j_separate_big.mp4`
+  plays but skips a burst of frames about once a second, which is accepted.
+  720p in a normal MP4 plays as fast as the same stream in MKV.
+- **Rotation** matches the MKV roll: an ffmpeg `-display_rotation 90` file
+  shows the same as `rotated.mkv` in all four UI rotations.
 
 ## Audio-only files
 
-`demuxer_create()`'s extension table also says whether a file is video or
-audio (`MediaKind`), and the file browser opens `AudioPlayerScreen` for the
-audio ones. Only `.m4a` is there today; the container is `mp4_demux`, which now
-accepts a file with no video track. A file with a video extension and no video
-track still opens in `VideoPlayerScreen`, which plays the sound over a black
-picture and says "no video track" in the bar, rather than the browser second
-guessing the extension.
+`demuxer_create()`'s extension table also says whether a file is video or audio
+(`MediaKind`), and the file browser opens `AudioPlayerScreen` for the audio
+ones. `medf_mp4_demux` accepts a file with no video track. A file with a video
+extension and no video track still opens in `VideoPlayerScreen`, which plays
+the sound over a black picture and says "no video track" in the bar, rather
+than the browser second guessing the extension.
 
 - **The player skips `video_pacing` entirely.** `handle_open()` branches on
   `info.video.codec == None`: no presenter, no video ring, no poster. The
@@ -522,80 +403,24 @@ guessing the extension.
   - The reader's "produced something this pass" guard, which stops an empty
     file from seeking to 0 forever, used to count video packets only. An
     audio-only file therefore stopped at the end however loop was set.
-- **WAV is the same envelope as AVI, not the same demuxer.** The RIFF chunk
-  walk, the `fmt ` WAVEFORMATEX and the format-tag table are literally the same
-  bytes, so they live in `riff.c` and both demuxers call them; everything else
-  differs (AVI is indexed chunk streams on a frame timeline, WAV is one `data`
-  range with no packet boundaries at all). `avi_demux` keeps its frame-numbered
-  API; `wav_demux` is in µs like MP4.
-  - **Packets are cut by us, not by the file.** A packet is about 32 KB rounded
-    down to a whole PCM frame, or to a whole IMA ADPCM block, because
-    `audio_decoder` splits ADPCM by `block_align`. pts and seek are byte arithmetic
-    and therefore exact.
-  - **A `data` size of 0, or one past the end of the file, means the file is
-    what a streaming writer left behind**, so it is clamped to the file size.
-  - **`WAVE_FORMAT_EXTENSIBLE` resolves through the first two bytes of the
-    subformat GUID**, which is the tag the file would have used without it.
-- **MP3 and ADTS AAC share one demuxer.** Both are self-delimiting frames with
-  no container: the ID3/APE trimming, the resync and the byte-to-time seek are
-  the same code, and only the frame header parser differs. The codec is decided
-  at open by trying MP3 and then AAC on the first frames.
-  - **A sync word only counts when three frames chain into each other.**
-    Compressed payload is full of `FF` bytes, so a single header match finds
-    false positives, in the file's first bytes as much as after a seek.
-  - **ID3v2 is skipped from the size in its header** (plus the footer when the
-    flag is set), and ID3v1 and an APEv2 footer are trimmed off the end, so
-    neither is fed to the decoder as audio.
-  - **The duration is exact only with Xing/Info or VBRI**, which carry the
-    frame count. Without one it is the data size scaled by an average of the
-    first 64 frames. One frame is not enough: an encoder's first frames are
-    much smaller than its steady state, which sized the 6 s AAC fixture at 7 s.
-  - **The Xing frame is not played.** It is a valid, silent frame; it is
-    dropped, and the byte-to-time mapping starts after it.
-  - **Seeking is an estimate**: the byte position comes from the time ratio
-    (through the Xing TOC when there is one), and the time it reports back is
-    that byte position converted again, so the slider matches what plays. Only
-    CBR lands where it says.
-- **MP4 without a video track.** `parse_moov` only insists on one usable
-  track; seek moves the audio cursor and reports its own pts, `stss` and the
-  keyframe index stay video-only, and the duration falls back to the audio
-  `mdhd` when `mvhd` has none. A video track that is present but unsupported
-  still fails the open, so a broken video file does not quietly play as audio.
+- **WAV, MP3 and ADTS AAC** have demuxers of their own in `media_framework`
+  (see its `docs/containers.md`). WAV packets are whole IMA ADPCM blocks,
+  because `audio_decoder` splits ADPCM by `block_align`.
 
 ## Tags and cover art
 
-`components/media_tags` holds the struct every demuxer fills, the conversion to
-UTF-8 and the ID3v2/ID3v1 parser. ID3 is shared rather than living in
-`es_audio_demux` because it turns up in more than one container: a WAV or AVI
-`id3 ` chunk is the same bytes.
+Every demuxer fills a `medf_tags_t`. Its rules (fixed-size UTF-8, the first
+non-empty value wins, which pictures are kept) are in
+`esp-devkit/libs/media_framework/README.md`.
 
-- **Text is fixed-size UTF-8 inside the struct, not heap strings.** The C info
-  structs are plain values the C++ layer copies out of; a pointer per field
-  would put an ownership rule on every one of them to save a few hundred bytes.
-  The cover art is the only allocation, and `media_tags_free()` at demux close
-  is the only rule.
-- **The first non-empty value of a field wins.** That is what lets a parser
-  walk from the better source to the worse one without tracking which it has
-  seen: ID3v2, then the ID3v1 block at the end of the same MP3.
 - **The cover bytes are copied once per layer.** The demuxer copies them out of
   a buffer of its own (MP4's `covr` sits inside the `moov` it already holds),
   and the C++ wrapper copies them into a `shared_ptr` the UI can outlive the
   demuxer with — the player task owns the demuxer and closes it without asking
   the screen. 2 MB is the cap; more than that is dropped rather than left to
   compete with the arena for PSRAM.
-- **Only JPEG and PNG are kept, decided from the first bytes** rather than the
-  declared type, because that is what `image_framework` decodes. Every
-  Matroska attachment is offered to the same check, so a font attachment is
-  rejected without a rule about names.
-- **Matroska `Tags` and `Attachments` may sit after the clusters**, where the
-  header walk stops. Their `SeekHead` entries are recorded like the Cues' one
-  and read before the walk returns; a file with neither loses nothing.
-- **Matroska target levels are ignored.** ffmpeg writes a file-level TITLE at
-  the album level (50), so honouring the level would turn every song title into
-  an album name.
-- **RIFF `LIST INFO` is why the WAV walk no longer stops at `data`.** The list
-  is written after the audio as often as before it, and stepping over a chunk
-  is a seek.
+- **Only JPEG and PNG are kept** because that is what `image_framework`
+  decodes.
 - **The artwork is decoded on the metadata worker**, never on the LVGL task,
   and the screens ask `media_cache` for pixels that are already there (see
   [`metadata.md`](metadata.md)). Decoding where it is shown was slow enough to

@@ -4,30 +4,30 @@
  */
 
 #include "demuxer.hpp"
-#include "mp4_demux.h"
+#include "medf_mp4.h"
 #include "esp_log.h"
 
 static const char *TAG = "mp4_demuxer";
 
 namespace {
 
-CodecId map_video(mp4_video_codec_t codec) {
+CodecId map_video(medf_mp4_video_codec_t codec) {
     switch (codec) {
-    case MP4_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
-    case MP4_VIDEO_CODEC_H264: return CodecId::H264;
-    case MP4_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
-    case MP4_VIDEO_CODEC_NONE: return CodecId::None;
+    case MEDF_MP4_VIDEO_CODEC_MJPEG: return CodecId::Mjpeg;
+    case MEDF_MP4_VIDEO_CODEC_H264: return CodecId::H264;
+    case MEDF_MP4_VIDEO_CODEC_MPEG2: return CodecId::Mpeg2;
+    case MEDF_MP4_VIDEO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }
 
-CodecId map_audio(mp4_audio_codec_t codec) {
+CodecId map_audio(medf_mp4_audio_codec_t codec) {
     switch (codec) {
-    case MP4_AUDIO_CODEC_PCM: return CodecId::Pcm;
-    case MP4_AUDIO_CODEC_MP3: return CodecId::Mp3;
-    case MP4_AUDIO_CODEC_AAC: return CodecId::Aac;
-    case MP4_AUDIO_CODEC_OPUS: return CodecId::Opus;
-    case MP4_AUDIO_CODEC_NONE: return CodecId::None;
+    case MEDF_MP4_AUDIO_CODEC_PCM: return CodecId::Pcm;
+    case MEDF_MP4_AUDIO_CODEC_MP3: return CodecId::Mp3;
+    case MEDF_MP4_AUDIO_CODEC_AAC: return CodecId::Aac;
+    case MEDF_MP4_AUDIO_CODEC_OPUS: return CodecId::Opus;
+    case MEDF_MP4_AUDIO_CODEC_NONE: return CodecId::None;
     default: return CodecId::Unsupported;
     }
 }
@@ -45,7 +45,7 @@ class Mp4Demuxer : public Demuxer {
 public:
     ~Mp4Demuxer() override { close(); }
 
-    bool open(const std::string &path, const media_arena_t &arena, bool want_cover) override;
+    bool open(const std::string &path, const medf_arena_t &arena, bool want_cover) override;
     void close() override;
     bool isOpen() const override { return demux_ != nullptr; }
     bool read(bool want_audio, Packet *out) override;
@@ -54,22 +54,22 @@ public:
     bool keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) override;
 
 private:
-    mp4_demux_t *demux_ = nullptr;
+    medf_mp4_demux_t *demux_ = nullptr;
 };
 
-bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena, bool want_cover) {
+bool Mp4Demuxer::open(const std::string &path, const medf_arena_t &arena, bool want_cover) {
     close();
     error_.clear();
 
     const char *failure = nullptr;
-    demux_ = mp4_demux_open(path.c_str(), &arena, want_cover, &failure);
+    demux_ = medf_mp4_demux_open(path.c_str(), &arena, want_cover, &failure);
     if (!demux_) {
         error_ = failure ? failure : "cannot read this MP4";
         return false;
     }
-    buffer_ = mp4_demux_buffer(demux_);
+    buffer_ = medf_mp4_demux_buffer(demux_);
 
-    const mp4_info_t *mp4 = mp4_demux_info(demux_);
+    const medf_mp4_info_t *mp4 = medf_mp4_demux_info(demux_);
     info_.video.codec = map_video(mp4->video.codec);
     info_.video.width = mp4->video.width;
     info_.video.height = mp4->video.height;
@@ -102,7 +102,7 @@ bool Mp4Demuxer::open(const std::string &path, const media_arena_t &arena, bool 
 
 void Mp4Demuxer::close() {
     if (demux_) {
-        mp4_demux_close(demux_);
+        medf_mp4_demux_close(demux_);
         demux_ = nullptr;
     }
     buffer_ = nullptr;
@@ -112,9 +112,9 @@ void Mp4Demuxer::close() {
 bool Mp4Demuxer::read(bool want_audio, Packet *out) {
     if (!demux_) return false;
 
-    mp4_packet_t packet = {};
-    if (!mp4_demux_read(demux_, &packet, want_audio)) return false;
-    out->track = packet.type == MP4_PACKET_VIDEO ? TrackType::Video : TrackType::Audio;
+    medf_mp4_packet_t packet = {};
+    if (!medf_mp4_demux_read(demux_, &packet, want_audio)) return false;
+    out->track = packet.type == MEDF_MP4_PACKET_VIDEO ? TrackType::Video : TrackType::Audio;
     out->pts_us = packet.pts_us;
     out->keyframe = packet.keyframe;
     out->data = packet.data;
@@ -124,16 +124,16 @@ bool Mp4Demuxer::read(bool want_audio, Packet *out) {
 }
 
 bool Mp4Demuxer::seek(int64_t pts_us, int64_t *landed_us) {
-    return demux_ && mp4_demux_seek(demux_, pts_us, landed_us);
+    return demux_ && medf_mp4_demux_seek(demux_, pts_us, landed_us);
 }
 
 bool Mp4Demuxer::keyframeBefore(int64_t pts_us, int64_t *key_us) const {
-    return demux_ && mp4_demux_keyframe_before(demux_, pts_us, key_us);
+    return demux_ && medf_mp4_demux_keyframe_before(demux_, pts_us, key_us);
 }
 
 bool Mp4Demuxer::keyframeAt(int64_t pts_us, int64_t *offset, uint32_t *size) {
     uint64_t at = 0;
-    if (!demux_ || !mp4_demux_keyframe_at(demux_, pts_us, &at, size)) return false;
+    if (!demux_ || !medf_mp4_demux_keyframe_at(demux_, pts_us, &at, size)) return false;
     *offset = (int64_t)at;
     return true;
 }

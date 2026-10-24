@@ -104,22 +104,22 @@ CoverBytes::~CoverBytes() {
     heap_caps_free(owner);
 }
 
-void demuxer_apply_tags(const media_tags_t &tags, MediaInfo *info) {
-    info->tags.title = media_tags_get(&tags, MEDIA_TAG_TITLE);
-    info->tags.artist = media_tags_get(&tags, MEDIA_TAG_ARTIST);
-    info->tags.album = media_tags_get(&tags, MEDIA_TAG_ALBUM);
-    info->tags.album_artist = media_tags_get(&tags, MEDIA_TAG_ALBUM_ARTIST);
-    info->tags.track = media_tags_get(&tags, MEDIA_TAG_TRACK);
-    info->tags.date = media_tags_get(&tags, MEDIA_TAG_DATE);
+void demuxer_apply_tags(const medf_tags_t &tags, MediaInfo *info) {
+    info->tags.title = medf_tags_get(&tags, MEDF_TAG_TITLE);
+    info->tags.artist = medf_tags_get(&tags, MEDF_TAG_ARTIST);
+    info->tags.album = medf_tags_get(&tags, MEDF_TAG_ALBUM);
+    info->tags.album_artist = medf_tags_get(&tags, MEDF_TAG_ALBUM_ARTIST);
+    info->tags.track = medf_tags_get(&tags, MEDF_TAG_TRACK);
+    info->tags.date = medf_tags_get(&tags, MEDF_TAG_DATE);
 
     info->cover_at = { (int64_t)tags.cover_at.offset, tags.cover_at.size };
     info->cover_scanned = tags.cover_scanned;
     if (!tags.cover.data || !tags.cover.size) return;
     /* The tag struct lives in the demuxer's own allocation, never in read-only
        memory: taking the picture out of it is what keeps the bytes uncopied. */
-    const media_cover_t cover = media_tags_take_cover(const_cast<media_tags_t *>(&tags));
+    const medf_cover_t cover = medf_tags_take_cover(const_cast<medf_tags_t *>(&tags));
     info->cover.data = psram_make_shared<CoverBytes>(cover.owner, cover.data, cover.size);
-    info->cover.format = cover.format == MEDIA_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
+    info->cover.format = cover.format == MEDF_COVER_PNG ? CoverFormat::Png : CoverFormat::Jpeg;
 }
 
 MediaSummary media_summary_make(const std::string &path, const MediaInfo &info, int64_t file_bytes,

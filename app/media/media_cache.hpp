@@ -7,8 +7,8 @@
 #include "media/image_codec.hpp"
 #include "media/image_exif.hpp"
 #include "media/media_types.hpp"
-#include "media_buffer.h"
-#include "media_tags.h"
+#include "medf_buffer.h"
+#include "medf_tags.h"
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -42,9 +42,9 @@ struct MediaEntry {
     /* Only for an image file that carries tags, so an entry that has none pays
        a pointer. */
     std::shared_ptr<const ImageExif> image_exif;
-    char title[MEDIA_TAG_TEXT_BYTES] = {};
-    char artist[MEDIA_TAG_TEXT_BYTES] = {};
-    char album[MEDIA_TAG_TEXT_BYTES] = {};
+    char title[MEDF_TAG_TEXT_BYTES] = {};
+    char artist[MEDF_TAG_TEXT_BYTES] = {};
+    char album[MEDF_TAG_TEXT_BYTES] = {};
 };
 
 enum MetaWant : uint8_t {
@@ -59,7 +59,7 @@ enum class MetaPriority : uint8_t {
     Idle,
 };
 
-void media_cache_init(const media_arena_t &arena);
+void media_cache_init(const medf_arena_t &arena);
 void media_cache_start();
 void media_cache_stop();
 

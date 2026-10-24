@@ -5,12 +5,12 @@
 | path | what it is |
 |---|---|
 | `app/` | the firmware, shared verbatim by both targets (device + host simulator) |
-| `components/` | project-specific components (`media_buffer`, `media_tags`, `riff_demux`, `es_audio_demux`, `mkv_demux`, `mp4_demux`, `vdec_common`, `h264_dec`, `mpeg2_dec` in plain C; `airplay` in C++) |
+| `components/` | project-specific components (`vdec_common`, `h264_dec`, `mpeg2_dec` in plain C; `airplay` in C++) |
 | `esp32p4/` | ESP-IDF wrapper for the Tab5: sdkconfig, partition table, `app_main` |
 | `esp32p4oc/` | the same wrapper overclocked (CPU 400 MHz, PSRAM 220 MHz); see [Overclocked build](#overclocked-build) |
 | `simulator/` | host wrapper: SDL/host `main`, its own sdkconfig |
 | `simulator/verify/` | harness scripts for headless UI checks |
-| `esp-devkit/` | submodule: BSP, LVGL port, `ui_framework`, harness, resgen (see [`resources.md`](resources.md)) |
+| `esp-devkit/` | submodule: BSP, LVGL port, `ui_framework`, `media_framework` (read-ahead buffer, tags, demuxers), harness, resgen (see [`resources.md`](resources.md)) |
 | `tools/converter-rs/` | host CLI, desktop app and browser version that convert videos for the player (see [`converter.md`](converter.md)) |
 
 Everything shared lives in esp-devkit and is consumed through `devkit.cmake`
@@ -437,7 +437,7 @@ pages from Home. The mount itself stays until the next
 `media_player_mount_usb()`, which runs from Home after the player and the
 `/usb` pages are gone and unmounts it before mounting the current drive.
 
-Playback reads borrow `media_buffer`'s chunks directly, since those are 64 KB
+Playback reads borrow `medf_buffer`'s chunks directly, since those are 64 KB
 aligned. Measured against `usb_host_msc` on the same drive and file:
 sequential 64 KB reads 12.9 -> 16.2 MB/s idle, and during 60 fps 720x1280
 playback, where the JPEG decoder and the panel scanout already saturate PSRAM,

@@ -68,7 +68,7 @@ enum class CoverFormat {
 /* Owns the buffer the picture was read into rather than a copy of it: the
    bytes come off the SD card straight into their final home and are handed
    from the tag reader to here by pointer. `owner` differs from `bytes` when
-   the read had to be offset to keep its alignment (see mb_read_alloc). */
+   the read had to be offset to keep its alignment (see medf_buffer_read_alloc). */
 struct CoverBytes {
     uint8_t *owner = nullptr;
     const uint8_t *bytes = nullptr;

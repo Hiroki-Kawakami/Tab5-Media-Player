@@ -148,9 +148,9 @@ void app_entry() {
     ESP_LOGI(TAG, "internal heap free after display init: %u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 #endif
-    media_arena_t arena = {};
+    medf_arena_t arena = {};
     arena.data = static_cast<uint8_t *>(heap_caps_aligned_alloc(
-        MB_ARENA_ALIGNMENT, kMediaArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
+        MEDF_ARENA_ALIGNMENT, kMediaArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
     if (arena.data) {
         arena.size = kMediaArenaBytes;
     } else {
@@ -158,9 +158,9 @@ void app_entry() {
     }
     player_start(arena);
 
-    media_arena_t probe_arena = {};
+    medf_arena_t probe_arena = {};
     probe_arena.data = static_cast<uint8_t *>(heap_caps_aligned_alloc(
-        MB_ARENA_ALIGNMENT, kProbeArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
+        MEDF_ARENA_ALIGNMENT, kProbeArenaBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_CACHE_ALIGNED));
     if (probe_arena.data) {
         probe_arena.size = kProbeArenaBytes;
         probe_arena.direct = true;
